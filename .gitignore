@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# PyTorch checkpoints
+*.pth
+
+# Data directories (image data)
+P1/
+P2/
+P3/
+P4/
+P5/
+P6/
+
+# DINOv3 cloned repository
+dinov3/
+dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth
+dinov3_vit7b16_pretrain_sat493m-a6675841.pth
+
+# Results
+results/
+gradcam_samples/
+UMAP_GridSearch_CNN_*/
+
+# Generated files (logs and outputs)
+best_model*/
+*.txt
+*.log
+*.json
+*.csv
+*.html
+*.png
+
+# Jupyter
+*.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
