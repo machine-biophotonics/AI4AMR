@@ -31,12 +31,17 @@ UMAP_GridSearch_CNN_*/
 
 # Generated files (logs and outputs)
 best_model*/
-*.txt
+training_log*.txt
 *.log
 *.json
 *.csv
 *.html
 *.png
+
+# Keep important class files
+!classes.txt
+!classes_dinov3.txt
+!classes_bacnet.txt
 
 # Jupyter
 *.ipynb_checkpoints/

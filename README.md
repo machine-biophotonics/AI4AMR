@@ -9,8 +9,9 @@ This project develops image-based machine learning models to classify bacterial 
 ### Key Capabilities
 - Multi-model support: EfficientNet, BacNet, DINOv3 (Vision Transformer)
 - Multi-crop extraction from high-resolution images (2720×2720)
-- Multi-class classification (97 gene knockdowns + controls)
+- Multi-class classification (85 gene knockdowns + WT controls)
 - t-SNE/UMAP visualization for feature analysis
+- Incremental embedding saving to prevent memory issues
 
 ---
 
@@ -23,9 +24,9 @@ This project develops image-based machine learning models to classify bacterial 
 | Test | P6 | 2,016 | Final evaluation |
 
 ### Classes
-- **97 unique classes**: Gene knockdowns (e.g., `dnaA_1`, `dnaB_2`)
+- **85 unique classes**: Gene knockdowns (e.g., `dnaA_1`, `dnaB_2`)
 - **WT**: Wild-type control
-- **NC**: Negative control
+- Genes grouped by family (e.g., dnaB_1, dnaB_2, dnaB_3)
 
 ### Image Format
 - Resolution: 2720×2720 pixels (16-bit TIFF)
@@ -44,11 +45,14 @@ Lightweight custom CNN optimized for microscopy images.
 ### 3. DINOv3 ViT-L (train_dinov3.py)
 Vision Transformer with satellite imagery pretraining (SAT-493M).
 
-| Model | Parameters | Best For |
-|-------|------------|----------|
-| EfficientNet-B0 | 5.3M | Quick experiments |
-| BacNet | ~2M | Fast training |
-| DINOv3 ViT-L | 300M | Highest accuracy |
+| Model | Parameters | Inference Time | Best For |
+|-------|------------|---------------|----------|
+| EfficientNet-B0 | 5.3M | - | Quick experiments |
+| BacNet | ~2M | - | Fast training |
+| DINOv3 ViT-S | 21M | ~15ms | Fast inference |
+| DINOv3 ViT-B | 86M | ~25ms | Balanced |
+| DINOv3 ViT-L | 300M | ~45ms | Highest accuracy |
+| DINOv3 ViT-7B | 6.7B | ~200ms | Research (needs 24GB+ GPU) |
 
 ---
 
@@ -61,8 +65,14 @@ python train.py --epochs 50 --n_crops 9
 
 ### Training DINOv3
 ```bash
+# Standard (ViT-L, 300M params)
 python train_dinov3.py --n_crops 25 --batch_size 32 --num_workers 16
+
+# Smaller model (ViT-B, 86M params) - faster
+python train_dinov3.py --n_crops 25 --batch_size 32 --model_size vitb
 ```
+
+**Note**: Embeddings are saved incrementally to prevent memory issues. If interrupted, re-run with `--resume_embeddings`.
 
 ### Generate Visualizations
 ```bash
