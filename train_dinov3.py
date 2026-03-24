@@ -18,6 +18,7 @@ import json
 import glob
 import re
 import random
+import gc
 from typing import Optional, List, Dict, Tuple
 from collections import Counter
 
@@ -432,17 +433,58 @@ def main():
         print("Extracting embeddings...")
         print("="*40)
         
+        # Extract and save train embeddings (immediately to prevent memory loss)
+        print("\n" + "="*40)
+        print("Extracting train embeddings...")
+        print("="*40)
         X_train, y_train = extract_embeddings(model, train_dataset, args.batch_size, args.num_workers)
-        X_val, y_val = extract_embeddings(model, val_dataset, args.batch_size, args.num_workers)
-        X_test, y_test = extract_embeddings(model, test_dataset, args.batch_size, args.num_workers)
-        
-        # Save embeddings
-        print("\nSaving embeddings to disk...")
+        print(f"Saving train embeddings: {X_train.shape}")
         np.savez(EMB_TRAIN_PATH, embeddings=X_train, labels=y_train)
-        np.savez(EMB_VAL_PATH, embeddings=X_val, labels=y_val)
-        np.savez(EMB_TEST_PATH, embeddings=X_test, labels=y_test)
+        del X_train, y_train
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"Train embeddings saved to {EMB_TRAIN_PATH}")
         
-        print(f"Embeddings saved: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
+        # Extract and save val embeddings
+        print("\n" + "="*40)
+        print("Extracting val embeddings...")
+        print("="*40)
+        X_val, y_val = extract_embeddings(model, val_dataset, args.batch_size, args.num_workers)
+        print(f"Saving val embeddings: {X_val.shape}")
+        np.savez(EMB_VAL_PATH, embeddings=X_val, labels=y_val)
+        del X_val, y_val
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"Val embeddings saved to {EMB_VAL_PATH}")
+        
+        # Extract and save test embeddings
+        print("\n" + "="*40)
+        print("Extracting test embeddings...")
+        print("="*40)
+        X_test, y_test = extract_embeddings(model, test_dataset, args.batch_size, args.num_workers)
+        print(f"Saving test embeddings: {X_test.shape}")
+        np.savez(EMB_TEST_PATH, embeddings=X_test, labels=y_test)
+        print(f"Test embeddings saved to {EMB_TEST_PATH}")
+        
+        # Free model memory before classifier training
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        # Load embeddings for classifier training
+        print("\nLoading embeddings for classifier training...")
+        train_data = np.load(EMB_TRAIN_PATH)
+        val_data = np.load(EMB_VAL_PATH)
+        test_data = np.load(EMB_TEST_PATH)
+        
+        X_train = train_data['embeddings']
+        y_train = train_data['labels']
+        X_val = val_data['embeddings']
+        y_val = val_data['labels']
+        X_test = test_data['embeddings']
+        y_test = test_data['labels']
+        
+        print(f"Loaded: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
     
     # Train classifier
     print("\n" + "="*40)
