@@ -24,18 +24,13 @@ Labels are stored in `plate maps/plate_well_id_path.json` which maps each well (
 
 ## Model Architectures
 
-### 1. EfficientNet-B0 (`final_effnet_model/`)
-Standard CNN baseline with ImageNet pretrained weights.
+### 1. EfficientNet-B0 (`2_effnet_model/`)
+Standard CNN baseline with ImageNet pretrained weights. Includes evaluation and MOA clustering analysis.
 
 ```bash
-cd final_effnet_model
+cd 2_effnet_model
 python train.py --epochs 50 --batch_size 16 --lr 1e-4
 ```
-
-Options:
-- `--resume <checkpoint.pth>` - Resume from checkpoint
-- `--warmup_epochs 6` - Warmup epochs
-- `--patience 10` - Early stopping patience
 
 ### 2. DINOv3 ViT-L with LoRA (`dinov3-finetune/`)
 Vision Transformer with LoRA fine-tuning, pretrained on satellite imagery (SAT-493M).
@@ -52,10 +47,6 @@ python train_plate.py \
     --lr 1e-4
 ```
 
-Options:
-- `--resume <checkpoint.pt>` - Resume from checkpoint
-- `--lora_weights <file>` - Load pretrained LoRA weights
-
 ### 3. Logistic Regression (`1_Dino_embeddings_logistic_regression/`)
 Logistic regression on DINOv3 embeddings for baseline comparison.
 
@@ -63,27 +54,34 @@ Logistic regression on DINOv3 embeddings for baseline comparison.
 
 ```
 .
-├── final_effnet_model/           # EfficientNet-B0 training (main model)
-│   └── train.py                  # Training script with focal loss + class/domain weighting
+├── 2_effnet_model/                  # EfficientNet-B0 training
+│   ├── train.py                      # Training script
+│   ├── evaluate_model.py             # Evaluation
+│   ├── extract_embeddings.py         # Embedding extraction
+│   ├── eval_results/                 # Evaluation outputs
+│   └── moa_k19/                      # MOA clustering analysis (k=19)
 │
-├── dinov3-finetune/              # DINOv3 ViT-L + LoRA fine-tuning
-│   ├── train_plate.py            # Main training script
-│   ├── dino_finetune/            # Dataset and model code
-│   └── output/                   # Saved models and metrics
+├── final_effnet_model/               # Final EfficientNet training script
+│   └── train.py                      # With focal loss + class/domain weighting
+│
+├── dinov3-finetune/                 # DINOv3 ViT-L + LoRA fine-tuning
+│   ├── train_plate.py                # Main training script
+│   ├── dino_finetune/                # Dataset and model code
+│   └── output/                       # Saved models and metrics
 │
 ├── 1_Dino_embeddings_logistic_regression/
-│   └── train_logistic_regression.py  # LR on DINO embeddings
+│   ├── train_logistic_regression.py # LR training on embeddings
+│   ├── generate_embeddings.py       # Embedding generation
+│   ├── dino_moa/                    # MOA analysis on DINO embeddings
+│   └── unsupervised_clustering/     # Clustering analysis
 │
-├── effnet_model/                 # Legacy EfficientNet training
-│   ├── eval_results/             # Evaluation outputs
-│   └── moa_k19/                  # MOA clustering analysis (k=19)
+├── 1_Embeddings_144_crops_Dino/     # DINOv3 embeddings (144 crops × 2048-dim)
+│                                       # Note: Large, not tracked in git
 │
-├── embeddings/                   # DINOv3 embeddings (144 crops × 2048-dim)
+├── plate maps/                      # Label mappings
+│   └── plate_well_id_path.json      # Well → gene class mapping
 │
-├── plate maps/                  # Label mappings
-│   └── plate_well_id_path.json  # Well → gene class mapping
-│
-└── ai4ab/                        # Legacy analysis code
+└── dino_weights/                    # DINOv3 pretrained weights
 ```
 
 ## Training Details
@@ -102,6 +100,18 @@ Both EfficientNet and DINOv3 use:
 
 Class weights are normalized to sum to num_classes.
 
+## Common Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--epochs` | Number of epochs | 50 |
+| `--batch_size` | Batch size | 16 |
+| `--lr` | Learning rate | 1e-4 |
+| `--warmup_epochs` | Warmup epochs | 6 |
+| `--patience` | Early stopping patience | 10 |
+| `--resume` | Resume from checkpoint | None |
+| `--seed` | Random seed | 42 |
+
 ## Requirements
 
 ```bash
@@ -112,7 +122,7 @@ pip install torch torchvision albumentations scikit-learn pandas matplotlib tqdm
 - PyTorch 2.0+
 - CUDA-capable GPU (16GB recommended)
 
-## Results
+## Output Files
 
 Results are saved in each model's directory:
 - `training_metrics_*.csv` - Epoch-level metrics
