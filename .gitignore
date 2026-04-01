@@ -10,8 +10,13 @@ build/
 
 # PyTorch checkpoints
 *.pth
+*.pt
 
-# Data directories (image data)
+# Large data files (embeddings, models)
+*.npy
+*.npz
+
+# Data directories (raw image data - not in repo)
 P1/
 P2/
 P3/
@@ -24,12 +29,13 @@ dinov3/
 dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth
 dinov3_vit7b16_pretrain_sat493m-a6675841.pth
 
-# Results
+# DINO weights directory
+dino_weights/
+
+# Generated results (logs, outputs, visualizations)
 results/
 gradcam_samples/
 UMAP_GridSearch_CNN_*/
-
-# Generated files (logs and outputs)
 best_model*/
 training_log*.txt
 *.log
@@ -50,3 +56,18 @@ training_log*.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Model outputs (train.py outputs)
+final_effnet_model/training_metrics_*.csv
+final_effnet_model/training_results_*.json
+final_effnet_model/training_log_*.txt
+final_effnet_model/class_metrics_*.csv
+
+# EfficientNet eval results (large)
+effnet_model/eval_results/test_embeddings.npy
+effnet_model/eval_results/test_probs.npy
+
+# Logistic regression embeddings (huge)
+1_Dino_embeddings_logistic_regression/train_embeddings.npy
+1_Dino_embeddings_logistic_regression/val_embeddings.npy
+1_Dino_embeddings_logistic_regression/test_embeddings.npy
