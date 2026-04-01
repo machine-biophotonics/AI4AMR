@@ -1,0 +1,36 @@
+# CRISPRi Reference Plate Imaging
+# Requirements for reproducing results
+
+## Core Dependencies
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+Pillow>=10.0.0
+
+## Data Processing
+albumentations>=1.3.0
+opencv-python>=4.8.0
+imageio>=2.31.0
+
+## Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.18.0
+
+## Evaluation Metrics
+scipy>=1.11.0
+tqdm>=4.65.0
+
+## Experiment Tracking (optional)
+# wandb
+# tensorboard
+
+## For DINOv3 fine-tuning
+peft>=0.6.0
+transformers>=4.35.0
+
+## For Logistic Regression (GPU acceleration, optional)
+# cuml>=23.08.0
+# cupy-cuda12x>=12.0.0
