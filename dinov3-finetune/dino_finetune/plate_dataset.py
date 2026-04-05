@@ -50,13 +50,17 @@ class PlateDataset(Dataset):
         with open(label_json_path, 'r') as f:
             self.label_data = json.load(f)
         
-        # Load pathway order to get all possible class IDs
-        pathway_json = Path(label_json_path).parent / 'class_pathway_order.json'
-        with open(pathway_json, 'r') as f:
-            pathway_data = json.load(f)
-        self.class_names = pathway_data['pathway_order']  # list of 85 strings
+        # Build class mapping directly from label_json_path (96 classes for CRISPRi)
+        all_labels = set()
+        for plate, rows in self.label_data.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    all_labels.add(info['id'])
+        self.class_names = sorted(all_labels)  # 96 classes
         self.class_to_idx = {name: idx for idx, name in enumerate(self.class_names)}
         self.num_classes = len(self.class_names)
+        
+        print(f"Loaded {self.num_classes} classes from {label_json_path}")
         
         # Build sample list: each sample is (image_path, class_idx, plate_name)
         self.image_samples = []  # unique images
@@ -266,38 +270,57 @@ def create_datasets(data_root: str, label_json_path: str, stain_augmentation: bo
     """Create train, val, test datasets."""
     train_plates, val_plates, test_plates = get_plates_split()
     
-    # Define augmentations for training - grayscale-friendly pipeline
+    # Define augmentations for training - matching sam_effnet train.py (reduced probabilities)
     train_transform = A.Compose([
-        # No resize, crop already 224x224
-        # Geometric transforms
+        # === SYMMETRY TRANSFORMS ===
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
-        A.Affine(translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
-                 scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)},
-                 rotate=(-15, 15), p=0.5),
-        # Pixel-level intensity augmentations (grayscale-friendly)
+        # Full 360 degree rotation (reduced probability)
+        A.Rotate(limit=360, p=0.2),
+        # Affine transformations (reduced probability)
+        A.Affine(translate_percent={'x': (-0.08, 0.08), 'y': (-0.08, 0.08)},
+                 scale={'x': (0.92, 1.08), 'y': (0.92, 1.08)}, rotate=(-10, 10), p=0.3),
+        
+        # === LIGHTING & CONTRAST (grayscale-appropriate) ===
+        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.2),
+        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.2),
+        A.RandomGamma(gamma_limit=(85, 115), p=0.15),
+        A.Equalize(p=0.05),
+        
+        # === SHADOW SIMULATION ===
+        A.RandomShadow(shadow_roi=(0.3, 0.3, 0.7, 0.7), num_shadows_limit=(1, 2), shadow_dimension=5, shadow_intensity_range=(0.3, 0.4), p=0.1),
+        
+        # === GEOMETRIC DEFORMATIONS (reduced severity) ===
         A.SomeOf([
-            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=1.0),
-            A.RandomGamma(gamma_limit=(80, 120), p=1.0),
-            A.RandomToneCurve(scale=0.3, p=1.0),
-            A.RandomShadow(p=0.3),
-        ], n=2, replace=False, p=0.5),
-        # Noise and blur (grayscale-friendly)
+            A.ElasticTransform(alpha=30, sigma=3, p=1.0),
+            A.Perspective(scale=(0.01, 0.03), p=1.0),
+            A.GridDistortion(num_steps=5, distort_limit=0.05, p=1.0),
+            A.OpticalDistortion(distort_limit=0.03, p=1.0),
+        ], n=1, replace=False, p=0.3),
+        
+        # === NOISE & BLUR (reduced) ===
         A.SomeOf([
-            A.GaussNoise(std_range=(0.1, 0.5), per_channel=False, p=1.0),  # monochrome noise
-            A.GaussianBlur(blur_limit=(3, 7), p=1.0),
-            A.MotionBlur(blur_limit=7, p=1.0),
-        ], n=1, replace=False, p=0.5),
-        # Cutout-like dropout
-        A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.4),
-        # Compression artifacts
-        A.ImageCompression(quality_range=(50, 100), p=0.3),
-        # Sharpening
-        A.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.0), p=0.3),
-        # Elastic distortions (more aggressive)
-        A.ElasticTransform(alpha=50, sigma=5, p=0.2),
-        # Normalization (using ImageNet stats, but channels are identical)
+            A.GaussNoise(std_range=(0.05, 0.1), per_channel=False, p=1.0),
+            A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+            A.MotionBlur(blur_limit=3, p=1.0),
+        ], n=1, replace=False, p=0.3),
+        
+        # === PIXEL DROPOUT ===
+        A.PixelDropout(dropout_prob=0.03, drop_value=0, p=0.1),
+        
+        # === NOISE ARTIFACTS (reduced) ===
+        A.SaltAndPepper(p=0.1),
+        A.ISONoise(p=0.05),
+        
+        # === ERASING (reduced) ===
+        A.Erasing(p=0.1),
+        
+        # === QUALITY ARTIFACTS (reduced) ===
+        A.ImageCompression(quality_range=(90, 100), p=0.2),
+        A.CoarseDropout(num_holes_range=(1, 2), hole_height_range=(16, 48), hole_width_range=(16, 48), p=0.2),
+        
+        # === NORMALIZATION ===
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
     ])

@@ -17,34 +17,46 @@ This project develops image-based machine learning models to classify bacterial 
 ### Image Format
 - Resolution: 2720×2720 pixels (16-bit TIFF)
 - Channel: Brightfield microscopy (channel 4)
-- Wells: 96-well plates (85 gene knockdowns + 1 WT control = 86 classes, but only 85 have unique perturbations)
+- Wells: 96-well plates (96 classes, all with equal samples)
 
 ### Labels
 Labels are stored in `plate maps/plate_well_id_path.json` which maps each well (e.g., "A01", "B12") to the gene perturbation class.
 
 ## Model Architectures
 
-### 1. EfficientNet-B0 (`2_effnet_model/`)
-Standard CNN baseline with ImageNet pretrained weights. Includes evaluation and MOA clustering analysis.
+### 1. EfficientNet-B0 with SAM (`sam_effnet/`)
+CNN baseline with Sharpness-Aware Minimization (SAM) optimizer. Best well-level accuracy ~22.9%.
 
 ```bash
-cd 2_effnet_model
-python train.py --epochs 50 --batch_size 16 --lr 1e-4
+cd sam_effnet
+python train.py \
+    --epochs 200 \
+    --batch_size 16 \
+    --lr 1e-4 \
+    --rho 0.1 \
+    --warmup_epochs 6 \
+    --patience 10 \
+    --grid_size 12 \
+    --crop_size 224
 ```
 
-### 2. DINOv3 ViT-L with LoRA (`dinov3-finetune/`)
-Vision Transformer with LoRA fine-tuning, pretrained on satellite imagery (SAT-493M).
+### 2. DINOv3 ViT-L + LoRA with SAM (`dinov3-finetune/`)
+Vision Transformer with LoRA fine-tuning and SAM optimizer, pretrained on satellite imagery (SAT-493M).
 
 ```bash
 cd dinov3-finetune
 python train_plate.py \
-    --epochs 50 \
+    --exp_name dinov3_lora_sam \
     --data_root "/path/to/data" \
-    --label_json_path "plate maps/plate_well_id_path.json" \
-    --stain_augmentation \
-    --use_lora \
+    --label_json_path "sam_effnet/plate_well_id_path.json" \
+    --epochs 200 \
     --batch_size 16 \
-    --lr 1e-4
+    --lr 1e-4 \
+    --rho 0.1 \
+    --warmup_epochs 6 \
+    --patience 10 \
+    --weight_decay 0.1 \
+    --use_lora
 ```
 
 ### 3. Logistic Regression (`1_Dino_embeddings_logistic_regression/`)
@@ -54,61 +66,65 @@ Logistic regression on DINOv3 embeddings for baseline comparison.
 
 ```
 .
-├── 2_effnet_model/                  # EfficientNet-B0 training
-│   ├── train.py                      # Training script
-│   ├── evaluate_model.py             # Evaluation
-│   ├── extract_embeddings.py         # Embedding extraction
-│   ├── eval_results/                 # Evaluation outputs
-│   └── moa_k19/                      # MOA clustering analysis (k=19)
+├── sam_effnet/                        # EfficientNet-B0 + SAM training
+│   ├── train.py                       # Training script with SAM
+│   ├── plate_well_id_path.json        # 96-class labels
+│   ├── trial_1_144_crops/             # Best results (~22.9% well acc)
+│   └── visualize_augmentations.py     # Augmentation visualization
 │
-├── final_effnet_model/               # Final EfficientNet training script
-│   └── train.py                      # With focal loss + class/domain weighting
+├── dinov3-finetune/                   # DINOv3 ViT-L + LoRA + SAM
+│   ├── train_plate.py                  # Main training script
+│   ├── dino_finetune/
+│   │   └── plate_dataset.py            # Dataset with sam_effnet augmentations
+│   └── output/                         # Saved models and metrics
 │
-├── dinov3-finetune/                 # DINOv3 ViT-L + LoRA fine-tuning
-│   ├── train_plate.py                # Main training script
-│   ├── dino_finetune/                # Dataset and model code
-│   └── output/                       # Saved models and metrics
+├── 2_effnet_model/                    # EfficientNet-B0 baseline
+│
+├── final_effnet_model/                # Final EfficientNet training script
 │
 ├── 1_Dino_embeddings_logistic_regression/
-│   ├── train_logistic_regression.py # LR training on embeddings
-│   ├── generate_embeddings.py       # Embedding generation
-│   ├── dino_moa/                    # MOA analysis on DINO embeddings
-│   └── unsupervised_clustering/     # Clustering analysis
+│   └── train_logistic_regression.py   # LR on DINO embeddings
 │
-├── 1_Embeddings_144_crops_Dino/     # DINOv3 embeddings (144 crops × 2048-dim)
-│                                       # Note: Large, not tracked in git
+├── plate maps/                        # Label mappings
+│   └── plate_well_id_path.json
 │
-├── plate maps/                      # Label mappings
-│   └── plate_well_id_path.json      # Well → gene class mapping
-│
-└── dino_weights/                    # DINOv3 pretrained weights
+└── dino_weights/                     # DINOv3 pretrained weights
 ```
 
 ## Training Details
 
-Both EfficientNet and DINOv3 use:
-- **Random cropping**: 144 positions per image (12×12 grid), 1 random crop per epoch
-- **Augmentation**: Albumentations-based pipeline (grayscale-friendly)
-- **Loss**: Weighted focal loss (α=0.25, γ=2.0) with:
-  - Class weights (inverse frequency)
-  - Domain weights (per-plate, using n_d^-1/2)
+Both sam_effnet and DINOv3 + SAM use identical configuration:
+- **Optimizer**: SAM (wrapping AdamW) with rho=0.1
+- **Learning rate**: 1e-4
+- **Cropping**: 144 positions per image (12×12 grid), 1 random crop per epoch
+- **Augmentation**: Albumentations pipeline with reduced probabilities
+- **Loss**: Weighted Focal Loss (α=0.25, γ=2.0, label_smoothing=0.1)
+- **Domain weights**: Per-plate (n_d^-1/2) for plate-level variation
 - **Validation**: Center crop only, no augmentation
 
-### Class Imbalance
-- Class 0 (WT-like): 1,008 samples (12.5%)
-- Other 84 classes: 84 samples each (1.04%)
+### Comparison: sam_effnet vs DINOv3 + SAM
 
-Class weights are normalized to sum to num_classes.
+| Parameter | sam_effnet (CNN) | DINOv3 + SAM (ViT) |
+|-----------|------------------|-------------------|
+| Backbone | EfficientNet-B0 | DINOv3 ViT-L |
+| Epochs | 200 | 200 |
+| Batch size | 16 | 16 |
+| Learning rate | 1e-4 | 1e-4 |
+| SAM rho | 0.1 | 0.1 |
+| Val accuracy (crop) | ~15.2% | ~17% |
+| Well-level accuracy | ~22.9% | TBD |
 
 ## Common Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--epochs` | Number of epochs | 50 |
+| `--epochs` | Number of epochs | 200 |
 | `--batch_size` | Batch size | 16 |
 | `--lr` | Learning rate | 1e-4 |
+| `--rho` | SAM perturbation radius | 0.1 |
 | `--warmup_epochs` | Warmup epochs | 6 |
 | `--patience` | Early stopping patience | 10 |
+| `--min_delta` | Min improvement for early stopping | 0.001 |
 | `--resume` | Resume from checkpoint | None |
 | `--seed` | Random seed | 42 |
 
@@ -120,13 +136,13 @@ pip install torch torchvision albumentations scikit-learn pandas matplotlib tqdm
 
 - Python 3.8+
 - PyTorch 2.0+
-- CUDA-capable GPU (16GB recommended)
+- CUDA-capable GPU (16GB recommended for DINOv3, 8GB for EfficientNet)
 
 ## Output Files
 
 Results are saved in each model's directory:
 - `training_metrics_*.csv` - Epoch-level metrics
-- `training_results_*.json` - Full results with class-level AUC/AP
+- `training_results_*.json` - Full results with class-level metrics
 - `best_model.pth` / `*_best.pt` - Best model checkpoint
 
 ## License

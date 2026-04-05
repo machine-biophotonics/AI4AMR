@@ -19,6 +19,74 @@ from dino_finetune.plate_dataset import create_datasets
 from dino_finetune.model.plate_classifier import DINOEncoderLoRAForClassification
 
 
+class SAM(torch.optim.Optimizer):
+    """Sharpness-Aware Minimization optimizer wrapper."""
+    def __init__(self, params, base_optimizer, rho=0.1, **kwargs):
+        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
+        defaults = dict(rho=rho, **kwargs)
+        super(SAM, self).__init__(params, defaults)
+        
+        if isinstance(base_optimizer, torch.optim.Optimizer):
+            self.base_optimizer = base_optimizer
+            for group in self.base_optimizer.param_groups:
+                group['rho'] = rho
+        else:
+            self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        
+        self.param_groups = self.base_optimizer.param_groups
+        self.defaults.update(self.base_optimizer.defaults)
+    
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        grad_norm = self._grad_norm()
+        for group in self.param_groups:
+            scale = group["rho"] / (grad_norm + 1e-12)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                self.state[p]["old_p"] = p.data.clone()
+                e_w = p.grad * scale.to(p)
+                p.add_(e_w)
+        if zero_grad:
+            self.zero_grad()
+    
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                p.data = self.state[p]["old_p"]
+        self.base_optimizer.step()
+        if zero_grad:
+            self.zero_grad()
+    
+    @torch.no_grad()
+    def step(self, closure=None):
+        assert closure is not None, "Sharpness Aware Minimization requires closure, but it was not provided"
+        closure = torch.enable_grad()(closure)
+        self.first_step(zero_grad=True)
+        closure()
+        self.second_step()
+
+    def _grad_norm(self):
+        shared_device = self.param_groups[0]["params"][0].device
+        norm = torch.norm(
+            torch.stack([
+                p.grad.norm(p=2).to(shared_device)
+                for group in self.param_groups
+                for p in group["params"]
+                if p.grad is not None
+            ]),
+            p=2
+        )
+        return norm
+
+    def load_state_dict(self, state_dict):
+        super().load_state_dict(state_dict)
+        self.base_optimizer.param_groups = self.param_groups
+
+
 def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     """Focal Loss implementation."""
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
@@ -27,10 +95,9 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     return focal_loss.mean()
 
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    """Weighted Focal Loss (combined class and domain weights)."""
-    # logits: (B, C), targets: (B,), weights: (B,)
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.1):
+    """Weighted Focal Loss (combined class and domain weights) with label smoothing."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     # Apply weights
@@ -195,7 +262,7 @@ def finetune_dino(config, encoder):
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        shuffle=False,  # Dataset handles shuffling via set_epoch
         num_workers=config.num_workers,
         pin_memory=True,
     )
@@ -227,23 +294,24 @@ def finetune_dino(config, encoder):
     if decoder_params:
         param_groups.append({'params': decoder_params, 'lr': config.lr * 10})  # higher LR for decoder
     
-    optimizer = optim.AdamW(param_groups, lr=config.lr, weight_decay=config.weight_decay, eps=1e-7)
+    # SAM optimizer wrapping AdamW
+    base_optimizer = optim.AdamW(param_groups, lr=config.lr, weight_decay=config.weight_decay, eps=1e-7)
+    optimizer = SAM(model.parameters(), base_optimizer, rho=config.rho)
     
-    # Scheduler
-    # Ensure warmup_epochs <= epochs
+    # Scheduler - use base_optimizer for SAM
     warmup_epochs = min(config.warmup_epochs, config.epochs)
     remaining_epochs = config.epochs - warmup_epochs
     T_max = max(1, remaining_epochs)  # Avoid division by zero
-    warmup_sched = LambdaLR(optimizer, lambda epoch: min(1.0, (epoch + 1) / warmup_epochs) if warmup_epochs > 0 else 1.0)
-    cos_sched = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=config.min_lr)
-    scheduler = SequentialLR(optimizer, schedulers=[warmup_sched, cos_sched], milestones=[warmup_epochs])
+    warmup_sched = LambdaLR(optimizer.base_optimizer, lambda epoch: min(1.0, (epoch + 1) / warmup_epochs) if warmup_epochs > 0 else 1.0)
+    cos_sched = CosineAnnealingLR(optimizer.base_optimizer, T_max=T_max, eta_min=config.min_lr)
+    scheduler = SequentialLR(optimizer.base_optimizer, schedulers=[warmup_sched, cos_sched], milestones=[warmup_epochs])
     
     # Checkpoint functions
     def save_checkpoint(epoch, path):
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            'optimizer_state_dict': optimizer.base_optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'metrics': metrics,
         }
@@ -253,7 +321,7 @@ def finetune_dino(config, encoder):
     def load_checkpoint(path):
         checkpoint = torch.load(path)
         model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        optimizer.base_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         metrics.update(checkpoint['metrics'])
@@ -317,16 +385,30 @@ def finetune_dino(config, encoder):
             labels = labels.long().cuda()
             combined_weights = get_combined_weights(plates, labels.cpu().tolist())
             
+            # SAM: First forward-backward pass
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
                 logits = model(images)
                 loss = weighted_focal_loss(logits, labels, combined_weights, 
                                          alpha=config.focal_alpha, gamma=config.focal_gamma)
             scaler.scale(loss).backward()
-            # Gradient clipping
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
-            scaler.step(optimizer)
+            
+            # SAM first step
+            optimizer.first_step(zero_grad=True)
+            
+            # SAM: Second forward-backward pass with perturbed weights
+            with torch.amp.autocast('cuda'):
+                logits = model(images)
+                loss = weighted_focal_loss(logits, labels, combined_weights, 
+                                         alpha=config.focal_alpha, gamma=config.focal_gamma)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+            
+            # SAM second step
+            optimizer.second_step()
             scaler.update()
             
             running_loss += loss.item()
@@ -374,6 +456,13 @@ def finetune_dino(config, encoder):
                 writer = csv.writer(csvfile)
                 writer.writerow([epoch, avg_train_loss, train_acc, 
                                  metrics['val_loss'][-1], metrics['val_acc'][-1], current_balanced_acc])
+            
+            # Save LAST checkpoint (every epoch) - always save immediately
+            model.save_parameters(f"output/{config.exp_name}_last.pt")
+            
+            # Save checkpoint every 5 epochs
+            if epoch % 5 == 0:
+                model.save_parameters(f"output/{config.exp_name}_e{epoch}.pt")
             
             # Early stopping check
             if early_stopping_counter >= config.patience:
@@ -445,12 +534,14 @@ if __name__ == "__main__":
     parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma")
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (epochs without improvement)")
     parser.add_argument("--min_delta", type=float, default=0.001, help="Minimum improvement for early stopping")
+    parser.add_argument("--rho", type=float, default=0.1, help="SAM perturbation radius")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path (.pt file with model_state_dict)")
     
     config = parser.parse_args()
     
-    # Dataset configuration
-    config.n_classes = 85  # gene perturbation classification
+    # Dataset configuration - use final_effnet model JSON for 96 classes
+    config.n_classes = 96  # gene perturbation classification (96 classes including NC and WT controls)
+    config.label_json_path = "/media/student/Data_SSD_1-TB/2025_12_19 CRISPRi Reference Plate Imaging/sam_effnet/plate_well_id_path.json"
     
     # Model configuration
     config.patch_size = 16

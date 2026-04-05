@@ -71,3 +71,17 @@ effnet_model/eval_results/test_probs.npy
 1_Dino_embeddings_logistic_regression/train_embeddings.npy
 1_Dino_embeddings_logistic_regression/val_embeddings.npy
 1_Dino_embeddings_logistic_regression/test_embeddings.npy
+
+# sam_effnet training outputs
+sam_effnet/training_metrics_*.csv
+sam_effnet/training_results_*.json
+sam_effnet/*.npy
+sam_effnet/trial_*/
+sam_effnet/544_crop_no_aug/
+sam_effnet/big_crop_and_aug/
+
+# DINOv3 fine-tuning outputs
+dinov3-finetune/output/*.csv
+dinov3-finetune/output/*.json
+dinov3-finetune/output/*.pt
+dinov3-finetune/output/*.png
