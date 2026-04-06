@@ -496,7 +496,8 @@ def finetune_dino(config, encoder):
             
             scaler.scale(loss).backward()
             
-            # SAM first step (perturb weights)
+            # SAM first step (perturb weights) - must unscale first for correct gradients
+            scaler.unscale_(optimizer)
             optimizer.first_step(zero_grad=True)
             
             # SAM: Second forward-backward pass with perturbed weights
@@ -516,10 +517,9 @@ def finetune_dino(config, encoder):
                     loss = loss + config.center_loss_weight * center_loss
             
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
-            # SAM second step (restore weights and optimizer step)
+            # SAM second step - don't unscale again (already unscaled)
             optimizer.second_step()
             scaler.update()
             
