@@ -758,9 +758,11 @@ else:
             
             # Second forward-backward pass (SAM)
             optimizer.zero_grad()
+            stored_features = None
             with torch.amp.autocast('cuda'):
                 if center_loss_fn is not None:
                     outputs, features = model(images, return_features=True)
+                    stored_features = features.detach()  # Store for center loss (detached to avoid SAM interference)
                     center_loss = center_loss_fn(features, labels)
                 else:
                     outputs = model(images)
@@ -780,15 +782,12 @@ else:
                 loss.backward()
                 optimizer.second_step()
             
-            # Update center loss separately (not with SAM)
-            if center_optimizer is not None:
+            # Update center loss separately (not with SAM) - using stored features from second pass
+            if center_optimizer is not None and stored_features is not None:
                 center_optimizer.zero_grad()
                 if center_loss_fn is not None:
-                    # Re-compute center loss for gradient update
-                    with torch.amp.autocast('cuda'):
-                        _, features = model(images, return_features=True)
-                        center_loss = center_loss_fn(features, labels)
-                        center_loss = args.center_loss_weight * center_loss
+                    center_loss = center_loss_fn(stored_features, labels)
+                    center_loss = args.center_loss_weight * center_loss
                     if scaler is not None:
                         scaler.scale(center_loss).backward()
                         scaler.step(center_optimizer)
