@@ -747,7 +747,6 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
-            # SAM with GradScaler: scale -> backward -> unscale -> SAM step
             if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -773,11 +772,11 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
+            # SAM second pass: don't unscale again (already unscaled from first pass)
             if scaler is not None:
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
                 optimizer.second_step(zero_grad=True)
-                scaler.update()
+                scaler.update()  # Update at end of both SAM passes
             else:
                 loss.backward()
                 optimizer.second_step()
