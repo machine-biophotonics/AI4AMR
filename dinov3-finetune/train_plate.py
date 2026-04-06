@@ -564,10 +564,12 @@ def finetune_dino(config, encoder):
                 best_val_auc = current_roc_auc
                 model.save_parameters(f"output/{config.exp_name}_best.pt")
                 logging.info(f"New best model saved with ROC AUC: {best_val_auc:.4f}")
-                # Reset early stopping counter
-                early_stopping_counter = 0
+                # Reset early stopping counter (only if patience > 0)
+                if config.patience > 0:
+                    early_stopping_counter = 0
             else:
-                early_stopping_counter += 1
+                if config.patience > 0:
+                    early_stopping_counter += 1
             
             # Secondary: Also save based on balanced accuracy
             if current_balanced_acc > best_balanced_acc + config.min_delta:
@@ -598,8 +600,8 @@ def finetune_dino(config, encoder):
             if epoch % 5 == 0:
                 model.save_parameters(f"output/{config.exp_name}_e{epoch}.pt")
             
-            # Early stopping check
-            if early_stopping_counter >= config.patience:
+            # Early stopping check (only if patience > 0)
+            if config.patience > 0 and early_stopping_counter >= config.patience:
                 logging.info(f"Early stopping triggered at epoch {epoch}. Best balanced accuracy: {best_balanced_acc:.4f}")
                 break
 
