@@ -270,55 +270,55 @@ def create_datasets(data_root: str, label_json_path: str, stain_augmentation: bo
     """Create train, val, test datasets."""
     train_plates, val_plates, test_plates = get_plates_split()
     
-    # Define augmentations for training - matching sam_effnet train.py (reduced probabilities)
+    # Define augmentations for training - STANDARD/HIGHER AUGMENTATION
     train_transform = A.Compose([
         # === SYMMETRY TRANSFORMS ===
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
-        # Full 360 degree rotation (reduced probability)
-        A.Rotate(limit=360, p=0.2),
-        # Affine transformations (reduced probability)
-        A.Affine(translate_percent={'x': (-0.08, 0.08), 'y': (-0.08, 0.08)},
-                 scale={'x': (0.92, 1.08), 'y': (0.92, 1.08)}, rotate=(-10, 10), p=0.3),
+        # Full 360 degree rotation (standard probability)
+        A.Rotate(limit=360, p=0.5),
+        # Affine transformations (standard)
+        A.Affine(translate_percent={'x': (-0.15, 0.15), 'y': (-0.15, 0.15)},
+                 scale={'x': (0.85, 1.15), 'y': (0.85, 1.15)}, rotate=(-20, 20), p=0.5),
         
         # === LIGHTING & CONTRAST (grayscale-appropriate) ===
-        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.2),
-        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.2),
-        A.RandomGamma(gamma_limit=(85, 115), p=0.15),
-        A.Equalize(p=0.05),
+        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
+        A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=0.4),
+        A.RandomGamma(gamma_limit=(70, 130), p=0.25),
+        A.Equalize(p=0.1),
         
         # === SHADOW SIMULATION ===
-        A.RandomShadow(shadow_roi=(0.3, 0.3, 0.7, 0.7), num_shadows_limit=(1, 2), shadow_dimension=5, shadow_intensity_range=(0.3, 0.4), p=0.1),
+        A.RandomShadow(shadow_roi=(0.3, 0.3, 0.7, 0.7), num_shadows_limit=(1, 3), shadow_dimension=5, shadow_intensity_range=(0.3, 0.5), p=0.2),
         
-        # === GEOMETRIC DEFORMATIONS (reduced severity) ===
+        # === GEOMETRIC DEFORMATIONS (standard severity) ===
         A.SomeOf([
-            A.ElasticTransform(alpha=30, sigma=3, p=1.0),
-            A.Perspective(scale=(0.01, 0.03), p=1.0),
-            A.GridDistortion(num_steps=5, distort_limit=0.05, p=1.0),
-            A.OpticalDistortion(distort_limit=0.03, p=1.0),
-        ], n=1, replace=False, p=0.3),
+            A.ElasticTransform(alpha=50, sigma=5, p=1.0),
+            A.Perspective(scale=(0.02, 0.05), p=1.0),
+            A.GridDistortion(num_steps=5, distort_limit=0.1, p=1.0),
+            A.OpticalDistortion(distort_limit=0.05, p=1.0),
+        ], n=1, replace=False, p=0.4),
         
-        # === NOISE & BLUR (reduced) ===
+        # === NOISE & BLUR (standard) ===
         A.SomeOf([
-            A.GaussNoise(std_range=(0.05, 0.1), per_channel=False, p=1.0),
-            A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-            A.MotionBlur(blur_limit=3, p=1.0),
-        ], n=1, replace=False, p=0.3),
+            A.GaussNoise(std_range=(0.1, 0.2), per_channel=False, p=1.0),
+            A.GaussianBlur(blur_limit=(3, 7), p=1.0),
+            A.MotionBlur(blur_limit=5, p=1.0),
+        ], n=1, replace=False, p=0.4),
         
         # === PIXEL DROPOUT ===
-        A.PixelDropout(dropout_prob=0.03, drop_value=0, p=0.1),
+        A.PixelDropout(dropout_prob=0.05, drop_value=0, p=0.15),
         
-        # === NOISE ARTIFACTS (reduced) ===
-        A.SaltAndPepper(p=0.1),
-        A.ISONoise(p=0.05),
+        # === NOISE ARTIFACTS (standard) ===
+        A.SaltAndPepper(p=0.2),
+        A.ISONoise(p=0.15),
         
-        # === ERASING (reduced) ===
-        A.Erasing(p=0.1),
+        # === ERASING (standard) ===
+        A.Erasing(p=0.2),
         
-        # === QUALITY ARTIFACTS (reduced) ===
-        A.ImageCompression(quality_range=(90, 100), p=0.2),
-        A.CoarseDropout(num_holes_range=(1, 2), hole_height_range=(16, 48), hole_width_range=(16, 48), p=0.2),
+        # === QUALITY ARTIFACTS (standard) ===
+        A.ImageCompression(quality_range=(80, 100), p=0.3),
+        A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.3),
         
         # === NORMALIZATION ===
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),

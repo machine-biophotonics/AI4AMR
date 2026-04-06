@@ -11,25 +11,28 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, SequentialLR
+from torch.optim.lr_scheduler import LambdaLR
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
 
 from dino_finetune.plate_dataset import create_datasets
 from dino_finetune.model.plate_classifier import DINOEncoderLoRAForClassification
 
 
 class SAM(torch.optim.Optimizer):
-    """Sharpness-Aware Minimization optimizer wrapper."""
-    def __init__(self, params, base_optimizer, rho=0.1, **kwargs):
+    """Sharpness-Aware Minimization optimizer wrapper with Adaptive SAM support."""
+    def __init__(self, params, base_optimizer, rho=0.1, adaptive=False, **kwargs):
         assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
-        defaults = dict(rho=rho, **kwargs)
+        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
         super(SAM, self).__init__(params, defaults)
         
         if isinstance(base_optimizer, torch.optim.Optimizer):
             self.base_optimizer = base_optimizer
             for group in self.base_optimizer.param_groups:
                 group['rho'] = rho
+                group['adaptive'] = adaptive
         else:
             self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
         
@@ -41,11 +44,14 @@ class SAM(torch.optim.Optimizer):
         grad_norm = self._grad_norm()
         for group in self.param_groups:
             scale = group["rho"] / (grad_norm + 1e-12)
+            adaptive = group.get("adaptive", False)
+            
             for p in group["params"]:
                 if p.grad is None:
                     continue
                 self.state[p]["old_p"] = p.data.clone()
-                e_w = p.grad * scale.to(p)
+                # Adaptive SAM: use element-wise scaling with p^2
+                e_w = (torch.pow(p, 2) if adaptive else 1.0) * p.grad * scale.to(p)
                 p.add_(e_w)
         if zero_grad:
             self.zero_grad()
@@ -73,7 +79,7 @@ class SAM(torch.optim.Optimizer):
         shared_device = self.param_groups[0]["params"][0].device
         norm = torch.norm(
             torch.stack([
-                p.grad.norm(p=2).to(shared_device)
+                ((torch.abs(p) if group.get("adaptive", False) else 1.0) * p.grad).norm(p=2).to(shared_device)
                 for group in self.param_groups
                 for p in group["params"]
                 if p.grad is not None
@@ -105,6 +111,39 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
     return weighted.mean()
 
 
+class CenterLoss(nn.Module):
+    """Center loss for better feature discrimination."""
+    def __init__(self, num_classes, feat_dim, use_gpu=True):
+        super(CenterLoss, self).__init__()
+        self.num_classes = num_classes
+        self.feat_dim = feat_dim
+        if use_gpu:
+            self.centers = nn.Parameter(torch.randn(num_classes, feat_dim).cuda())
+        else:
+            self.centers = nn.Parameter(torch.randn(num_classes, feat_dim))
+    
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        batch_size = features.size(0)
+        # Ensure centers have same dtype as features (handle AMP dtype mismatch)
+        centers = self.centers.to(dtype=features.dtype)
+        # Compute squared distances: ||x - c||^2 = ||x||^2 + ||c||^2 - 2*x.c
+        features_sq = torch.pow(features, 2).sum(dim=1, keepdim=True)  # (B, 1)
+        centers_sq = torch.pow(centers, 2).sum(dim=1)  # (C,)
+        # Use new addmm signature to avoid dtype issues
+        distmat = torch.addmm(
+            centers_sq.unsqueeze(0).expand(batch_size, -1) + features_sq.expand(-1, self.num_classes),
+            features, centers.t(), beta=1, alpha=-2
+        )
+        
+        classes = torch.arange(self.num_classes, dtype=torch.long, device=features.device)
+        labels_expanded = labels.unsqueeze(1).expand(batch_size, self.num_classes)
+        mask = labels_expanded.eq(classes.unsqueeze(0).expand(batch_size, -1))
+        
+        dist = distmat * mask.to(dtype=distmat.dtype)
+        loss = dist.clamp(min=1e-12, max=1e+12).sum() / batch_size
+        return loss
+
+
 def validate_epoch(
     model: nn.Module,
     val_loader: DataLoader,
@@ -129,6 +168,9 @@ def validate_epoch(
     correct_per_class = torch.zeros(n_classes, dtype=torch.long, device='cuda')
     total_per_class = torch.zeros(n_classes, dtype=torch.long, device='cuda')
     
+    all_labels = []
+    all_probs = []
+    
     model.eval()
     predictions = [] if collect_predictions else None
     with torch.no_grad():
@@ -139,6 +181,10 @@ def validate_epoch(
             logits = model(images)
             loss = criterion(logits, labels)
             val_loss += loss.item()
+            
+            probs = torch.softmax(logits, dim=1)
+            all_probs.append(probs.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
             
             _, predicted = torch.max(logits.data, 1)
             for c in range(n_classes):
@@ -167,9 +213,31 @@ def validate_epoch(
     total_correct = correct_per_class.sum().item()
     total_samples = total_per_class.sum().item()
     
+    # Compute ROC AUC
+    all_labels = np.concatenate(all_labels)
+    all_probs = np.concatenate(all_probs)
+    
+    try:
+        # Binarize labels for ROC AUC
+        labels_bin = label_binarize(all_labels, classes=range(n_classes))
+        # Compute per-class ROC AUC
+        roc_auc_per_class = []
+        for c in range(n_classes):
+            if labels_bin[:, c].sum() > 0:  # Only if positive samples exist
+                try:
+                    auc = roc_auc_score(labels_bin[:, c], all_probs[:, c])
+                    roc_auc_per_class.append(auc)
+                except:
+                    pass
+        mean_roc_auc = np.mean(roc_auc_per_class) if roc_auc_per_class else 0.0
+    except Exception as e:
+        mean_roc_auc = 0.0
+        print(f"Warning: Could not compute ROC AUC: {e}")
+    
     metrics["val_loss"].append(val_loss / len(val_loader))
     metrics["val_acc"].append(total_correct / total_samples if total_samples > 0 else 0.0)
     metrics["val_balanced_acc"].append(balanced_acc)
+    metrics["val_roc_auc"].append(mean_roc_auc)
     return predictions
 
 
@@ -294,17 +362,36 @@ def finetune_dino(config, encoder):
     if decoder_params:
         param_groups.append({'params': decoder_params, 'lr': config.lr * 10})  # higher LR for decoder
     
-    # SAM optimizer wrapping AdamW
+    # SAM optimizer wrapping AdamW (Adaptive if --adaptive flag is set)
     base_optimizer = optim.AdamW(param_groups, lr=config.lr, weight_decay=config.weight_decay, eps=1e-7)
-    optimizer = SAM(model.parameters(), base_optimizer, rho=config.rho)
+    optimizer = SAM(model.parameters(), base_optimizer, rho=config.rho, adaptive=config.adaptive)
     
-    # Scheduler - use base_optimizer for SAM
+    # Center loss (if enabled)
+    if config.center_loss:
+        feat_dim = 1024  # DINOv3 feature dimension
+        center_loss_fn = CenterLoss(num_classes=config.n_classes, feat_dim=feat_dim, use_gpu=True)
+        # Add center loss parameters to optimizer with higher LR
+        center_params = {'params': [center_loss_fn.centers], 'lr': config.center_loss_weight * 10}
+        optimizer.add_param_group(center_params)
+        logging.info(f"Center loss enabled with weight={config.center_loss_weight}, feat_dim={feat_dim}")
+    else:
+        center_loss_fn = None
+    
+    # Scheduler - use base_optimizer for SAM (batch-based, like sam_effnet)
     warmup_epochs = min(config.warmup_epochs, config.epochs)
-    remaining_epochs = config.epochs - warmup_epochs
-    T_max = max(1, remaining_epochs)  # Avoid division by zero
-    warmup_sched = LambdaLR(optimizer.base_optimizer, lambda epoch: min(1.0, (epoch + 1) / warmup_epochs) if warmup_epochs > 0 else 1.0)
-    cos_sched = CosineAnnealingLR(optimizer.base_optimizer, T_max=T_max, eta_min=config.min_lr)
-    scheduler = SequentialLR(optimizer.base_optimizer, schedulers=[warmup_sched, cos_sched], milestones=[warmup_epochs])
+    num_training_steps = len(train_loader) * config.epochs
+    num_warmup_steps = len(train_loader) * warmup_epochs
+    
+    def lr_lambda(step):
+        if step < num_warmup_steps:
+            return step / num_warmup_steps
+        progress = (step - num_warmup_steps) / (num_training_steps - num_warmup_steps)
+        return 0.5 * (1 + np.cos(np.pi * progress))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer.base_optimizer, lr_lambda)
+    
+    # Track global step for scheduler (per batch)
+    global_step = 0
     
     # Checkpoint functions
     def save_checkpoint(epoch, path):
@@ -334,6 +421,7 @@ def finetune_dino(config, encoder):
         "val_loss": [],
         "val_acc": [],
         "val_balanced_acc": [],
+        "val_roc_auc": [],
     }
     
     # Setup CSV logging
@@ -341,11 +429,12 @@ def finetune_dino(config, encoder):
     os.makedirs("output", exist_ok=True)
     with open(csv_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc'])
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc', 'val_roc_auc', 'lr'])
     
     # Mixed precision scaler
     scaler = torch.amp.GradScaler('cuda')
     gradient_clip_norm = 1.0
+    best_val_auc = 0.0
     best_balanced_acc = 0.0
     early_stopping_counter = 0
     start_epoch = 0
@@ -368,7 +457,9 @@ def finetune_dino(config, encoder):
             else:
                 logging.info(f"Loaded checkpoint but could not determine epoch, starting from 0")
         
-        # Load best balanced acc if available in checkpoint
+        # Load best metrics from checkpoint
+        if 'best_val_auc' in checkpoint:
+            best_val_auc = checkpoint['best_val_auc']
         if 'best_balanced_acc' in checkpoint:
             best_balanced_acc = checkpoint['best_balanced_acc']
         
@@ -391,11 +482,21 @@ def finetune_dino(config, encoder):
                 logits = model(images)
                 loss = weighted_focal_loss(logits, labels, combined_weights, 
                                          alpha=config.focal_alpha, gamma=config.focal_gamma)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+                
+                # Center loss (if enabled) - extract features correctly
+                if center_loss_fn is not None:
+                    # Get features from encoder (use forward_features method)
+                    encoder_out = model.encoder.forward_features(images)
+                    if isinstance(encoder_out, dict):
+                        features = encoder_out['x_norm_clstoken']  # Class token
+                    else:
+                        features = encoder_out[:, 0, :]  # Fallback to first token
+                    center_loss = center_loss_fn(features, labels)
+                    loss = loss + config.center_loss_weight * center_loss
             
-            # SAM first step
+            scaler.scale(loss).backward()
+            
+            # SAM first step (perturb weights)
             optimizer.first_step(zero_grad=True)
             
             # SAM: Second forward-backward pass with perturbed weights
@@ -403,17 +504,37 @@ def finetune_dino(config, encoder):
                 logits = model(images)
                 loss = weighted_focal_loss(logits, labels, combined_weights, 
                                          alpha=config.focal_alpha, gamma=config.focal_gamma)
+                
+                # Center loss (if enabled)
+                if center_loss_fn is not None:
+                    encoder_out = model.encoder.forward_features(images)
+                    if isinstance(encoder_out, dict):
+                        features = encoder_out['x_norm_clstoken']
+                    else:
+                        features = encoder_out[:, 0, :]
+                    center_loss = center_loss_fn(features, labels)
+                    loss = loss + config.center_loss_weight * center_loss
+            
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
-            # SAM second step
+            # SAM second step (restore weights and optimizer step)
             optimizer.second_step()
             scaler.update()
             
+            # Update learning rate every batch (like sam_effnet)
+            scheduler.step()
+            global_step += 1
+            
+            # Fresh forward pass with actual updated weights for accurate metrics
+            with torch.no_grad():
+                with torch.amp.autocast('cuda'):
+                    logits_eval = model(images)
+            
             running_loss += loss.item()
-            # Compute accuracy
-            _, predicted = torch.max(logits, 1)
+            # Compute accuracy from fresh evaluation
+            _, predicted = torch.max(logits_eval, 1)
             running_correct += (predicted == labels).sum().item()
             total_samples += labels.size(0)
             batch_count += 1
@@ -425,7 +546,7 @@ def finetune_dino(config, encoder):
         metrics["train_loss"].append(avg_train_loss)
         metrics["train_acc"].append(train_acc)
         
-        scheduler.step()
+        # Note: scheduler.step() is called per batch (in training loop), not per epoch
         
         if not config.debug:
             validate_epoch(model, val_loader, criterion, metrics)
@@ -436,26 +557,39 @@ def finetune_dino(config, encoder):
                 model.save_parameters(f"output/{config.exp_name}_e{epoch}.pt")
             
             current_balanced_acc = metrics['val_balanced_acc'][-1]
-            if current_balanced_acc > best_balanced_acc + config.min_delta:
-                best_balanced_acc = current_balanced_acc
+            current_roc_auc = metrics['val_roc_auc'][-1]
+            
+            # Primary: Save based on ROC AUC (like sam_effnet)
+            if current_roc_auc > best_val_auc + config.min_delta:
+                best_val_auc = current_roc_auc
                 model.save_parameters(f"output/{config.exp_name}_best.pt")
-                logging.info(f"New best model saved with balanced accuracy: {best_balanced_acc:.4f}")
+                logging.info(f"New best model saved with ROC AUC: {best_val_auc:.4f}")
                 # Reset early stopping counter
                 early_stopping_counter = 0
             else:
                 early_stopping_counter += 1
             
+            # Secondary: Also save based on balanced accuracy
+            if current_balanced_acc > best_balanced_acc + config.min_delta:
+                best_balanced_acc = current_balanced_acc
+                model.save_parameters(f"output/{config.exp_name}_best_balanced.pt")
+                logging.info(f"New best balanced model saved with accuracy: {best_balanced_acc:.4f}")
+            
             logging.info(
                 f"Epoch: {epoch} - train loss: {avg_train_loss:.4f} - train acc: {train_acc:.4f} "
                 f"- val loss {metrics['val_loss'][-1]:.4f} - val acc: {metrics['val_acc'][-1]:.4f} "
-                f"- balanced acc: {current_balanced_acc:.4f} - early stop counter: {early_stopping_counter}/{config.patience}"
+                f"- balanced acc: {current_balanced_acc:.4f} - val roc auc: {current_roc_auc:.4f} - early stop counter: {early_stopping_counter}/{config.patience}"
             )
+            
+            # Get current learning rate
+            current_lr = optimizer.base_optimizer.param_groups[0]['lr']
             
             # Write to CSV
             with open(csv_path, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([epoch, avg_train_loss, train_acc, 
-                                 metrics['val_loss'][-1], metrics['val_acc'][-1], current_balanced_acc])
+                                 metrics['val_loss'][-1], metrics['val_acc'][-1], 
+                                 current_balanced_acc, metrics['val_roc_auc'][-1], current_lr])
             
             # Save LAST checkpoint (every epoch) - always save immediately
             model.save_parameters(f"output/{config.exp_name}_last.pt")
@@ -493,9 +627,10 @@ def finetune_dino(config, encoder):
         "val_loss": [],
         "val_acc": [],
         "val_balanced_acc": [],
+        "val_roc_auc": [],
     }
     test_predictions = validate_epoch(model, test_loader, criterion, test_metrics, collect_predictions=True)
-    logging.info(f"Test accuracy: {test_metrics['val_acc'][0]:.4f}")
+    logging.info(f"Test accuracy: {test_metrics['val_acc'][0]:.4f}, Balanced Acc: {test_metrics['val_balanced_acc'][0]:.4f}, ROC AUC: {test_metrics['val_roc_auc'][0]:.4f}")
     with open(f"output/{config.exp_name}_test_metrics.json", "w") as f:
         json.dump(test_metrics, f)
     if test_predictions is not None:
@@ -534,7 +669,10 @@ if __name__ == "__main__":
     parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma")
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (epochs without improvement)")
     parser.add_argument("--min_delta", type=float, default=0.001, help="Minimum improvement for early stopping")
-    parser.add_argument("--rho", type=float, default=0.1, help="SAM perturbation radius")
+    parser.add_argument("--rho", type=float, default=0.1, help="SAM perturbation radius (0.1 for SAM, 2.0 for ASAM)")
+    parser.add_argument("--adaptive", action="store_true", help="Use Adaptive SAM (ASAM)")
+    parser.add_argument("--center_loss", action="store_true", help="Use center loss for better feature discrimination")
+    parser.add_argument("--center_loss_weight", type=float, default=0.01, help="Weight for center loss")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path (.pt file with model_state_dict)")
     
     config = parser.parse_args()

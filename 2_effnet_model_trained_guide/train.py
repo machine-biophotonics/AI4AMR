@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EfficientNet-B0 Training for Gene-Level Classification
-Trains on 96 guide-level classes (including WT and NC controls)
+Trains on 29 gene classes (higher-level grouping) instead of 85 guide-level classes
 """
 
 import argparse
@@ -19,7 +19,7 @@ import json
 import re
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score, roc_auc_score
+from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
 from sklearn.preprocessing import label_binarize
 from typing import Optional, List, Dict
 import random
@@ -69,7 +69,7 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
-with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+with open(os.path.join(BASE_DIR, 'plate maps', 'plate_well_id_path.json'), 'r') as f:
     plate_data = json.load(f)
 
 plate_maps = {}
@@ -81,8 +81,10 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
             plate_maps[plate][well] = info['id']
 
 def extract_gene(label):
-    """Extract gene name from label - for 96 classes, use full label including guide number"""
-    return label
+    """Extract gene name from label (e.g., mrcA_1 -> mrcA)"""
+    if label.startswith('WT'):
+        return 'WT'
+    return label.rsplit('_', 1)[0]
 
 def extract_well_from_filename(filename):
     match = re.search(r'Well(\w\d+)_', filename)
@@ -462,50 +464,72 @@ else:
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
-        
-        avg_train_loss = running_loss / len(train_loader)
-        train_acc = 100. * correct / total
-        train_losses.append(avg_train_loss)
-        train_accs.append(train_acc)
-        
-        model.eval()
-        running_loss, correct, total = 0.0, 0, 0
-        all_preds, all_labels = [], []
-        
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                loss = nn.functional.cross_entropy(outputs, labels)
-                
-                running_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
-                all_preds.extend(predicted.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-        
-        avg_val_loss = running_loss / len(val_loader)
-        val_acc = 100. * correct / total
-        
-        all_preds = np.array(all_preds)
-        all_labels = np.array(all_labels)
-        per_class_correct = [np.sum((all_preds == i) & (all_labels == i)) for i in range(num_classes)]
-        per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
-        balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
-        
-        val_losses.append(avg_val_loss)
-        val_accs.append(val_acc)
-        
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, LR={current_lr:.2e}")
-        
-        # Write to CSV
-        with open(csv_path, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, balanced_acc, current_lr])
-        
-        # Save LAST model (overwrite each epoch) - always save immediately
+    
+    avg_train_loss = running_loss / len(train_loader)
+    train_acc = 100. * correct / total
+    train_losses.append(avg_train_loss)
+    train_accs.append(train_acc)
+    
+    model.eval()
+    running_loss, correct, total = 0.0, 0, 0
+    all_preds, all_labels = [], []
+    
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            loss = nn.functional.cross_entropy(outputs, labels)
+            
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    avg_val_loss = running_loss / len(val_loader)
+    val_acc = 100. * correct / total
+    
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    per_class_correct = [np.sum((all_preds == i) & (all_labels == i)) for i in range(num_classes)]
+    per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
+    balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
+    
+    val_losses.append(avg_val_loss)
+    val_accs.append(val_acc)
+    
+    print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, LR={current_lr:.2e}")
+    
+    # Write to CSV
+    current_lr = optimizer.param_groups[0]['lr']
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, balanced_acc, current_lr])
+    
+    # Save LAST model (overwrite each epoch) - always save immediately
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'train_losses': train_losses,
+        'train_accs': train_accs,
+        'val_losses': val_losses,
+        'val_accs': val_accs,
+        'best_val_acc': best_val_acc,
+        'best_val_balanced_acc': best_val_balanced_acc,
+    }, os.path.join(SCRIPT_DIR, 'last_model.pth'))
+    
+    # Save checkpoint every 5 epochs
+    if epoch % 5 == 0:
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, os.path.join(SCRIPT_DIR, f'checkpoint_e{epoch}.pth'))
+    
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
@@ -515,40 +539,40 @@ else:
             'val_losses': val_losses,
             'val_accs': val_accs,
             'best_val_acc': best_val_acc,
+        }, os.path.join(SCRIPT_DIR, 'best_model.pth'))
+    
+    if balanced_acc > best_val_balanced_acc + args.min_delta:
+        best_val_balanced_acc = balanced_acc
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'best_val_acc': best_val_acc,
             'best_val_balanced_acc': best_val_balanced_acc,
-        }, os.path.join(SCRIPT_DIR, 'last_model.pth'))
-        
-        # Save checkpoint every 5 epochs
-        if epoch % 5 == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }, os.path.join(SCRIPT_DIR, f'checkpoint_e{epoch}.pth'))
-        
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_losses': train_losses,
-                'train_accs': train_accs,
-                'val_losses': val_losses,
-                'val_accs': val_accs,
-                'best_val_acc': best_val_acc,
-            }, os.path.join(SCRIPT_DIR, 'best_model.pth'))
-        
-        if balanced_acc > best_val_balanced_acc + args.min_delta:
-            best_val_balanced_acc = balanced_acc
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'best_val_acc': best_val_acc,
-                'best_val_balanced_acc': best_val_balanced_acc,
-            }, os.path.join(SCRIPT_DIR, 'best_model_balanced.pth'))
+        }, os.path.join(SCRIPT_DIR, 'best_model_balanced.pth'))
 
-    print("Training complete. Generating test results...")
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+plt.figure(figsize=(10, 5))
+plt.plot(train_losses, label='Train Loss')
+plt.plot(val_losses, label='Val Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Training and Validation Loss')
+plt.savefig(os.path.join(SCRIPT_DIR, f'training_plots_{timestamp}.png'))
+plt.close()
+
+plt.figure(figsize=(10, 5))
+plt.plot(train_accs, label='Train Acc')
+plt.plot(val_accs, label='Val Acc')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy (%)')
+plt.legend()
+plt.title('Training and Validation Accuracy')
+plt.savefig(os.path.join(SCRIPT_DIR, f'accuracy_plots_{timestamp}.png'))
+plt.close()
+
+print("Training complete. Generating test results...")
 
 checkpoint = torch.load(os.path.join(SCRIPT_DIR, 'best_model.pth'), map_location=device, weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
@@ -580,7 +604,7 @@ roc_auc = {}
 ap = {}
 for i in range(num_classes):
     if test_labels_bin[:, i].sum() > 0:
-        roc_auc[i] = roc_auc_score(test_labels_bin[:, i], all_probs[:, i])
+        roc_auc[i] = auc(*roc_curve(test_labels_bin[:, i], all_probs[:, i]))
         ap[i] = average_precision_score(test_labels_bin[:, i], all_probs[:, i])
 
 mean_roc_auc = np.mean(list(roc_auc.values()))
