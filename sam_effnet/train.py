@@ -50,6 +50,9 @@ print(f"PyTorch version: {torch.__version__}")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+# GradScaler for mixed precision training
+scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
 parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
@@ -372,11 +375,15 @@ domain_weights = {k: v / dom_sum * n_plates for k, v in domain_weights.items()}
 print(f"Domain weights: {domain_weights}")
 
 # Compute combined weights for each sample
-def get_combined_weights(labels):
-    """Compute class weights for samples"""
+def get_combined_weights(labels, plates=None):
+    """Compute class weights for samples (optionally combined with domain weights)"""
     weights = []
-    for label in labels:
+    for i, label in enumerate(labels):
         class_w = class_weights[label].item()
+        if plates is not None:
+            plate = plates[i]
+            domain_w = domain_weights.get(plate, 1.0)
+            class_w = class_w * domain_w
         weights.append(class_w)
     weights = np.array(weights)
     weights = weights / weights.mean()
@@ -549,16 +556,16 @@ class SAM(torch.optim.Optimizer):
 
 optimizer = SAM(model.parameters(), base_optimizer, rho=args.rho, adaptive=args.adaptive)
 
-# Center loss (if enabled)
+# Center loss with separate optimizer (NOT using SAM to avoid perturbing centers)
 if args.center_loss:
     feat_dim = model.classifier[1].in_features  # Feature dimension from classifier
     center_loss_fn = CenterLoss(num_classes=num_classes, feat_dim=feat_dim, use_gpu=True)
-    # Add center loss parameters to optimizer with higher LR for faster center updates
-    center_params = {'params': [center_loss_fn.centers], 'lr': args.center_loss_weight * 10}
-    optimizer.add_param_group(center_params)
+    # Separate optimizer for center loss (SGD with higher LR, no SAM)
+    center_optimizer = torch.optim.SGD(center_loss_fn.parameters(), lr=args.center_loss_weight * 10, momentum=0.9)
     print(f"Center loss enabled with weight={args.center_loss_weight}, feat_dim={feat_dim}")
 else:
     center_loss_fn = None
+    center_optimizer = None
 
 num_training_steps = len(train_loader) * args.epochs
 num_warmup_steps = len(train_loader) * args.warmup_epochs
@@ -719,8 +726,13 @@ else:
         for batch_idx, (images, labels) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
             images, labels = images.to(device), labels.to(device)
             
-            # Compute combined weights
-            weights = get_combined_weights(labels.cpu().tolist())
+            # Compute batch plate indices for domain weights
+            batch_start = batch_idx * train_loader.batch_size
+            batch_end = min(batch_start + labels.size(0), len(train_plates))
+            batch_plates = train_plates[batch_start:batch_end]
+            
+            # Compute combined weights (class × domain)
+            weights = get_combined_weights(labels.cpu().tolist(), batch_plates.tolist())
             
             # First forward-backward pass (SAM)
             optimizer.zero_grad()
@@ -737,8 +749,13 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
-            loss.backward()
-            optimizer.first_step()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer.first_step)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.first_step()
             
             # Second forward-backward pass (SAM)
             optimizer.zero_grad()
@@ -755,8 +772,30 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
-            loss.backward()
-            optimizer.second_step()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer.second_step)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.second_step()
+            
+            # Update center loss separately (not with SAM)
+            if center_optimizer is not None:
+                center_optimizer.zero_grad()
+                if center_loss_fn is not None:
+                    # Re-compute center loss for gradient update
+                    with torch.amp.autocast('cuda'):
+                        _, features = model(images, return_features=True)
+                        center_loss = center_loss_fn(features, labels)
+                        center_loss = args.center_loss_weight * center_loss
+                    if scaler is not None:
+                        scaler.scale(center_loss).backward()
+                        scaler.step(center_optimizer)
+                        scaler.update()
+                    else:
+                        center_loss.backward()
+                        center_optimizer.step()
             
             running_loss += loss.item()
             
