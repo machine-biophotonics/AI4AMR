@@ -123,9 +123,10 @@ def get_gene_from_path(img_path):
 class GrayscaleMixedCropDataset(Dataset):
     """Dataset with random cropping (matching DINOv3 pipeline)"""
     
-    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0):
+    def __init__(self, image_paths, labels, plates=None, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0):
         self.image_paths = image_paths
         self.labels = labels
+        self.plates = plates if plates is not None else [None] * len(labels)
         self.crop_size = crop_size
         self.grid_size = grid_size
         self.augment = augment
@@ -265,7 +266,7 @@ class GrayscaleMixedCropDataset(Dataset):
         crop = np.array(crop)
         crop = self.transform(image=crop)['image']
         
-        return crop, self.labels[idx]
+        return crop, self.labels[idx], self.plates[idx]
 
 def get_image_paths_for_plate(plate, base_dir):
     plate_dir = os.path.join(base_dir, plate)
@@ -431,13 +432,13 @@ class CenterLoss(nn.Module):
         loss = dist.clamp(min=1e-12, max=1e+12).sum() / batch_size
         return loss
 
-train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, crop_size=args.crop_size, grid_size=args.grid_size, augment=True, seed=SEED)
-val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
-test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
+train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, train_plates, crop_size=args.crop_size, grid_size=args.grid_size, augment=True, seed=SEED)
+val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, None, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
+test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, None, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
 
 print(f"Dataset config: crop_size={args.crop_size}, grid_size={args.grid_size}, crops_per_image={args.grid_size**2}")
 
-train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
@@ -723,16 +724,12 @@ else:
         model.train()
         running_loss, correct, total = 0.0, 0, 0
         
-        for batch_idx, (images, labels) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
+        for batch_idx, (images, labels, batch_plates) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
             images, labels = images.to(device), labels.to(device)
+            batch_plates = [p for p in batch_plates if p is not None]
             
-            # Compute batch plate indices for domain weights
-            batch_start = batch_idx * train_loader.batch_size
-            batch_end = min(batch_start + labels.size(0), len(train_plates))
-            batch_plates = train_plates[batch_start:batch_end]
-            
-            # Compute combined weights (class × domain)
-            weights = get_combined_weights(labels.cpu().tolist(), batch_plates.tolist())
+            # Compute combined weights (class × domain) using actual plates from batch
+            weights = get_combined_weights(labels.cpu().tolist(), batch_plates)
             
             # First forward-backward pass (SAM)
             optimizer.zero_grad()
