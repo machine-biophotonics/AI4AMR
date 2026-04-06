@@ -358,11 +358,14 @@ def finetune_dino(config, encoder):
             # Freeze all other parameters (encoder non-LoRA)
             param.requires_grad = False
     if config.use_lora and lora_params:
-        param_groups.append({'params': lora_params, 'lr': config.lr})
+        # Bi-LoRA style: lower rho for LoRA params (more stable)
+        # LoRA gets rho * 0.5, decoder gets full rho
+        param_groups.append({'params': lora_params, 'lr': config.lr, 'rho': config.rho * 0.5})
     if decoder_params:
-        param_groups.append({'params': decoder_params, 'lr': config.lr * 10})  # higher LR for decoder
+        param_groups.append({'params': decoder_params, 'lr': config.lr * 10, 'rho': config.rho})
     
-    # SAM optimizer wrapping AdamW (Adaptive if --adaptive flag is set)
+    # SAM optimizer wrapping AdamW
+    # Bi-LoRA: per-param-group rho is handled by SAM class (it reads rho from each group)
     base_optimizer = optim.AdamW(param_groups, lr=config.lr, weight_decay=config.weight_decay, eps=1e-7)
     optimizer = SAM(model.parameters(), base_optimizer, rho=config.rho, adaptive=config.adaptive)
     
