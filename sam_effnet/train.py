@@ -754,9 +754,11 @@ else:
             if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.first_step(zero_grad=True)
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.first_step()
             
             # Second forward-backward pass (SAM)
@@ -779,10 +781,12 @@ else:
             # SAM second pass: don't unscale again (already unscaled from first pass)
             if scaler is not None:
                 scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.second_step(zero_grad=True)
                 scaler.update()  # Update at end of both SAM passes
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.second_step()
             
             # Update center loss separately (not with SAM) - using stored features from second pass

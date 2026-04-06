@@ -71,9 +71,6 @@ parser.add_argument('--crop_size', type=int, default=224, help='Crop size for tr
 parser.add_argument('--grid_size', type=int, default=12, help='Grid size for crops (default: 12x12)')
 parser.add_argument('--center_loss', action='store_true', help='Use center loss for better feature discrimination')
 parser.add_argument('--center_loss_weight', type=float, default=0.001, help='Weight for center loss')
-parser.add_argument('--train_guides', nargs='+', type=int, default=[1,2,3], help='Guides to use for training (default: 1 2 3)')
-parser.add_argument('--test_guide', type=int, default=None, help='Guide to use for testing (default: all)')
-parser.add_argument('--guide_experiment', type=int, choices=[1,2,3], help='Run guide experiment: 1=train on g1,g2 test g3, 2=train on g1,g3 test g2, 3=train on g2,g3 test g1')
 args = parser.parse_args()
 
 SEED = args.seed
@@ -322,61 +319,6 @@ for plate in ['P6']:
 train_labels = np.array(train_labels)
 val_labels = np.array(val_labels)
 test_labels = np.array(test_labels)
-
-# Filter by guide if specified
-def get_guide_from_label(label):
-    """Extract guide number from label like 'ftsZ_1' -> 1"""
-    if '_' in label:
-        try:
-            return int(label.rsplit('_', 1)[1])
-        except ValueError:
-            return None
-    return None
-
-# Apply guide filtering
-train_guides = args.train_guides
-test_guide = args.test_guide
-
-if args.guide_experiment:
-    exp_configs = {
-        1: {'train': [1, 2], 'test': 3},
-        2: {'train': [1, 3], 'test': 2},
-        3: {'train': [2, 3], 'test': 1},
-    }
-    cfg = exp_configs[args.guide_experiment]
-    train_guides = cfg['train']
-    test_guide = cfg['test']
-
-if train_guides != [1,2,3] or test_guide is not None:
-    # Filter training data by guide
-    if train_guides:
-        print(f"Filtering training data to guides: {train_guides}")
-        new_train_paths, new_train_labels, new_train_plates = [], [], []
-        for path, label, plate in zip(train_paths, train_labels, train_plates):
-            gene = idx_to_gene[label]
-            guide = get_guide_from_label(gene)
-            if guide in train_guides:
-                new_train_paths.append(path)
-                new_train_labels.append(label)
-                new_train_plates.append(plate)
-        train_paths = new_train_paths
-        train_labels = new_train_labels
-        train_plates = new_train_plates
-        print(f"  After filter: {len(train_paths)} training samples")
-    
-    # Filter test data by guide
-    if test_guide is not None:
-        print(f"Filtering test data to guide: {test_guide}")
-        new_test_paths, new_test_labels = [], []
-        for path, label in zip(test_paths, test_labels):
-            gene = idx_to_gene[label]
-            guide = get_guide_from_label(gene)
-            if guide == test_guide:
-                new_test_paths.append(path)
-                new_test_labels.append(label)
-        test_paths = new_test_paths
-        test_labels = new_test_labels
-        print(f"  After filter: {len(test_paths)} test samples")
 
 # Filter out excluded classes if specified
 if args.exclude_classes:
@@ -812,9 +754,11 @@ else:
             if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.first_step(zero_grad=True)
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.first_step()
             
             # Second forward-backward pass (SAM)
@@ -837,10 +781,12 @@ else:
             # SAM second pass: don't unscale again (already unscaled from first pass)
             if scaler is not None:
                 scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.second_step(zero_grad=True)
                 scaler.update()  # Update at end of both SAM passes
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.second_step()
             
             # Update center loss separately (not with SAM) - using stored features from second pass
