@@ -269,7 +269,7 @@ class GrayscaleMixedCropDataset(Dataset):
         if self.plates is not None and len(self.plates) > 0 and idx < len(self.plates):
             plate = self.plates[idx]
         else:
-            plate = None
+            plate = ""  # Empty string instead of None for DataLoader compatibility
         return crop, self.labels[idx], plate
 
 def get_image_paths_for_plate(plate, base_dir):
