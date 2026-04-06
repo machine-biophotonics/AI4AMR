@@ -585,14 +585,14 @@ def finetune_dino(config, encoder):
                 model.save_parameters(f"output/{config.exp_name}_best_balanced.pt")
                 logging.info(f"New best balanced model saved with accuracy: {best_balanced_acc:.4f}")
             
+            # Get current learning rate
+            current_lr = optimizer.base_optimizer.param_groups[0]['lr']
+            
             logging.info(
                 f"Epoch: {epoch} - train loss: {avg_train_loss:.4f} - train acc: {train_acc:.4f} "
                 f"- val loss {metrics['val_loss'][-1]:.4f} - val acc: {metrics['val_acc'][-1]:.4f} "
-                f"- balanced acc: {current_balanced_acc:.4f} - val roc auc: {current_roc_auc:.4f} - early stop counter: {early_stopping_counter}/{config.patience}"
+                f"- balanced acc: {current_balanced_acc:.4f} - val roc auc: {current_roc_auc:.4f} - LR: {current_lr:.2e} - early stop counter: {early_stopping_counter}/{config.patience}"
             )
-            
-            # Get current learning rate
-            current_lr = optimizer.base_optimizer.param_groups[0]['lr']
             
             # Write to CSV
             with open(csv_path, 'a', newline='') as csvfile:
