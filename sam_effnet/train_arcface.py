@@ -9,6 +9,7 @@ import matplotlib
 matplotlib.use('Agg')
 import torch
 from torch import nn
+import torch.nn.functional as F
 import torchvision
 from torchvision.transforms import ToTensor, RandomHorizontalFlip, RandomVerticalFlip, CenterCrop, Normalize, Compose, RandomCrop, Lambda, ColorJitter, RandomRotation, RandomAffine
 from torch.utils.data import Dataset, DataLoader
@@ -190,43 +191,29 @@ class GrayscaleMixedCropDataset(Dataset):
             # Histogram equalization (global contrast) - standard
             A.Equalize(p=0.1),
             
-            # === SHADOW SIMULATION ===
-            A.RandomShadow(shadow_roi=(0.3, 0.3, 0.7, 0.7), num_shadows_limit=(1, 3), shadow_dimension=5, shadow_intensity_range=(0.3, 0.5), p=0.2),
-            
-            # === GEOMETRIC DEFORMATIONS (standard severity) ===
-            # Colony deformation and camera angle variations - standard
-            A.SomeOf([
-                A.ElasticTransform(alpha=50, sigma=5, p=1.0),
-                A.Perspective(scale=(0.02, 0.05), p=1.0),
-                A.GridDistortion(num_steps=5, distort_limit=0.1, p=1.0),
-                A.OpticalDistortion(distort_limit=0.05, p=1.0),
-            ], n=1, replace=False, p=0.4),
-            
-            # === NOISE & BLUR (standard) ===
-            # Sensor noise and out-of-focus blur - standard
+            # === NOISE & BLUR (reduced for microscopy) ===
+            # Sensor noise and out-of-focus blur - reduced for biological images
             A.SomeOf([
                 A.GaussNoise(std_range=(0.1, 0.2), per_channel=False, p=1.0),
                 A.GaussianBlur(blur_limit=(3, 7), p=1.0),
-                A.MotionBlur(blur_limit=5, p=1.0),
-            ], n=1, replace=False, p=0.4),
+            ], n=1, replace=False, p=0.2),
             
             # === PIXEL DROPOUT ===
             # Random pixel dropout - standard
             A.PixelDropout(dropout_prob=0.05, drop_value=0, p=0.15),
             
-            # === NOISE ARTIFACTS (standard) ===
-            # Additional grayscale-compatible noise augmentations - standard
-            A.SaltAndPepper(p=0.2),
+            # === NOISE ARTIFACTS (reduced) ===
+            # ISONoise is more realistic for microscopy
             A.ISONoise(p=0.15),
             
             # === ERASING (standard) ===
             # Random erasing for occlusion robustness - standard
-            A.Erasing(p=0.2),
+            A.Erasing(p=0.15),
             
-            # === QUALITY ARTIFACTS (standard) ===
-            # Image compression and dropout - standard
-            A.ImageCompression(quality_range=(80, 100), p=0.3),
-            A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.3),
+            # === QUALITY ARTIFACTS (reduced) ===
+            # Image compression - reduced for biological images
+            A.ImageCompression(quality_range=(80, 100), p=0.2),
+            A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.15),
             
             # === NORMALIZATION ===
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
@@ -361,16 +348,6 @@ for i in range(num_classes):
 # Normalize
 class_weights = class_weights / class_weights.sum() * num_classes
 
-# Domain weights (per-plate, using n_d^-1/2 formula)
-train_plates = np.array(train_plates)
-plate_counts = Counter(train_plates)
-n_plates = len(plate_counts)
-domain_weights = {plate: 1.0 / np.sqrt(count) for plate, count in plate_counts.items()}
-# Normalize domain weights
-dom_sum = sum(domain_weights.values())
-domain_weights = {k: v / dom_sum * n_plates for k, v in domain_weights.items()}
-print(f"Domain weights: {domain_weights}")
-
 # Compute combined weights for each sample
 def get_combined_weights(labels):
     """Compute class weights for samples"""
@@ -392,37 +369,49 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
     return weighted.mean()
 
 
-class CenterLoss(nn.Module):
-    """Center loss for better feature discrimination."""
-    def __init__(self, num_classes, feat_dim, use_gpu=True):
-        super(CenterLoss, self).__init__()
-        self.num_classes = num_classes
-        self.feat_dim = feat_dim
-        if use_gpu:
-            self.centers = nn.Parameter(torch.randn(num_classes, feat_dim).cuda())
-        else:
-            self.centers = nn.Parameter(torch.randn(num_classes, feat_dim))
+class ArcFaceLoss(nn.Module):
+    """ArcFace loss - official implementation style."""
+    def __init__(self, embedding_size, num_classes, s=30.0, m=0.5, easy_margin=True):
+        super().__init__()
+        self.in_features = embedding_size
+        self.out_features = num_classes
+        self.s = s
+        self.m = m
+        self.easy_margin = easy_margin
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_size))
+        nn.init.xavier_uniform_(self.weight)
+        
+        # Precompute values for numerical stability
+        import math
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
     
-    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        batch_size = features.size(0)
-        # Ensure centers have same dtype as features (handle AMP dtype mismatch)
-        centers = self.centers.to(dtype=features.dtype)
-        # Compute squared distances: ||x - c||^2 = ||x||^2 + ||c||^2 - 2*x.c
-        features_sq = torch.pow(features, 2).sum(dim=1, keepdim=True)  # (B, 1)
-        centers_sq = torch.pow(centers, 2).sum(dim=1)  # (C,)
-        # Use new addmm signature to avoid dtype issues
-        distmat = torch.addmm(
-            centers_sq.unsqueeze(0).expand(batch_size, -1) + features_sq.expand(-1, self.num_classes),
-            features, centers.t(), beta=1, alpha=-2
-        )
+    def forward(self, embeddings, labels):
+        # Normalize embeddings and weights
+        cosine = F.linear(F.normalize(embeddings), F.normalize(self.weight))
+        cosine = cosine.clamp(-1, 1)  # For numerical stability
         
-        classes = torch.arange(self.num_classes, dtype=torch.long, device=features.device)
-        labels_expanded = labels.unsqueeze(1).expand(batch_size, self.num_classes)
-        mask = labels_expanded.eq(classes.unsqueeze(0).expand(batch_size, -1))
+        # Compute phi = cos(theta + m)
+        sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(0, 1))
+        phi = cosine * self.cos_m - sine * self.sin_m
         
-        dist = distmat * mask.to(dtype=distmat.dtype)
-        loss = dist.clamp(min=1e-12, max=1e+12).sum() / batch_size
-        return loss
+        if self.easy_margin:
+            phi = torch.where(cosine > 0, phi, cosine)
+        else:
+            phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+        
+        # One-hot encoding
+        one_hot = torch.zeros(cosine.size(), device=embeddings.device)
+        one_hot.scatter_(1, labels.view(-1, 1).long(), 1)
+        
+        # Combine: one_hot * phi + (1 - one_hot) * cosine
+        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        output *= self.s
+        
+        return F.cross_entropy(output, labels)
+
 
 train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, crop_size=args.crop_size, grid_size=args.grid_size, augment=True, seed=SEED)
 val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
@@ -440,25 +429,31 @@ model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
 for param in model.parameters():
     param.requires_grad = True
 
+# Model modification for ArcFace - add embedding layer
+EMBEDDING_SIZE = 512
+
 model.classifier = nn.Sequential(
     nn.Dropout(p=0.2),
-    nn.Linear(model.classifier[1].in_features, num_classes)
+    nn.Linear(model.classifier[1].in_features, EMBEDDING_SIZE),
+    nn.Linear(EMBEDDING_SIZE, num_classes)
 )
 
-# Custom wrapper to return features when needed
+# Custom wrapper to return embeddings when needed
 class EfficientNetWithFeatures(nn.Module):
-    def __init__(self, base_model):
+    def __init__(self, base_model, embedding_size=EMBEDDING_SIZE):
         super().__init__()
         self.features = base_model.features
         self.avgpool = base_model.avgpool
-        self.classifier = base_model.classifier
+        self.embedding = base_model.classifier[1]  # First linear -> embedding
+        self.classifier = base_model.classifier[2]  # Second linear -> logits
     
-    def forward(self, x, return_features=False):
+    def forward(self, x, return_embeddings=False):
         features = self.features(x)
         pooled = self.avgpool(features).flatten(1)
-        logits = self.classifier(pooled)
-        if return_features:
-            return logits, pooled
+        embedding = self.embedding(pooled)
+        logits = self.classifier(embedding)
+        if return_embeddings:
+            return logits, embedding
         return logits
 
 model = EfficientNetWithFeatures(model)
@@ -549,16 +544,11 @@ class SAM(torch.optim.Optimizer):
 
 optimizer = SAM(model.parameters(), base_optimizer, rho=args.rho, adaptive=args.adaptive)
 
-# Center loss (if enabled)
-if args.center_loss:
-    feat_dim = model.classifier[1].in_features  # Feature dimension from classifier
-    center_loss_fn = CenterLoss(num_classes=num_classes, feat_dim=feat_dim, use_gpu=True)
-    # Add center loss parameters to optimizer with higher LR for faster center updates
-    center_params = {'params': [center_loss_fn.centers], 'lr': args.center_loss_weight * 10}
-    optimizer.add_param_group(center_params)
-    print(f"Center loss enabled with weight={args.center_loss_weight}, feat_dim={feat_dim}")
-else:
-    center_loss_fn = None
+# ArcFace loss (replaces center loss for faster convergence and better feature separation)
+ARCFACE_S = 30.0  # Scale parameter
+ARCFACE_M = 0.35  # Margin parameter
+arcface_loss_fn = ArcFaceLoss(embedding_size=EMBEDDING_SIZE, num_classes=num_classes, s=ARCFACE_S, m=ARCFACE_M).to(device)
+print(f"ArcFace enabled with s={ARCFACE_S}, m={ARCFACE_M}, embedding_size={EMBEDDING_SIZE}")
 
 num_training_steps = len(train_loader) * args.epochs
 num_warmup_steps = len(train_loader) * args.warmup_epochs
@@ -719,23 +709,11 @@ else:
         for batch_idx, (images, labels) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
             images, labels = images.to(device), labels.to(device)
             
-            # Compute combined weights
-            weights = get_combined_weights(labels.cpu().tolist())
-            
             # First forward-backward pass (SAM)
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
-                if center_loss_fn is not None:
-                    outputs, features = model(images, return_features=True)
-                    center_loss = center_loss_fn(features, labels)
-                else:
-                    outputs = model(images)
-                
-                loss = weighted_focal_loss(outputs, labels, weights)
-                
-                if center_loss_fn is not None:
-                    total_loss = loss + args.center_loss_weight * center_loss
-                    loss = total_loss
+                outputs, embeddings = model(images, return_embeddings=True)
+                loss = arcface_loss_fn(embeddings, labels)
             
             loss.backward()
             optimizer.first_step()
@@ -743,17 +721,8 @@ else:
             # Second forward-backward pass (SAM)
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
-                if center_loss_fn is not None:
-                    outputs, features = model(images, return_features=True)
-                    center_loss = center_loss_fn(features, labels)
-                else:
-                    outputs = model(images)
-                
-                loss = weighted_focal_loss(outputs, labels, weights)
-                
-                if center_loss_fn is not None:
-                    total_loss = loss + args.center_loss_weight * center_loss
-                    loss = total_loss
+                outputs, embeddings = model(images, return_embeddings=True)
+                loss = arcface_loss_fn(embeddings, labels)
             
             loss.backward()
             optimizer.second_step()
