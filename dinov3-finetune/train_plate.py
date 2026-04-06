@@ -431,8 +431,8 @@ def finetune_dino(config, encoder):
         writer = csv.writer(csvfile)
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc', 'val_roc_auc', 'lr'])
     
-    # Mixed precision scaler
-    scaler = torch.amp.GradScaler('cuda')
+    # Mixed precision scaler - use smaller init_scale for stability with LoRA
+    scaler = torch.amp.GradScaler('cuda', init_scale=1024.0)
     gradient_clip_norm = 1.0
     best_val_auc = 0.0
     best_balanced_acc = 0.0
@@ -496,7 +496,10 @@ def finetune_dino(config, encoder):
             
             scaler.scale(loss).backward()
             
-            # SAM first step (perturb weights) - must unscale first for correct gradients
+            # Clip gradients BEFORE unscale - more stable with LoRA
+            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+            
+            # SAM first step (perturb weights)
             scaler.unscale_(optimizer)
             optimizer.first_step(zero_grad=True)
             
@@ -517,9 +520,11 @@ def finetune_dino(config, encoder):
                     loss = loss + config.center_loss_weight * center_loss
             
             scaler.scale(loss).backward()
+            
+            # Clip again before second step
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
-            # SAM second step - don't unscale again (already unscaled)
+            # SAM second step
             optimizer.second_step()
             scaler.update()
             
