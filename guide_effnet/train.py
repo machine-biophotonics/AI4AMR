@@ -266,7 +266,10 @@ class GrayscaleMixedCropDataset(Dataset):
         crop = np.array(crop)
         crop = self.transform(image=crop)['image']
         
-        plate = self.plates[idx] if self.plates and idx < len(self.plates) else None
+        if self.plates is not None and len(self.plates) > 0 and idx < len(self.plates):
+            plate = self.plates[idx]
+        else:
+            plate = None
         return crop, self.labels[idx], plate
 
 def get_image_paths_for_plate(plate, base_dir):
