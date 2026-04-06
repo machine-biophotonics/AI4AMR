@@ -70,7 +70,7 @@ parser.add_argument('--exclude_classes', nargs='*', default=[], help='List of cl
 parser.add_argument('--crop_size', type=int, default=224, help='Crop size for training (default: 224)')
 parser.add_argument('--grid_size', type=int, default=12, help='Grid size for crops (default: 12x12)')
 parser.add_argument('--center_loss', action='store_true', help='Use center loss for better feature discrimination')
-parser.add_argument('--center_loss_weight', type=float, default=0.01, help='Weight for center loss')
+parser.add_argument('--center_loss_weight', type=float, default=0.001, help='Weight for center loss')
 args = parser.parse_args()
 
 SEED = args.seed
@@ -388,6 +388,7 @@ def get_combined_weights(labels, plates=None):
         weights.append(class_w)
     weights = np.array(weights)
     weights = weights / weights.mean()
+    weights = np.clip(weights, 0.1, 5.0)  # Clamp to prevent gradient explosion
     return torch.tensor(weights, device=device)
 
 
@@ -726,6 +727,7 @@ else:
         
         for batch_idx, (images, labels, batch_plates) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
             images, labels = images.to(device), labels.to(device)
+            batch_plates = list(batch_plates)
             
             # Compute combined weights (class × domain) - batch_plates has same length as labels
             weights = get_combined_weights(labels.cpu().tolist(), batch_plates)
