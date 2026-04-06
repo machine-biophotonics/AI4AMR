@@ -266,7 +266,8 @@ class GrayscaleMixedCropDataset(Dataset):
         crop = np.array(crop)
         crop = self.transform(image=crop)['image']
         
-        return crop, self.labels[idx], self.plates[idx]
+        plate = self.plates[idx] if self.plates and idx < len(self.plates) else None
+        return crop, self.labels[idx], plate
 
 def get_image_paths_for_plate(plate, base_dir):
     plate_dir = os.path.join(base_dir, plate)
@@ -434,8 +435,8 @@ class CenterLoss(nn.Module):
         return loss
 
 train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, train_plates, crop_size=args.crop_size, grid_size=args.grid_size, augment=True, seed=SEED)
-val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, None, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
-test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, None, crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
+val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, [], crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
+test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, [], crop_size=args.crop_size, grid_size=args.grid_size, augment=False, seed=SEED)
 
 print(f"Dataset config: crop_size={args.crop_size}, grid_size={args.grid_size}, crops_per_image={args.grid_size**2}")
 
