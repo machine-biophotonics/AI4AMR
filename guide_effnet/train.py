@@ -823,7 +823,7 @@ else:
         all_preds, all_labels, all_probs = [], [], []
         
         with torch.no_grad():
-            for images, labels in val_loader:
+            for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 loss = nn.functional.cross_entropy(outputs, labels)
@@ -945,7 +945,7 @@ model.eval()
 
 all_preds, all_probs, all_labels = [], [], []
 with torch.no_grad():
-    for images, labels in test_loader:
+    for images, labels, _ in test_loader:
         images = images.to(device)
         outputs = model(images)
         probs = torch.softmax(outputs, dim=1)
