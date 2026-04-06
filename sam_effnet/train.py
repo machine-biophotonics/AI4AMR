@@ -726,9 +726,8 @@ else:
         
         for batch_idx, (images, labels, batch_plates) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
             images, labels = images.to(device), labels.to(device)
-            batch_plates = [p for p in batch_plates if p is not None]
             
-            # Compute combined weights (class × domain) using actual plates from batch
+            # Compute combined weights (class × domain) - batch_plates has same length as labels
             weights = get_combined_weights(labels.cpu().tolist(), batch_plates)
             
             # First forward-backward pass (SAM)
@@ -746,10 +745,11 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
+            # SAM with GradScaler: scale -> backward -> unscale -> SAM step
             if scaler is not None:
                 scaler.scale(loss).backward()
-                scaler.step(optimizer.first_step)
-                scaler.update()
+                scaler.unscale_(optimizer)
+                optimizer.first_step(zero_grad=True)
             else:
                 loss.backward()
                 optimizer.first_step()
@@ -771,7 +771,8 @@ else:
             
             if scaler is not None:
                 scaler.scale(loss).backward()
-                scaler.step(optimizer.second_step)
+                scaler.unscale_(optimizer)
+                optimizer.second_step(zero_grad=True)
                 scaler.update()
             else:
                 loss.backward()
