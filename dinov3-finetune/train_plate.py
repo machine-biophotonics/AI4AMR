@@ -589,9 +589,9 @@ def finetune_dino(config, encoder):
             current_lr = optimizer.base_optimizer.param_groups[0]['lr']
             
             logging.info(
-                f"Epoch: {epoch} - train loss: {avg_train_loss:.4f} - train acc: {train_acc:.4f} "
-                f"- val loss {metrics['val_loss'][-1]:.4f} - val acc: {metrics['val_acc'][-1]:.4f} "
-                f"- balanced acc: {current_balanced_acc:.4f} - val roc auc: {current_roc_auc:.4f} - LR: {current_lr:.2e} - early stop counter: {early_stopping_counter}/{config.patience}"
+                f"Epoch: {epoch} - train loss: {avg_train_loss:.4f} - train acc: {train_acc*100:.2f}% "
+                f"- val loss {metrics['val_loss'][-1]:.4f} - val acc: {metrics['val_acc'][-1]*100:.2f}% "
+                f"- balanced acc: {current_balanced_acc*100:.2f}% - val roc auc: {current_roc_auc*100:.2f}% - LR: {current_lr:.2e} - early stop counter: {early_stopping_counter}/{config.patience}"
             )
             
             # Write to CSV
