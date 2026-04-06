@@ -645,7 +645,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--r", type=int, default=8, help="LoRA rank")
     parser.add_argument("--size", type=str, default="large", help="DINOv3 size: small, base, large, huge")
-    parser.add_argument("--use_lora", action="store_true", default=True, help="Use LoRA")
+    parser.add_argument("--use_lora", action="store_true", default=False, help="Use LoRA (default: False, pure logistic regression)")
     parser.add_argument("--img_dim", type=int, nargs=2, default=(224, 224), help="Image dimensions (height width)")
     parser.add_argument("--lora_weights", type=str, default=None, help="Load LoRA weights from file")
     
