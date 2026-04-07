@@ -74,7 +74,12 @@ parser.add_argument('--center_loss_weight', type=float, default=0.001, help='Wei
 parser.add_argument('--train_guides', nargs='+', type=int, default=[1,2,3], help='Guides to use for training (default: 1 2 3)')
 parser.add_argument('--test_guide', type=int, default=None, help='Guide to use for testing (default: all)')
 parser.add_argument('--guide_experiment', type=int, choices=[1,2,3], help='Run guide experiment: 1=train on g1,g2 test g3, 2=train on g1,g3 test g2, 3=train on g2,g3 test g1')
+parser.add_argument('--debug', action='store_true', help='Enable debug logging for NaN detection')
 args = parser.parse_args()
+
+if args.debug:
+    DEBUG_LOG_FILE = os.path.join(SCRIPT_DIR, f'debug_nan_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+    print(f"Debug logging enabled: {DEBUG_LOG_FILE}")
 
 SEED = args.seed
 random.seed(SEED)
@@ -399,13 +404,34 @@ def get_combined_weights(labels, plates=None):
     return torch.tensor(weights, device=device)
 
 
+DEBUG_LOG_FILE = None
+
 def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.1):
     """Weighted Focal Loss with label smoothing (combined class and domain weights)."""
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
-    pt = torch.exp(-ce_loss)
-    focal = alpha * (1 - pt) ** gamma * ce_loss
+    
+    ce_clamped = ce_loss.clamp(min=1e-8, max=50.0)
+    pt = torch.exp(-ce_clamped)
+    pt = pt.clamp(min=1e-10, max=1.0 - 1e-10)
+    
+    focal = alpha * (1 - pt) ** gamma * ce_clamped
     weighted = focal * weights
-    return weighted.mean()
+    
+    loss = weighted.mean()
+    
+    if DEBUG_LOG_FILE and (torch.isnan(loss) or torch.isinf(loss)):
+        with open(DEBUG_LOG_FILE, 'a') as f:
+            f.write(f"[DEBUG] NaN/Inf detected!\n")
+            f.write(f"  ce_loss: min={ce_loss.min().item():.4f}, max={ce_loss.max().item():.4f}, mean={ce_loss.mean().item():.4f}\n")
+            f.write(f"  ce_clamped: min={ce_clamped.min().item():.4f}, max={ce_clamped.max().item():.4f}\n")
+            f.write(f"  pt: min={pt.min().item():.6f}, max={pt.max().item():.6f}\n")
+            f.write(f"  focal: min={focal.min().item():.4f}, max={focal.max().item():.4f}, mean={focal.mean().item():.4f}\n")
+            f.write(f"  weights: min={weights.min().item():.6f}, max={weights.max().item():.6f}\n")
+            f.write(f"  logits: min={logits.min().item():.4f}, max={logits.max().item():.4f}, mean={logits.mean().item():.4f}\n")
+            f.write(f"  Final loss: {loss.item()}\n")
+            f.write(f"  Is nan: {torch.isnan(loss).item()}, Is inf: {torch.isinf(loss).item()}\n")
+    
+    return loss
 
 
 class CenterLoss(nn.Module):
@@ -754,6 +780,24 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
+            # Debug: Check for NaN after first forward pass
+            if DEBUG_LOG_FILE and (torch.isnan(loss) or torch.isinf(loss)):
+                with open(DEBUG_LOG_FILE, 'a') as f:
+                    f.write(f"[Epoch {epoch}] NaN/Inf after first forward pass at batch {batch_idx}\n")
+                    f.write(f"  Loss value: {loss.item()}\n")
+                    f.write(f"  Outputs: min={outputs.min().item():.4f}, max={outputs.max().item():.4f}, mean={outputs.mean().item():.4f}\n")
+                    f.write(f"  Labels: {labels[:5].cpu().tolist()}\n")
+                    f.write(f"  Weights: {weights[:5].cpu().tolist()}\n")
+                    f.write(f"  Images stats: min={images.min().item():.4f}, max={images.max().item():.4f}\n")
+                    f.write(f"  Images grad: {images.requires_grad}\n")
+            
+            if torch.isnan(loss) or torch.isinf(loss):
+                with open(DEBUG_LOG_FILE or '/dev/null', 'a') as f:
+                    if DEBUG_LOG_FILE:
+                        f.write(f"[Epoch {epoch}] FATAL: NaN/Inf at batch {batch_idx}, breaking\n")
+                print(f"[Epoch {epoch}] NaN/Inf detected at batch {batch_idx}, stopping training")
+                break
+            
             if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -781,7 +825,20 @@ else:
                     total_loss = loss + args.center_loss_weight * center_loss
                     loss = total_loss
             
-            # SAM second pass: don't unscale again (already unscaled from first pass)
+            # Debug: Check for NaN after second forward pass
+            if DEBUG_LOG_FILE and (torch.isnan(loss) or torch.isinf(loss)):
+                with open(DEBUG_LOG_FILE, 'a') as f:
+                    f.write(f"[Epoch {epoch}] NaN/Inf after second forward pass at batch {batch_idx}\n")
+                    f.write(f"  Loss value: {loss.item()}\n")
+                    f.write(f"  Outputs: min={outputs.min().item():.4f}, max={outputs.max().item():.4f}, mean={outputs.mean().item():.4f}\n")
+            
+            if torch.isnan(loss) or torch.isinf(loss):
+                with open(DEBUG_LOG_FILE or '/dev/null', 'a') as f:
+                    if DEBUG_LOG_FILE:
+                        f.write(f"[Epoch {epoch}] FATAL: NaN/Inf at batch {batch_idx}, breaking\n")
+                print(f"[Epoch {epoch}] NaN/Inf detected at batch {batch_idx}, stopping training")
+                break
+            running_loss += loss.item()
             if scaler is not None:
                 scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -820,6 +877,11 @@ else:
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
         
+        # Check if NaN detected during training - skip epoch logging
+        if total == 0:
+            print(f"[Epoch {epoch}] No valid training batches (NaN detected), skipping epoch")
+            continue
+        
         avg_train_loss = running_loss / len(train_loader)
         train_acc = 100. * correct / total
         train_losses.append(avg_train_loss)
@@ -835,6 +897,13 @@ else:
                 outputs = model(images)
                 loss = nn.functional.cross_entropy(outputs, labels)
                 
+                # Debug: Check for NaN in validation
+                if DEBUG_LOG_FILE and (torch.isnan(loss) or torch.isinf(loss)):
+                    with open(DEBUG_LOG_FILE, 'a') as f:
+                        f.write(f"[Val Epoch {epoch}] NaN/Inf detected!\n")
+                        f.write(f"  Loss: {loss.item()}\n")
+                        f.write(f"  Outputs: min={outputs.min().item():.4f}, max={outputs.max().item():.4f}\n")
+                
                 probs = torch.softmax(outputs, dim=1)
                 running_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -846,6 +915,12 @@ else:
         
         all_probs = np.vstack(all_probs)
         avg_val_loss = running_loss / len(val_loader)
+        
+        # Check for NaN in validation
+        if np.isnan(avg_val_loss) or np.isinf(avg_val_loss):
+            print(f"[Epoch {epoch}] Validation loss is NaN/Inf, skipping epoch")
+            continue
+        
         val_acc = 100. * correct / total
         
         all_preds = np.array(all_preds)
