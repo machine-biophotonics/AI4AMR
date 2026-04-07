@@ -116,9 +116,15 @@ Each training run produces:
 │   ├── train.py                   # Training script
 │   └── plate_well_id_path.json    # 96-class labels
 │
-├── guide_effnet/                  # Guide generalization experiments
+├── guide_effnet/                  # Guide generalization (SAM)
 │   ├── train.py                   # Training with --guide_experiment
 │   └── plate_well_id_path.json
+│
+├── plate_fold/                    # Cross-validation (AdamW, no SAM)
+│   ├── train.py                   # Leave-one-plate-out CV
+│   └── fold_P{1-6}/               # Results per fold
+│
+├── sam_effnet_lr_fix/             # SAM + ReduceLROnPlateau scheduler
 │
 ├── dinov3-finetune/               # DINOv3 ViT-L fine-tuning
 │   ├── train_plate.py             # Main training script
@@ -143,20 +149,43 @@ Each training run produces:
 
 ## Training Features
 
-All models use:
-- **SAM optimizer** (Sharpness-Aware Minimization) wrapping AdamW
+All CNN models (sam_effnet, guide_effnet, plate_fold) use:
+- **SAM optimizer** (Sharpness-Aware Minimization) - except plate_fold uses basic AdamW
 - **Focal Loss** (α=0.25, γ=2.0)
 - **Domain weights** (per-plate, using n_d^-1/2)
 - **144 crops per image** (12×12 grid, 1 random crop per epoch)
-- **Strong augmentations**: Flips, rotation, affine, CLAHE, shadows, elastic, blur, noise
-- **GradScaler** for mixed precision training
+- **Basic augmentations**: Flips, rotation, affine, elastic, blur, noise
+- **GradScaler** for mixed precision (sam_effnet, guide_effnet)
 - **Center loss** (optional, with separate optimizer)
+
+## Plate Cross-Validation (plate_fold)
+
+Train on 4 plates, validate on 1, test on 1 (leave-one-out CV).
+
+```bash
+cd plate_fold
+
+# Run single fold (test on P6)
+python train.py \
+    --test_plate P6 \
+    --epochs 200 \
+    --batch_size 256
+
+# Run all 6 folds (each plate as test once)
+python train.py \
+    --run_all_folds \
+    --epochs 200 \
+    --batch_size 256
+```
+
+Each fold saves to `fold_P{1-6}/` subfolder.
 
 ## Comparison
 
-| Model | Backbone | Trainable Params | Feature Dim |
-|-------|----------|------------------|--------------|
-| sam_effnet | EfficientNet-B0 | ~5.3M | 1280 |
-| guide_effnet | EfficientNet-B0 | ~5.3M | 1280 |
-| dinov3-finetune LR | DINOv3 ViT-L | ~100K | 1024 |
-| dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | ~3M | 1024 |
+| Model | Backbone | Optimizer | Trainable Params | Feature Dim |
+|-------|----------|-----------|------------------|--------------|
+| sam_effnet | EfficientNet-B0 | SAM | ~5.3M | 1280 |
+| guide_effnet | EfficientNet-B0 | SAM | ~5.3M | 1280 |
+| plate_fold | EfficientNet-B0 | AdamW | ~5.3M | 1280 |
+| dinov3-finetune LR | DINOv3 ViT-L | SAM | ~100K | 1024 |
+| dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | SAM | ~3M | 1024 |
