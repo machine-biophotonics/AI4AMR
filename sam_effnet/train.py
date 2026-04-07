@@ -164,84 +164,29 @@ class GrayscaleMixedCropDataset(Dataset):
         import albumentations as A
         from albumentations.pytorch import ToTensorV2
         
-        # Build transform list dynamically - STANDARD/HIGHER AUGMENTATION
-        transforms_list = [
-            # === SYMMETRY TRANSFORMS ===
-            # Flips and rotations (bacterial colonies have radial symmetry)
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
-            # Full 360 degree rotation (standard probability)
-            A.Rotate(limit=360, p=0.5),
-            # Affine transformations (translate, scale, rotate) - standard
-            A.Affine(translate_percent={'x': (-0.15, 0.15), 'y': (-0.15, 0.15)},
-                     scale={'x': (0.85, 1.15), 'y': (0.85, 1.15)}, rotate=(-20, 20), p=0.5),
-            
-            # === RANDOM RESIZE CROP (only for large crops >= 512) ===
-            # Simulates different zoom levels - useful for 544 crop but not needed for smaller
-        ]
-        
-        if crop_size >= 512:
-            transforms_list.append(
-                A.RandomResizedCrop(size=(crop_size, crop_size), scale=(0.8, 1.0), ratio=(0.9, 1.1), p=0.3)
-            )
-        
-        transforms_list.extend([
-            # === LIGHTING & CONTRAST (grayscale-appropriate) ===
-            # CLAHE - enhances local contrast (great for microscopy) - standard
-            A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
-            # Random brightness/contrast - standard
-            A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=0.4),
-            # Random gamma - standard
-            A.RandomGamma(gamma_limit=(70, 130), p=0.25),
-            # Histogram equalization (global contrast) - standard
-            A.Equalize(p=0.1),
-            
-            # === SHADOW SIMULATION ===
-            A.RandomShadow(shadow_roi=(0.3, 0.3, 0.7, 0.7), num_shadows_limit=(1, 3), shadow_dimension=5, shadow_intensity_range=(0.3, 0.5), p=0.2),
-            
-            # === GEOMETRIC DEFORMATIONS (standard severity) ===
-            # Colony deformation and camera angle variations - standard
-            A.SomeOf([
-                A.ElasticTransform(alpha=50, sigma=5, p=1.0),
-                A.Perspective(scale=(0.02, 0.05), p=1.0),
-                A.GridDistortion(num_steps=5, distort_limit=0.1, p=1.0),
-                A.OpticalDistortion(distort_limit=0.05, p=1.0),
-            ], n=1, replace=False, p=0.4),
-            
-            # === NOISE & BLUR (standard) ===
-            # Sensor noise and out-of-focus blur - standard
-            A.SomeOf([
-                A.GaussNoise(std_range=(0.1, 0.2), per_channel=False, p=1.0),
-                A.GaussianBlur(blur_limit=(3, 7), p=1.0),
-                A.MotionBlur(blur_limit=5, p=1.0),
-            ], n=1, replace=False, p=0.4),
-            
-            # === PIXEL DROPOUT ===
-            # Random pixel dropout - standard
-            A.PixelDropout(dropout_prob=0.05, drop_value=0, p=0.15),
-            
-            # === NOISE ARTIFACTS (standard) ===
-            # Additional grayscale-compatible noise augmentations - standard
-            A.SaltAndPepper(p=0.2),
-            A.ISONoise(p=0.15),
-            
-            # === ERASING (standard) ===
-            # Random erasing for occlusion robustness - standard
-            A.Erasing(p=0.2),
-            
-            # === QUALITY ARTIFACTS (standard) ===
-            # Image compression and dropout - standard
-            A.ImageCompression(quality_range=(80, 100), p=0.3),
-            A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.3),
-            
-            # === NORMALIZATION ===
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2(),
-        ])
-        
         if augment:
-            self.transform = A.Compose(transforms_list)
+            self.transform = A.Compose([
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomRotate90(p=0.5),
+                A.Affine(translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
+                         scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)}, rotate=(-15, 15), p=0.5),
+                A.SomeOf([
+                    A.ElasticTransform(alpha=50, sigma=5, p=1.0),
+                    A.Perspective(scale=(0.02, 0.05), p=1.0),
+                    A.GridDistortion(num_steps=5, distort_limit=0.1, p=1.0),
+                    A.OpticalDistortion(distort_limit=0.05, p=1.0),
+                ], n=1, replace=False, p=0.5),
+                A.SomeOf([
+                    A.GaussNoise(std_range=(0.05, 0.15), per_channel=False, p=1.0),
+                    A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+                    A.MotionBlur(blur_limit=3, p=1.0),
+                ], n=1, replace=False, p=0.5),
+                A.ImageCompression(quality_range=(85, 100), p=0.3),
+                A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.4),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2(),
+            ])
         else:
             self.transform = A.Compose([
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
