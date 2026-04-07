@@ -911,11 +911,15 @@ else:
             all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
             per_class_auc = []
             for i in range(num_classes):
-                if all_labels_bin[:, i].sum() > 0:
-                    fpr, tpr, _ = roc_curve(all_labels_bin[:, i], all_probs[:, i])
-                    per_class_auc.append(auc(fpr, tpr))
+                # Skip classes with no positive samples
+                if all_labels_bin[:, i].sum() > 0 and all_probs[:, i].std() > 0:
+                    try:
+                        fpr, tpr, _ = roc_curve(all_labels_bin[:, i], all_probs[:, i])
+                        per_class_auc.append(auc(fpr, tpr))
+                    except:
+                        per_class_auc.append(0.5)  # Default for edge cases
                 else:
-                    per_class_auc.append(0)
+                    per_class_auc.append(0.5)  # Default for missing/no-variance classes
             mean_val_auc = np.mean(per_class_auc)
         except Exception as e:
             print(f"Warning: Could not compute ROC AUC: {e}")
@@ -929,7 +933,7 @@ else:
         val_accs.append(val_acc)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, Val ROC AUC={mean_val_auc:.4f}, LR={current_lr:.2e}")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc*100:.2f}%, Val ROC AUC={mean_val_auc*100:.2f}%, LR={current_lr:.2e}")
         
         # Write to CSV
         with open(csv_path, 'a', newline='') as f:

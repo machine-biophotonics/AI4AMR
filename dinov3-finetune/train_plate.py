@@ -499,11 +499,11 @@ def finetune_dino(config, encoder):
             
             scaler.scale(loss).backward()
             
-            # Clip gradients BEFORE unscale - more stable with LoRA
+            # Clip gradients AFTER unscale - CORRECT order (matching sam_effnet)
+            scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
             # SAM first step (perturb weights)
-            scaler.unscale_(optimizer)
             optimizer.first_step(zero_grad=True)
             
             # SAM: Second forward-backward pass with perturbed weights

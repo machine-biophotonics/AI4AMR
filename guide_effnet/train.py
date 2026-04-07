@@ -929,7 +929,7 @@ else:
         val_accs.append(val_acc)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, Val ROC AUC={mean_val_auc:.4f}, LR={current_lr:.2e}")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc*100:.2f}%, Val ROC AUC={mean_val_auc*100:.2f}%, LR={current_lr:.2e}")
         
         # Write to CSV
         with open(csv_path, 'a', newline='') as f:
