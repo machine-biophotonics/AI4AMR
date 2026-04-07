@@ -50,8 +50,8 @@ print(f"PyTorch version: {torch.__version__}")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# GradScaler for mixed precision training
-scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+# GradScaler for mixed precision training (lower init_scale for SAM stability)
+scaler = torch.amp.GradScaler('cuda', init_scale=1024) if device.type == 'cuda' else None
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
@@ -66,6 +66,7 @@ parser.add_argument('--resume_csv', type=str, default=None, help='Continue writi
 parser.add_argument('--test_only', action='store_true', help='Only run test evaluation (use with --resume)')
 parser.add_argument('--rho', type=float, default=0.1, help='SAM perturbation radius (0.1 for SAM, 2.0 for ASAM)')
 parser.add_argument('--adaptive', action='store_true', help='Use Adaptive SAM (ASAM)')
+parser.add_argument('--gradient_clip', type=float, default=0.5, help='Gradient clipping norm (default: 0.5 for stability)')
 parser.add_argument('--exclude_classes', nargs='*', default=[], help='List of class names to exclude from train/val/test')
 parser.add_argument('--crop_size', type=int, default=224, help='Crop size for training (default: 224)')
 parser.add_argument('--grid_size', type=int, default=12, help='Grid size for crops (default: 12x12)')
@@ -801,11 +802,11 @@ else:
             if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.gradient_clip)
                 optimizer.first_step(zero_grad=True)
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.gradient_clip)
                 optimizer.first_step()
             
             # Second forward-backward pass (SAM)
@@ -836,17 +837,23 @@ else:
                 with open(DEBUG_LOG_FILE or '/dev/null', 'a') as f:
                     if DEBUG_LOG_FILE:
                         f.write(f"[Epoch {epoch}] FATAL: NaN/Inf at batch {batch_idx}, breaking\n")
-                print(f"[Epoch {epoch}] NaN/Inf detected at batch {batch_idx}, stopping training")
+                print(f"[Epoch {epoch}] NaN/Inf detected at batch {batch_idx}, reducing rho and continuing")
+                # Reduce rho for SAM to reduce perturbation magnitude
+                args.rho = max(0.01, args.rho * 0.5)
+                # Update optimizer's rho if using SAM
+                if hasattr(optimizer, 'rho'):
+                    optimizer.rho = args.rho
+                print(f"  Reduced rho to {args.rho}")
                 break
             running_loss += loss.item()
             if scaler is not None:
                 scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.gradient_clip)
                 optimizer.second_step(zero_grad=True)
                 scaler.update()  # Update at end of both SAM passes
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.gradient_clip)
                 optimizer.second_step()
             
             # Update center loss separately (not with SAM) - using stored features from second pass

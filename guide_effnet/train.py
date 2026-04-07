@@ -66,6 +66,7 @@ parser.add_argument('--resume_csv', type=str, default=None, help='Continue writi
 parser.add_argument('--test_only', action='store_true', help='Only run test evaluation (use with --resume)')
 parser.add_argument('--rho', type=float, default=0.1, help='SAM perturbation radius (0.1 for SAM, 2.0 for ASAM)')
 parser.add_argument('--adaptive', action='store_true', help='Use Adaptive SAM (ASAM)')
+parser.add_argument('--gradient_clip', type=float, default=0.5, help='Gradient clipping norm (default: 0.5 for stability)')
 parser.add_argument('--exclude_classes', nargs='*', default=[], help='List of class names to exclude from train/val/test')
 parser.add_argument('--crop_size', type=int, default=224, help='Crop size for training (default: 224)')
 parser.add_argument('--grid_size', type=int, default=12, help='Grid size for crops (default: 12x12)')
