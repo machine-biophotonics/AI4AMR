@@ -91,6 +91,8 @@ plate_fold/fold_*/
 plate_fold/aggregate/
 plate_fold/*.xlsx
 plate_fold/*.txt
+plate_fold/train test results/
 !plate_fold/classes.txt
 !plate_fold/all_folds_*.png
 !plate_fold/all_folds_*.csv
+!plate_fold/plot_fold_comparison.py

@@ -243,6 +243,19 @@ cd plate_fold
 python train.py --plot_fold_comparison
 ```
 
-Output:
-- `all_folds_train_val_comparison.png` - Combined plot with mean ± std
-- `all_folds_metrics_summary.csv` - Per-epoch metrics table
+- `all_folds_train_val_comparison.png` - Train vs Val accuracy with std across P1-P6
+- `all_folds_metrics_summary.csv` - Per-epoch metrics
+
+## Comprehensive Fold Analysis
+
+Generate detailed analysis with accuracy, LR decay, and per-class metrics:
+
+```bash
+cd plate_fold
+python plot_fold_comparison.py
+```
+
+Output in `train test results/`:
+- `accuracy_lr_comparison.png` - Train/Val accuracy + LR decay (y-axis limited to max achieved)
+- `per_class_metrics.png` - Per-class accuracy and precision with std across folds
+- `per_class_metrics.csv` - CSV of per-class metrics
