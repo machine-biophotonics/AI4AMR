@@ -7,6 +7,9 @@ Trains on 96 guide-level classes (including WT and NC controls)
 import argparse
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import torch
 from torch import nn
 import torchvision
@@ -17,8 +20,6 @@ import os
 import glob
 import json
 import re
-import matplotlib.pyplot as plt
-import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score, roc_auc_score
 from sklearn.preprocessing import label_binarize
 from typing import Optional, List, Dict
@@ -62,7 +63,104 @@ parser.add_argument('--resume', type=str, default=None, help='Resume from checkp
 parser.add_argument('--test_only', action='store_true', help='Only run test evaluation (use with --resume)')
 parser.add_argument('--test_plate', type=str, default='P6', help='Plate to use for test (other plates as train+val)')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds (each plate as test once)')
+parser.add_argument('--plot_fold_comparison', action='store_true', help='Generate combined plot of all folds')
 args = parser.parse_args()
+
+
+def plot_all_folds_comparison(folds_list, output_dir):
+    """Generate combined plot with train/val accuracy across all folds with std deviation."""
+    import seaborn as sns
+    
+    all_data = []
+    
+    for test_plate in folds_list:
+        fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+        csv_files = glob.glob(os.path.join(fold_dir, 'training_metrics_*.csv'))
+        
+        if not csv_files:
+            print(f"Warning: No training_metrics CSV found for fold {test_plate}")
+            continue
+        
+        csv_path = csv_files[0]
+        df = pd.read_csv(csv_path)
+        
+        for epoch in range(len(df)):
+            all_data.append({
+                'fold': test_plate,
+                'epoch': epoch,
+                'train_acc': df.iloc[epoch]['train_acc'],
+                'val_acc': df.iloc[epoch]['val_acc'],
+            })
+    
+    if not all_data:
+        print("No data found for plotting")
+        return
+    
+    plot_df = pd.DataFrame(all_data)
+    
+    epochs = sorted(plot_df['epoch'].unique())
+    
+    train_means = []
+    train_stds = []
+    val_means = []
+    val_stds = []
+    
+    for epoch in epochs:
+        epoch_data = plot_df[plot_df['epoch'] == epoch]
+        train_means.append(epoch_data['train_acc'].mean())
+        train_stds.append(epoch_data['train_acc'].std())
+        val_means.append(epoch_data['val_acc'].mean())
+        val_stds.append(epoch_data['val_acc'].std())
+    
+    train_means = np.array(train_means)
+    train_stds = np.array(train_stds)
+    val_means = np.array(val_means)
+    val_stds = np.array(val_stds)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    epochs_arr = np.array(epochs)
+    ax.fill_between(epochs_arr, train_means - train_stds, train_means + train_stds, 
+                    alpha=0.2, color='blue')
+    ax.plot(epochs_arr, train_means, 'b-', linewidth=2, label='Train Accuracy')
+    
+    ax.fill_between(epochs_arr, val_means - val_stds, val_means + val_stds, 
+                    alpha=0.2, color='orange')
+    ax.plot(epochs_arr, val_means, 'orange', linewidth=2, label='Validation Accuracy')
+    
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Accuracy (%)', fontsize=12)
+    ax.set_title(f'Train vs Validation Accuracy (n={len(folds_list)} folds)\nMean ± Std Dev', fontsize=14)
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, max(epochs))
+    ax.set_ylim(0, 100)
+    
+    plt.tight_layout()
+    output_path = os.path.join(output_dir, 'all_folds_train_val_comparison.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Saved: {output_path}")
+    
+    summary_df = pd.DataFrame({
+        'epoch': epochs,
+        'train_acc_mean': train_means,
+        'train_acc_std': train_stds,
+        'val_acc_mean': val_means,
+        'val_acc_std': val_stds,
+    })
+    summary_path = os.path.join(output_dir, 'all_folds_metrics_summary.csv')
+    summary_df.to_csv(summary_path, index=False)
+    print(f"Saved: {summary_path}")
+
+
+if args.plot_fold_comparison:
+    all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+    print("Generating combined fold comparison plot...")
+    plot_all_folds_comparison(all_plates, SCRIPT_DIR)
+    print("Done!")
+    exit(0)
 
 # Create output subfolder for this fold
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{args.test_plate}')

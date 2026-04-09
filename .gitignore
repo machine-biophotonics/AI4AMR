@@ -92,3 +92,5 @@ plate_fold/aggregate/
 plate_fold/*.xlsx
 plate_fold/*.txt
 !plate_fold/classes.txt
+!plate_fold/all_folds_*.png
+!plate_fold/all_folds_*.csv

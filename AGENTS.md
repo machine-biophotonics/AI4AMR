@@ -233,3 +233,16 @@ Each plot shows: `{n_above_50}/{n} > 50%, {n_above_random}/{n} > Random({baselin
 Options:
 - `--family` - Group by gene families (dnaB+dnaE→dna, secA+secY→sec, etc.)
 - `--guide` - Guide-level only
+
+## Fold Comparison Plot
+
+Generate combined train/val accuracy plot across all folds with std deviation:
+
+```bash
+cd plate_fold
+python train.py --plot_fold_comparison
+```
+
+Output:
+- `all_folds_train_val_comparison.png` - Combined plot with mean ± std
+- `all_folds_metrics_summary.csv` - Per-epoch metrics table

@@ -190,6 +190,16 @@ python generate_combined_confusion.py \
 
 Each plot shows: `{n_above_50}/{n} > 50%, {n_above_random}/{n} > Random({baseline}%)`
 
+## Fold Comparison Plot
+
+```bash
+cd plate_fold
+python train.py --plot_fold_comparison
+```
+
+- `all_folds_train_val_comparison.png` - Train vs Val accuracy with std across P1-P6
+- `all_folds_metrics_summary.csv` - Per-epoch metrics
+
 ## Project Structure
 
 ```
