@@ -99,9 +99,18 @@ if args.run_all_folds:
         # Run training for this fold (skip if already done)
         OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
         best_model_path = os.path.join(OUTPUT_DIR, 'best_model.pth')
+        result_file = os.path.join(OUTPUT_DIR, 'training_results.json')
         
-        if os.path.exists(best_model_path):
-            print(f"Fold {test_plate} already complete, skipping...")
+        print(f"[Fold {test_plate}] Checking: {best_model_path}")
+        
+        if os.path.exists(best_model_path) and os.path.exists(result_file):
+            print(f"Fold {test_plate} already complete (found best_model.pth and training_results.json), skipping...")
+            # Still load results for summary
+            try:
+                with open(result_file, 'r') as f:
+                    fold_results.append(json.load(f))
+            except:
+                pass
             continue
         
         # Create fresh script to run this fold

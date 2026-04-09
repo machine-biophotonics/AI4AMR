@@ -85,3 +85,10 @@ dinov3-finetune/output/*.csv
 dinov3-finetune/output/*.json
 dinov3-finetune/output/*.pt
 dinov3-finetune/output/*.png
+
+# plate_fold outputs
+plate_fold/fold_*/
+plate_fold/aggregate/
+plate_fold/*.xlsx
+plate_fold/*.txt
+!plate_fold/classes.txt

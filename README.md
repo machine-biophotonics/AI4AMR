@@ -150,12 +150,45 @@ All models use identical augmentation pipeline:
 
 ## Model Comparison
 
-| Model | Backbone | Trainable Params | Feature Dim |
-|-------|----------|------------------|--------------|
-| sam_effnet | EfficientNet-B0 | ~5.3M | 1280 |
-| guide_effnet | EfficientNet-B0 | ~5.3M | 1280 |
-| dinov3-finetune LR | DINOv3 ViT-L | ~100K | 1024 |
-| dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | ~3M | 1024 |
+| Model | Backbone | Optimizer | Trainable Params | Feature Dim |
+|-------|----------|-----------|------------------|--------------|
+| sam_effnet | EfficientNet-B0 | SAM | ~5.3M | 1280 |
+| guide_effnet | EfficientNet-B0 | SAM | ~5.3M | 1280 |
+| plate_fold | EfficientNet-B0 | AdamW | ~5.3M | 1280 |
+| dinov3-finetune LR | DINOv3 ViT-L | SAM | ~100K | 1024 |
+| dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | SAM | ~3M | 1024 |
+
+## Plate Cross-Validation (plate_fold)
+
+Leave-one-plate-out cross-validation for robust evaluation.
+
+```bash
+cd plate_fold
+
+# Run single fold (test on P6)
+python train.py \
+    --test_plate P6 \
+    --epochs 200 \
+    --batch_size 256
+
+# Run all 6 folds (each plate as test once)
+python train.py \
+    --run_all_folds \
+    --epochs 200 \
+    --batch_size 256
+
+# Generate aggregate confusion matrices
+python generate_combined_confusion.py \
+    --folds P1,P2,P3,P4,P5,P6 \
+    --family
+```
+
+### Confusion Matrix Outputs
+- `binary_cm_*` - Binary: 1 if accuracy > 50%, 0 otherwise (Blues colormap)
+- `raw_cm_*` - Raw prediction counts  
+- `percent_cm_*` - Normalized percentages
+
+Each plot shows: `{n_above_50}/{n} > 50%, {n_above_random}/{n} > Random({baseline}%)`
 
 ## Project Structure
 
@@ -165,6 +198,24 @@ All models use identical augmentation pipeline:
 │   ├── train.py                   # Training script
 │   ├── plate_well_id_path.json    # 96-class labels
 │   └── trial_1_144_crops/         # Best results (~22.9% well acc)
+│
+├── guide_effnet/                  # Guide generalization experiments
+│   ├── train.py                   # Training with --guide_experiment
+│   ├── plate_well_id_path.json
+│   └── classes.txt
+│
+├── plate_fold/                    # Leave-one-plate-out cross-validation
+│   ├── train.py                   # Training with fold logic
+│   ├── predict_fold.py            # Prediction script
+│   ├── generate_combined_confusion.py  # Aggregate confusion matrices
+│   ├── classes.txt                # 96 class labels
+│   └── fold_P{1-6}/               # Results per fold
+│
+├── dinov3-finetune/               # DINOv3 ViT-L fine-tuning
+│   ├── train_plate.py             # Main training script
+│   ├── dino_finetune/
+│   │   └── plate_dataset.py       # Dataset with augmentations
+│   └── output/                    # Saved models and metrics
 │
 ├── guide_effnet/                  # Guide generalization experiments
 │   ├── train.py                   # Training with --guide_experiment

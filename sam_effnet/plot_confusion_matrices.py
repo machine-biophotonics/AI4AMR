@@ -250,7 +250,9 @@ def main():
     if args.csv:
         csv_path = args.csv
     else:
-        csv_path = os.path.join(SCRIPT_DIR, 'crop_predictions_544_5.csv')
+        csv_path = os.path.join(SCRIPT_DIR, 'crop_predictions.csv')
+        if not os.path.exists(csv_path):
+            csv_path = os.path.join(SCRIPT_DIR, 'crop_predictions_544_5.csv')
         if not os.path.exists(csv_path):
             csv_path = os.path.join(SCRIPT_DIR, 'crop_predictions_full.csv')
         if not os.path.exists(csv_path):
@@ -342,11 +344,20 @@ def main():
         pred_counts = Counter(group['predicted_class_name'].values)
         majority_pred = pred_counts.most_common(1)[0][0]
         
-        # Mean probability
-        probs_list = [np.array(json.loads(p)) for p in group['probs_json'].values]
-        mean_probs = np.mean(probs_list, axis=0)
-        mean_pred_idx = np.argmax(mean_probs)
-        mean_pred = idx_to_label.get(mean_pred_idx, 'Unknown')
+        # Mean probability - check for probs_json or probs column
+        if 'probs_json' in group.columns:
+            probs_list = [np.array(json.loads(p)) for p in group['probs_json'].values]
+        elif 'probs' in group.columns:
+            probs_list = [np.array(p) for p in group['probs'].values]
+        else:
+            probs_list = None
+        
+        if probs_list is not None:
+            mean_probs = np.mean(probs_list, axis=0)
+            mean_pred_idx = np.argmax(mean_probs)
+            mean_pred = idx_to_label.get(mean_pred_idx, 'Unknown')
+        else:
+            mean_pred = None
         
         image_results.append({
             'image_name': img_name,
