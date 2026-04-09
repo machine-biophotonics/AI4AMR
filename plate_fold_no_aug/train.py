@@ -162,11 +162,10 @@ if args.plot_fold_comparison:
     print("Done!")
     exit(0)
 
-# Create output subfolder for this fold (skip if run_all_folds - will be set in loop)
-if not args.run_all_folds:
-    OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{args.test_plate}')
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print(f"Output directory: {OUTPUT_DIR}")
+# Create output subfolder for this fold
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{args.test_plate}')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"Output directory: {OUTPUT_DIR}")
 
 # Determine train/val/test plates based on test_plate
 all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
@@ -191,26 +190,12 @@ if args.run_all_folds:
         fold_train = train_val[:4]
         fold_val = train_val[4:]
         
-        # Update args for this fold
+# Update args for this fold
         args.test_plate = test_plate
         args.resume = None
         
-        # Run training for this fold (skip if already done)
+        # Set output directory for this fold
         OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
-        best_model_path = os.path.join(OUTPUT_DIR, 'best_model.pth')
-        result_file = os.path.join(OUTPUT_DIR, 'training_results.json')
-        
-        print(f"[Fold {test_plate}] Checking: {best_model_path}")
-        
-        if os.path.exists(best_model_path) and os.path.exists(result_file):
-            print(f"Fold {test_plate} already complete (found best_model.pth and training_results.json), skipping...")
-            # Still load results for summary
-            try:
-                with open(result_file, 'r') as f:
-                    fold_results.append(json.load(f))
-            except:
-                pass
-            continue
         
         # Create fresh script to run this fold
         import subprocess
@@ -329,24 +314,11 @@ class GrayscaleMixedCropDataset(Dataset):
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomRotate90(p=0.5),
-                A.Affine(translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
-                         scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)}, rotate=(-15, 15), p=0.5),
-                # Geometric transforms simulating colony deformation and camera angles
-                A.SomeOf([
-                    A.ElasticTransform(alpha=50, sigma=5, p=1.0),
-                    A.Perspective(scale=(0.02, 0.05), p=1.0),
-                    A.GridDistortion(num_steps=5, distort_limit=0.1, p=1.0),
-                    A.OpticalDistortion(distort_limit=0.05, p=1.0),
-                ], n=1, replace=False, p=0.5),
-                # Noise and blur (tighter ranges for microscopy)
-                A.SomeOf([
-                    A.GaussNoise(std_range=(0.05, 0.15), per_channel=False, p=1.0),
-                    A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-                    A.MotionBlur(blur_limit=3, p=1.0),
-                ], n=1, replace=False, p=0.5),
-                # Image quality artifacts
-                A.ImageCompression(quality_range=(85, 100), p=0.3),
-                A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.4),
+                A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, 
+                        rotate=(-10, 10), p=0.5),
+                A.GaussNoise(std_range=(0.02, 0.08), per_channel=False, p=0.3),
+                A.GaussianBlur(blur_limit=(3, 5), p=0.3),
+                A.CoarseDropout(num_holes_range=(1, 2), hole_height_range=(16, 32), hole_width_range=(16, 32), p=0.3),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
