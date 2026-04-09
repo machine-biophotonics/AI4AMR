@@ -142,11 +142,17 @@ def plot_binary_cm(cm_sum, labels, title, output_path):
     import seaborn as sns
     
     # Create binary matrix based on 50% threshold (actual performance)
+    # Diagonal: 1 if class accuracy > 50%
+    # Off-diagonal: 1 if prediction rate > 50%
     diagonal_acc = np.diag(cm_sum)
     cm_binary = np.zeros((n, n))
     for i in range(n):
         if diagonal_acc[i] > 0.5:
             cm_binary[i, i] = 1  # Only mark diagonal as 1 if >50% accuracy
+        # Off-diagonal: mark predictions that happen >50% of the time
+        for j in range(n):
+            if i != j and cm_sum[i, j] > 0.5:
+                cm_binary[i, j] = 1
     
     # Random baseline = 1/n, and 50% threshold
     random_baseline = 1.0 / n

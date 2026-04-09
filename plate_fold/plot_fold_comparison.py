@@ -40,7 +40,7 @@ def load_all_fold_data():
         if csv_files:
             fold_metrics[test_plate] = pd.read_csv(csv_files[0])
         
-        # Load per-class metrics CSV instead of processing predictions
+        # Load per-class metrics CSV 
         per_class_file = os.path.join(fold_dir, 'per_class_metrics.csv')
         if os.path.exists(per_class_file):
             fold_predictions[test_plate] = pd.read_csv(per_class_file)
@@ -48,7 +48,51 @@ def load_all_fold_data():
     return fold_metrics, fold_predictions
 
 
-def plot_accuracy_with_std(fold_metrics, output_dir):
+def compute_roc_pr_from_predictions():
+    """Compute ROC AUC and Precision/Recall from predictions.csv."""
+    from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score, roc_auc_score
+    from sklearn.preprocessing import label_binarize
+    
+    import json
+    all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+    
+    all_fold_results = {}
+    
+    for test_plate in all_plates:
+        fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+        pred_file = os.path.join(fold_dir, 'predictions.csv')
+        
+        if not os.path.exists(pred_file):
+            print(f"   WARNING: No predictions.csv for {test_plate}")
+            continue
+        
+        print(f"   Processing {test_plate}...")
+        df = pd.read_csv(pred_file)
+        
+        # Group by image_name and aggregate predictions
+        image_results = []
+        for img_name, group in df.groupby('image_name'):
+            true_label = group['ground_truth_label'].iloc[0]
+            true_idx = group['ground_truth_idx'].iloc[0]
+            
+            # Average probabilities across all crops for this image
+            probs_list = [json.loads(p) for p in group['probs'].values]
+            avg_probs = np.mean(probs_list, axis=0)
+            pred_idx = np.argmax(avg_probs)
+            conf = np.max(avg_probs)
+            
+            image_results.append({
+                'image_name': img_name,
+                'true_label': true_label,
+                'true_idx': int(true_idx),
+                'pred_idx': int(pred_idx),
+                'confidence': float(conf),
+                'probs': avg_probs.tolist(),
+            })
+        
+        all_fold_results[test_plate] = image_results
+    
+    return all_fold_results
     """Plot train/val accuracy with std - x-axis limited to max achieved."""
     all_data = []
     
@@ -148,50 +192,119 @@ def compute_roc_per_class(predictions, num_classes):
     return auc_per_class
 
 
-def plot_roc_comparison(fold_predictions, output_dir):
-    """Plot average ROC curve across folds with std deviation."""
-    if not fold_predictions:
+def plot_roc_comparison_from_predictions(all_fold_results, output_dir):
+    """Plot ROC curve and compute AUC from predictions."""
+    from sklearn.metrics import roc_curve, auc, roc_auc_score
+    from sklearn.preprocessing import label_binarize
+    
+    if not all_fold_results:
         print("No predictions found for ROC plot")
-        return
+        return None, None
     
-    num_classes = len(fold_predictions[list(fold_predictions.keys())[0]][0]['avg_probs'])
+    all_plates = list(all_fold_results.keys())
+    num_classes = 96
     
-    all_fold_tprs = []
-    all_fold_aucs = []
+    all_fold_aucs = {}
+    all_fold_precision = {}
+    all_fold_recall = {}
     
-    for test_plate, preds in fold_predictions.items():
-        y_true = np.array([p['true_label'] for p in preds])
-        y_probs = np.array([p['avg_probs'] for p in preds])
+    for test_plate, preds in all_fold_results.items():
+        y_true = np.array([p['true_idx'] for p in preds])
+        y_probs = np.array([p['probs'] for p in preds])
+        y_pred = np.array([p['pred_idx'] for p in preds])
+        
         y_bin = label_binarize(y_true, classes=list(range(num_classes)))
         
-        # Compute ROC for each class
-        fpr_grid = np.linspace(0, 1, 100)
-        tprs_interp = []
-        aucs = []
+        # Per-class AUC
+        class_aucs = []
+        class_prec = []
+        class_rec = []
         
         for i in range(num_classes):
             if y_bin[:, i].sum() > 0:
+                try:
+                    class_aucs.append(roc_auc_score(y_bin[:, i], y_probs[:, i]))
+                except:
+                    class_aucs.append(np.nan)
+            else:
+                class_aucs.append(np.nan)
+            
+            # Precision/Recall for this class
+            tp = ((y_pred == i) & (y_true == i)).sum()
+            fp = ((y_pred == i) & (y_true != i)).sum()
+            fn = ((y_pred != i) & (y_true == i)).sum()
+            
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0
+            rec = tp / (tp + fn) if (tp + fn) > 0 else 0
+            class_prec.append(prec)
+            class_rec.append(rec)
+        
+        all_fold_aucs[test_plate] = class_aucs
+        all_fold_precision[test_plate] = class_prec
+        all_fold_recall[test_plate] = class_rec
+    
+    # Compute mean and std across folds
+    mean_auc = np.nanmean([all_fold_aucs[p] for p in all_plates], axis=0)
+    std_auc = np.nanstd([all_fold_aucs[p] for p in all_plates], axis=0)
+    
+    mean_prec = np.nanmean([all_fold_precision[p] for p in all_plates], axis=0)
+    std_prec = np.nanstd([all_fold_precision[p] for p in all_plates], axis=0)
+    
+    mean_rec = np.nanmean([all_fold_recall[p] for p in all_plates], axis=0)
+    std_rec = np.nanstd([all_fold_recall[p] for p in all_plates], axis=0)
+    
+    # Get class names
+    classes_path = os.path.join(SCRIPT_DIR, 'classes.txt')
+    if os.path.exists(classes_path):
+        idx_to_class = {}
+        with open(classes_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 2:
+                    idx_to_class[int(parts[0])] = parts[1]
+    else:
+        idx_to_class = {i: f"Class_{i}" for i in range(num_classes)}
+    
+    class_names = [idx_to_class.get(i, f"Class_{i}") for i in range(num_classes)]
+    
+    # Compute macro-average metrics
+    macro_auc = np.nanmean(mean_auc)
+    macro_auc_std = np.nanstd(mean_auc)
+    macro_prec = np.nanmean(mean_prec)
+    macro_rec = np.nanmean(mean_rec)
+    
+    # Compute std for macro metrics across folds
+    macro_prec_std = np.nanstd([np.nanmean(all_fold_precision[p]) for p in all_plates])
+    macro_rec_std = np.nanstd([np.nanmean(all_fold_recall[p]) for p in all_plates])
+    
+    print(f"   Macro ROC-AUC: {macro_auc:.4f} ± {macro_auc_std:.4f}")
+    print(f"   Macro Precision: {macro_prec:.4f}")
+    print(f"   Macro Recall: {macro_rec:.4f}")
+    
+    # Plot ROC curve
+    fpr_grid = np.linspace(0, 1, 100)
+    
+    # Compute macro TPR
+    all_tprs = []
+    for test_plate, preds in all_fold_results.items():
+        y_true = np.array([p['true_idx'] for p in preds])
+        y_probs = np.array([p['probs'] for p in preds])
+        y_bin = label_binarize(y_true, classes=list(range(num_classes)))
+        
+        tprs_interp = []
+        for i in range(num_classes):
+            if y_bin[:, i].sum() > 0:
                 fpr, tpr, _ = roc_curve(y_bin[:, i], y_probs[:, i])
-                tpr_interp = np.interp(fpr_grid, fpr, tpr)
-                tpr_interp[0] = 0.0
-                tprs_interp.append(tpr_interp)
-                aucs.append(auc(fpr, tpr))
+                tpr_interp.append(np.interp(fpr_grid, fpr, tpr))
+            else:
+                tpr_interp.append(np.zeros_like(fpr_grid))
         
         mean_tpr = np.mean(tprs_interp, axis=0)
         mean_tpr[-1] = 1.0
-        all_fold_tprs.append(mean_tpr)
-        all_fold_aucs.append(aucs)
+        all_tprs.append(mean_tpr)
     
-    # Compute mean and std across folds
-    all_fold_tprs = np.array(all_fold_tprs)
-    mean_tpr = np.mean(all_fold_tprs, axis=0)
-    std_tpr = np.std(all_fold_tprs, axis=0)
-    
-    all_fold_aucs = np.array(all_fold_aucs)
-    mean_auc_per_class = np.nanmean(all_fold_aucs, axis=0)
-    std_auc_per_class = np.nanstd(all_fold_aucs, axis=0)
-    macro_auc = np.nanmean(mean_auc_per_class)
-    macro_auc_std = np.nanstd(mean_auc_per_class)
+    mean_tpr = np.mean(all_tprs, axis=0)
+    std_tpr = np.std(all_tprs, axis=0)
     
     fig, ax = plt.subplots(figsize=(10, 8))
     
@@ -203,11 +316,11 @@ def plot_roc_comparison(fold_predictions, output_dir):
                    alpha=0.2, color='blue')
     
     ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
-    ax.set_xlim([0, 1])
-    ax.set_ylim([0, 1])
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.0])
     ax.set_xlabel('False Positive Rate', fontsize=12)
     ax.set_ylabel('True Positive Rate', fontsize=12)
-    ax.set_title(f'Average ROC Curve Across {len(fold_predictions)} Folds\n(Macro Average ± Std)', fontsize=14)
+    ax.set_title(f'Average ROC Curve Across {len(all_plates)} Folds\n(Macro Average ± Std)', fontsize=14)
     ax.legend(loc='lower right')
     ax.grid(True, alpha=0.3)
     
@@ -215,9 +328,31 @@ def plot_roc_comparison(fold_predictions, output_dir):
     output_path = os.path.join(output_dir, 'roc_comparison.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"Saved: {output_path}")
+    print(f"   Saved: {output_path}")
     
-    return mean_auc_per_class, std_auc_per_class
+    # Save metrics to CSV
+    df = pd.DataFrame({
+        'class_idx': list(range(num_classes)),
+        'class_name': class_names,
+        'auc_mean': mean_auc,
+        'auc_std': std_auc,
+        'precision_mean': mean_prec,
+        'precision_std': std_prec,
+        'recall_mean': mean_rec,
+        'recall_std': std_rec,
+    })
+    csv_path = os.path.join(output_dir, 'roc_pr_metrics.csv')
+    df.to_csv(csv_path, index=False)
+    print(f"   Saved: {csv_path}")
+    
+    return {
+        'macro_auc': macro_auc,
+        'macro_auc_std': macro_auc_std,
+        'macro_precision': macro_prec,
+        'macro_precision_std': macro_prec_std,
+        'macro_recall': macro_rec,
+        'macro_recall_std': macro_rec_std,
+    }
 
 
 def plot_per_class_metrics(fold_predictions, output_dir):
@@ -314,12 +449,21 @@ def main():
     print("\n1. Generating accuracy + LR plot...")
     plot_accuracy_with_std(fold_metrics, output_dir)
     
-    print("\n2. Generating ROC comparison plot...")
-    print("   (Skipping - requires test predictions per fold)")
-    # plot_roc_comparison(fold_predictions, output_dir)
+    print("\n2. Computing ROC/PR from predictions.csv...")
+    all_fold_results = compute_roc_pr_from_predictions()
+    roc_results = plot_roc_comparison_from_predictions(all_fold_results, output_dir)
     
     print("\n3. Generating per-class metrics plot...")
     plot_per_class_metrics(fold_predictions, output_dir)
+    
+    # Print summary
+    if roc_results:
+        print("\n" + "="*50)
+        print("SUMMARY")
+        print("="*50)
+        print(f"Macro ROC-AUC: {roc_results['macro_auc']:.4f} ± {roc_results['macro_auc_std']:.4f}")
+        print(f"Macro Precision: {roc_results['macro_precision']:.4f} ± {roc_results['macro_precision_std']:.4f}")
+        print(f"Macro Recall: {roc_results['macro_recall']:.4f} ± {roc_results['macro_recall_std']:.4f}")
     
     print("\nDone!")
 
