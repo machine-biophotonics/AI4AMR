@@ -518,7 +518,7 @@ def lr_lambda(step):
     if step < num_warmup_steps:
         return step / num_warmup_steps
     progress = (step - num_warmup_steps) / (num_training_steps - num_warmup_steps)
-    return 0.5 * (1 + np.cos(np.pi * progress))
+    return 0.1 + 0.9 * 0.5 * (1 + np.cos(np.pi * progress))
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -623,12 +623,10 @@ else:
         for images, labels, _ in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            weights = class_weights[labels]
-            
             optimizer.zero_grad()
             with torch.autocast(device_type=device.type):
                 outputs = model(images)
-                loss = weighted_focal_loss(outputs, labels, weights)
+                loss = weighted_focal_loss(outputs, labels, class_weights)
             scaler.scale(loss).backward()
             
             # Gradient clipping
@@ -656,9 +654,8 @@ else:
         with torch.inference_mode():
             for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
-                weights = class_weights[labels]
                 outputs = model(images)
-                loss = weighted_focal_loss(outputs, labels, weights)
+                loss = weighted_focal_loss(outputs, labels, class_weights)
                 probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
