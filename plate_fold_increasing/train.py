@@ -114,7 +114,7 @@ def get_gene_from_path(img_path):
 
 
 class GrayscaleMixedCropDataset(Dataset):
-    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0):
+    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0, use_center_crop=False):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
@@ -122,6 +122,14 @@ class GrayscaleMixedCropDataset(Dataset):
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
+        self.use_center_crop = use_center_crop
+        
+        # Extract plate info from paths
+        self.plates = []
+        for path in image_paths:
+            plate = os.path.basename(os.path.dirname(path))
+            self.plates.append(plate)
+        self.plates = np.array(self.plates)
         
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
@@ -172,6 +180,14 @@ class GrayscaleMixedCropDataset(Dataset):
     
     def set_epoch(self, epoch):
         self.epoch = epoch
+        
+        # Use fixed center crop for val/test (deterministic)
+        if self.use_center_crop:
+            center_idx = len(self.positions) // 2
+            center_pos = self.positions[center_idx]
+            self.epoch_positions = {i: center_pos for i in range(len(self.image_paths))}
+            return
+        
         # Create per-image position hashmap - unique for first 144 images, then cycle with offset
         rng = random.Random(self.seed + epoch)
         shuffled = rng.sample(self.positions, len(self.positions))
@@ -203,7 +219,7 @@ class GrayscaleMixedCropDataset(Dataset):
         crop = np.array(crop)
         crop = self.transform(image=crop)['image']
         
-        return crop, self.labels[idx]
+        return crop, self.labels[idx], self.plates[idx]
 
 
 def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
@@ -230,12 +246,6 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     val_labels = np.array(val_labels)
     test_labels = np.array(test_labels)
     
-    train_plates = []
-    for path in train_paths:
-        plate = os.path.basename(os.path.dirname(path))
-        train_plates.append(plate)
-    train_plates = np.array(train_plates)
-    
     class_counts = Counter(train_labels)
     total = len(train_labels)
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
@@ -259,8 +269,15 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         return torch.tensor(weights, device=device)
     
     train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, augment=True, seed=SEED)
-    val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED)
-    test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, augment=False, seed=SEED)
+    val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED, use_center_crop=True)
+    test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, augment=False, seed=SEED, use_center_crop=True)
+    
+    # Get plates from dataset for domain weighting
+    train_plates = train_dataset.plates
+    
+    # Initialize epoch once (deterministic for val/test)
+    val_dataset.set_epoch(0)
+    test_dataset.set_epoch(0)
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
@@ -307,20 +324,14 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     
     for epoch in range(args.epochs):
         train_dataset.set_epoch(epoch)
-        val_dataset.set_epoch(epoch)
-        test_dataset.set_epoch(epoch)
         
         model.train()
         running_loss, correct, total = 0.0, 0, 0
         
-        for batch_idx, (images, labels) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}', leave=False)):
+        for images, labels, plates in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            batch_start = batch_idx * train_loader.batch_size
-            batch_end = min(batch_start + labels.size(0), len(train_plates))
-            batch_plates = train_plates[batch_start:batch_end]
-            
-            weights = get_combined_weights(batch_plates, labels.cpu().tolist())
+            weights = get_combined_weights(plates, labels.cpu().tolist())
             
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
