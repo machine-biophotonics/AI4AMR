@@ -479,7 +479,7 @@ test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, augment=False,
 val_dataset.set_epoch(0)
 test_dataset.set_epoch(0)
 
-train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
@@ -514,7 +514,7 @@ def lr_lambda(step):
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-scaler = torch.GradScaler()
+scaler = torch.amp.GradScaler()
 
 # CSV logging
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
