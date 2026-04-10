@@ -171,6 +171,9 @@ if not args.run_all_folds:
 # Determine train/val/test plates based on test_plate
 all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
 train_val_plates = [p for p in all_plates if p != args.test_plate]
+# Randomize to avoid order bias
+rng = random.Random(SEED + hash(args.test_plate) % 10000)
+rng.shuffle(train_val_plates)
 # Split train_val: first 4 plates for train, last 1 for val
 train_plates = train_val_plates[:4]
 val_plates = train_val_plates[4:]
@@ -469,12 +472,11 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
 
 
 def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    """Weighted Focal Loss (combined class weights)."""
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+    """Weighted Focal Loss (class weights inside CE)."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, weight=weights, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
-    weighted = focal * weights
-    return weighted.mean()
+    return focal.mean()
 
 train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, augment=True, seed=SEED)
 val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED, use_center_crop=True)
@@ -653,8 +655,9 @@ else:
         with torch.inference_mode():
             for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
+                weights = class_weights[labels]
                 outputs = model(images)
-                loss = nn.functional.cross_entropy(outputs, labels)
+                loss = weighted_focal_loss(outputs, labels, weights)
                 probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
