@@ -460,9 +460,6 @@ class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in r
 class_weights = class_weights / class_weights.sum() * num_classes
 print(f"Class weights range: {class_weights.min():.4f} - {class_weights.max():.4f}")
 
-# Precompute sample weights once
-sample_weights = class_weights[train_labels].to(device)
-
 def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     """Focal Loss implementation."""
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
@@ -472,16 +469,12 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
 
 
 def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    """Weighted Focal Loss (combined class and domain weights)."""
+    """Weighted Focal Loss (combined class weights)."""
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     weighted = focal * weights
     return weighted.mean()
-
-def get_sample_weights(indices):
-    """Get precomputed weights for batch indices"""
-    return sample_weights[indices]
 
 train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, augment=True, seed=SEED)
 val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED, use_center_crop=True)
@@ -525,6 +518,8 @@ def lr_lambda(step):
     return 0.5 * (1 + np.cos(np.pi * progress))
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+scaler = torch.GradScaler()
 
 # CSV logging
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -628,15 +623,17 @@ else:
             weights = class_weights[labels]
             
             optimizer.zero_grad()
-            with torch.amp.autocast('cuda'):
+            with torch.autocast(device_type='cuda'):
                 outputs = model(images)
                 loss = weighted_focal_loss(outputs, labels, weights)
-            loss.backward()
+            scaler.scale(loss).backward()
             
             # Gradient clipping
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             
             running_loss += loss.item()
