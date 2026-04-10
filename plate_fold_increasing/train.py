@@ -27,6 +27,8 @@ from tqdm import tqdm
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import label_binarize
@@ -36,6 +38,10 @@ import hashlib
 
 def stable_hash(s):
     return int(hashlib.md5(s.encode()).hexdigest(), 16) % 10000
+
+def worker_init_fn(worker_id):
+    np.random.seed(SEED + worker_id)
+    random.seed(SEED + worker_id)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(SCRIPT_DIR)
@@ -270,9 +276,9 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     val_dataset.set_epoch(0)
     test_dataset.set_epoch(0)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
     
     model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
     for param in model.parameters():
@@ -512,7 +518,11 @@ def main():
             results[n_train] = 0
             continue
         
-        train_plates = [p for p in all_plates if p not in [VAL_PLATE, TEST_PLATE]][:n_train]
+        # Randomize plate selection for fairness
+        candidate_plates = [p for p in all_plates if p not in [VAL_PLATE, TEST_PLATE]]
+        rng = random.Random(SEED + n_train)
+        rng.shuffle(candidate_plates)
+        train_plates = candidate_plates[:n_train]
         
         # Use 21 images per class = 2016 total images = exact whole number
         # 21 images/class * 96 classes = 2016 images total
