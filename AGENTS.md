@@ -259,3 +259,30 @@ Output in `train test results/`:
 - `accuracy_lr_comparison.png` - Train/Val accuracy + LR decay (y-axis limited to max achieved)
 - `per_class_metrics.png` - Per-class accuracy and precision with std across folds
 - `per_class_metrics.csv` - CSV of per-class metrics
+
+## Plate Diversity Experiment (plate_fold_increasing)
+
+Tests how accuracy improves with plate diversity (NOT just more data):
+
+- Fix total training images ≈ 2016 (same across all experiments)
+- Training plates increase: 1 → 2 → 3 → 4
+- Fixed validation: P5, Test: P6
+- Uses cycle-based crop permutation (144 positions per image)
+
+```bash
+cd plate_fold_increasing
+python train.py \
+    --epochs 200 \
+    --batch_size 256 \
+    --lr 1e-4 \
+    --warmup_epochs 6
+```
+
+Output in `increase_{n}_plates/`:
+- `best_model.pth` - highest val accuracy
+- `best_model_balanced.pth` - highest balanced accuracy
+- `best_model_auc.pth` - highest ROC AUC
+- `best_model_loss.pth` - lowest validation loss
+- `training_metrics_*.csv` - epoch-level metrics
+
+Final results plotted to `diversity_plot.png`
