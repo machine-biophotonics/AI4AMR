@@ -187,24 +187,25 @@ class GrayscaleMixedCropDataset(Dataset):
             self.epoch_positions = {i: center_pos for i in range(len(self.image_paths))}
             return
         
-        # Create per-image position hashmap - unique for first 144 images, then cycle with offset
-        rng = random.Random(self.seed + epoch)
-        shuffled = rng.sample(self.positions, len(self.positions))
-        
-        self.epoch_positions = {}
+        num_pos = len(self.positions)
         num_images = len(self.image_paths)
-        total_positions = len(self.positions)
         
-        # First 144 images: unique positions (no repeat)
-        for idx in range(min(144, num_images)):
-            self.epoch_positions[idx] = shuffled[idx]
+        # Cycle-based permutation: each epoch shifts the starting position
+        # Cycle 0: uses shuffled[0], shuffled[1], ... shuffled[143]
+        # Cycle 1: uses shuffled[143], shuffled[0], ... (rotated by 1)
+        cycle = epoch // num_pos
+        pos_in_cycle = epoch % num_pos
         
-        # Images 144+: cycle with different offset each cycle
-        for idx in range(144, num_images):
-            cycle = idx // total_positions
-            pos_in_cycle = idx % total_positions
-            offset_pos = (pos_in_cycle + cycle) % total_positions
-            self.epoch_positions[idx] = shuffled[offset_pos]
+        # Deterministic shuffle per cycle (seed ensures reproducibility)
+        rng = random.Random(self.seed + cycle)
+        shuffled = self.positions.copy()
+        rng.shuffle(shuffled)
+        
+        # Each image gets a position based on (index + epoch) mod num_positions
+        self.epoch_positions = {}
+        for idx in range(num_images):
+            assigned_idx = (idx + pos_in_cycle) % num_pos
+            self.epoch_positions[idx] = shuffled[assigned_idx]
     
     def __len__(self):
         return len(self.image_paths)
