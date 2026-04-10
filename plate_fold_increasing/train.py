@@ -32,6 +32,10 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import label_binarize
 from PIL import Image
 import glob
+import hashlib
+
+def stable_hash(s):
+    return int(hashlib.md5(s.encode()).hexdigest(), 16) % 10000
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(SCRIPT_DIR)
@@ -369,14 +373,15 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         all_labels = np.array(all_labels)
         per_class_correct = [np.sum((all_preds == i) & (all_labels == i)) for i in range(num_classes)]
         per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
-        balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
+        balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else np.nan for i in range(num_classes)])
+        balanced_acc = np.nanmean(balanced_acc)
         
         # Compute ROC AUC (one-vs-rest) - binarize labels for multiclass
         valid_classes = [i for i in range(num_classes) if per_class_total[i] > 0]
         if len(valid_classes) > 1:
             try:
                 y_true_bin = label_binarize(all_labels, classes=np.arange(num_classes))
-                val_auc = roc_auc_score(y_true_bin, all_probs, average='macro', labels=valid_classes)
+                val_auc = roc_auc_score(y_true_bin, all_probs, average='macro', multi_class='ovr')
             except ValueError:
                 val_auc = 0.0
         else:
@@ -528,7 +533,7 @@ def main():
             # Sample equal number per gene (stratified)
             per_class = images_per_plate // num_classes
             for gene, gene_paths in gene_to_paths.items():
-                rng = random.Random(SEED + n_train + hash(gene) % 10000)
+                rng = random.Random(SEED + n_train + stable_hash(gene))
                 rng.shuffle(gene_paths)
                 train_paths.extend(gene_paths[:per_class])
         
