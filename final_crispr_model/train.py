@@ -224,8 +224,9 @@ if args.run_all_folds:
         
         # Create fresh script to run this fold
         import subprocess
+        import sys
         cmd = [
-            'python', SCRIPT_DIR + '/train.py',
+            sys.executable, __file__,
             '--test_plate', test_plate,
             '--epochs', str(args.epochs),
             '--batch_size', str(args.batch_size),
