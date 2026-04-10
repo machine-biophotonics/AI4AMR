@@ -713,6 +713,7 @@ else:
                 'optimizer_state_dict': optimizer.state_dict(),
             }, os.path.join(OUTPUT_DIR, f'checkpoint_e{epoch}.pth'))
         
+        # Save based on val_acc (secondary metric)
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save({
@@ -727,8 +728,9 @@ else:
                 'best_val_balanced_acc': best_val_balanced_acc,
                 'best_val_auc': best_val_auc,
                 'best_val_loss': best_val_loss,
-            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            }, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
         
+        # Save based on balanced accuracy
         if balanced_acc > best_val_balanced_acc + args.min_delta:
             best_val_balanced_acc = balanced_acc
             torch.save({
@@ -738,12 +740,20 @@ else:
                 'best_val_balanced_acc': best_val_balanced_acc,
             }, os.path.join(OUTPUT_DIR, 'best_model_balanced.pth'))
         
+        # Save based on ROC AUC - PRIMARY best_model.pth
         if val_auc > best_val_auc + 0.001:
             best_val_auc = val_auc
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'best_val_acc': best_val_acc,
+                'best_val_auc': best_val_auc,
+                'best_val_balanced_acc': best_val_balanced_acc,
+                'best_val_loss': best_val_loss,
+            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
                 'best_val_auc': best_val_auc,
             }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
         
