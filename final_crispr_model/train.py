@@ -191,6 +191,9 @@ if args.run_all_folds:
         
         # Determine train/val plates (exclude test plate)
         train_val = [p for p in all_plates if p != test_plate]
+        # Shuffle to avoid order bias
+        rng = random.Random(SEED + hash(test_plate) % 10000)
+        rng.shuffle(train_val)
         fold_train = train_val[:4]
         fold_val = train_val[4:]
         
@@ -518,7 +521,7 @@ def lr_lambda(step):
     if step < num_warmup_steps:
         return step / num_warmup_steps
     progress = (step - num_warmup_steps) / (num_training_steps - num_warmup_steps)
-    return 0.1 + 0.9 * 0.5 * (1 + np.cos(np.pi * progress))
+    return 0.5 * (1 + np.cos(np.pi * progress))
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
