@@ -29,8 +29,9 @@ from albumentations.pytorch import ToTensorV2
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import label_binarize
 from PIL import Image
-from glob import glob
+import glob
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(SCRIPT_DIR)
@@ -256,8 +257,6 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     
     def get_weights(labels):
         weights = [class_weights[label].item() for label in labels]
-        weights = np.array(weights)
-        weights = weights / weights.mean()
         return torch.tensor(weights, device=device)
     
     val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED, use_center_crop=True)
@@ -345,13 +344,14 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         
         model.eval()
         running_loss, correct, total = 0.0, 0, 0
-        all_preds, all_labels = [], []
+        all_preds, all_labels, all_probs = [], [], []
         
-        with torch.no_grad():
+        with torch.inference_mode():
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 loss = nn.functional.cross_entropy(outputs, labels)
+                probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -359,7 +359,9 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
                 correct += predicted.eq(labels).sum().item()
                 all_preds.extend(predicted.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                all_probs.append(probs.cpu().numpy())
         
+        all_probs = np.vstack(all_probs)
         avg_val_loss = running_loss / len(val_loader)
         val_acc = 100. * correct / total
         
@@ -369,20 +371,12 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
         balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
         
-        # Compute ROC AUC (one-vs-rest)
-        val_probs = []
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images = images.to(device)
-                outputs = model(images)
-                probs = torch.softmax(outputs, dim=1)
-                val_probs.append(probs.cpu().numpy())
-        val_probs = np.vstack(val_probs)
-        
+        # Compute ROC AUC (one-vs-rest) - binarize labels for multiclass
         valid_classes = [i for i in range(num_classes) if per_class_total[i] > 0]
         if len(valid_classes) > 1:
             try:
-                val_auc = roc_auc_score(all_labels, val_probs, multi_class='ovr', average='macro', labels=valid_classes)
+                y_true_bin = label_binarize(all_labels, classes=np.arange(num_classes))
+                val_auc = roc_auc_score(y_true_bin, all_probs, average='macro', labels=valid_classes)
             except ValueError:
                 val_auc = 0.0
         else:
