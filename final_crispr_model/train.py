@@ -456,11 +456,12 @@ test_labels = np.array(test_labels)
 print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
 print(f"Class distribution: {Counter(train_labels)}")
 
-# Class weights only (inverse frequency, normalized)
+# Class weights only (inverse frequency, normalized, clipped)
 class_counts = Counter(train_labels)
 total = len(train_labels)
 class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
 class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = torch.clamp(class_weights, 0.5, 5.0)
 print(f"Class weights range: {class_weights.min():.4f} - {class_weights.max():.4f}")
 
 def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
@@ -625,7 +626,7 @@ else:
             weights = class_weights[labels]
             
             optimizer.zero_grad()
-            with torch.autocast(device_type='cuda'):
+            with torch.autocast(device_type=device.type):
                 outputs = model(images)
                 loss = weighted_focal_loss(outputs, labels, weights)
             scaler.scale(loss).backward()
