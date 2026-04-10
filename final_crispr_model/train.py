@@ -167,8 +167,10 @@ if args.plot_fold_comparison:
 # Create output subfolder for this fold (skip if run_all_folds - will be set in loop)
 if not args.run_all_folds:
     OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{args.test_plate}')
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print(f"Output directory: {OUTPUT_DIR}")
+else:
+    OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{args.test_plate}')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"Output directory: {OUTPUT_DIR}")
 
 # Determine train/val/test plates based on test_plate
 all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
@@ -547,12 +549,11 @@ if args.resume:
 if args.test_only:
     print("Test-only mode: loading best model for evaluation...")
     
-    checkpoint = torch.load(os.path.join(SCRIPT_DIR, 'best_model.pth'), map_location=device, weights_only=False)
+    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    
-    from albumentations.pytorch import ToTensorV2
+    # Note: albumentations already imported at top
     
     transform = A.Compose([
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
@@ -668,7 +669,8 @@ else:
         all_labels = np.array(all_labels)
         per_class_correct = [np.sum((all_preds == i) & (all_labels == i)) for i in range(num_classes)]
         per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
-        balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
+        per_class_acc = [per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else np.nan for i in range(num_classes)]
+        balanced_acc = np.nanmean(per_class_acc)
         
         # Compute ROC AUC
         valid_classes = [i for i in range(num_classes) if per_class_total[i] > 0]
