@@ -260,6 +260,36 @@ Output in `train test results/`:
 - `per_class_metrics.png` - Per-class accuracy and precision with std across folds
 - `per_class_metrics.csv` - CSV of per-class metrics
 
+## Final CRISPR Model (final_crispr_model)
+
+Multi-plate cross-validation with EfficientNet-B0 for gene-level classification:
+
+- Train on 4 plates, validate on 1, test on 1
+- Cycle-based crop permutation (144 positions per image)
+- Weighted CE with label smoothing (0.1)
+- Class weights (clipped to [0.5, 5.0])
+- Mixed precision (AMP) training
+
+```bash
+cd final_crispr_model
+
+# Run single fold
+python train.py --test_plate P5 --epochs 200 --batch_size 256
+python train.py --test_plate P6 --epochs 200 --batch_size 256
+
+# Run all 6 folds
+python train.py --run_all_folds --epochs 200 --batch_size 256
+```
+
+Output in `fold_P*/`:
+- `best_model.pth` - highest val ROC AUC (main)
+- `best_model_acc.pth` - highest val accuracy
+- `best_model_balanced.pth` - highest balanced accuracy
+- `best_model_auc.pth` - explicit ROC AUC save
+- `best_model_loss.pth` - lowest validation loss
+- `training_metrics_*.csv` - epoch-level metrics
+- `training_results.json` - final results
+
 ## Plate Diversity Experiment (plate_fold_increasing)
 
 Tests how accuracy improves with plate diversity (NOT just more data):
