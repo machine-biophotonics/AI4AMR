@@ -11,20 +11,14 @@ Tests how accuracy improves with plate diversity (NOT just more data):
 """
 
 import argparse
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import os
+import re
+import json
 import numpy as np
-import pandas as pd
 import torch
-from torch import nn
+import torch.nn as nn
 import torchvision
 from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-import os
-import glob
-import json
-import re
 import csv
 import random
 from datetime import datetime
@@ -32,6 +26,11 @@ from collections import Counter
 from tqdm import tqdm
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_auc_score
+from PIL import Image
+from glob import glob
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(SCRIPT_DIR)
@@ -304,10 +303,12 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     csv_path = os.path.join(output_dir, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc', 'lr'])
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc', 'val_auc', 'lr'])
     
     best_val_acc = 0.0
     best_val_balanced_acc = 0.0
+    best_val_auc = 0.0
+    best_val_loss = float('inf')
     train_losses, train_accs, val_losses, val_accs = [], [], [], []
     
     for epoch in range(args.epochs):
@@ -367,15 +368,34 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
         balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
         
+        # Compute ROC AUC (one-vs-rest)
+        val_probs = []
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images = images.to(device)
+                outputs = model(images)
+                probs = torch.softmax(outputs, dim=1)
+                val_probs.append(probs.cpu().numpy())
+        val_probs = np.vstack(val_probs)
+        
+        valid_classes = [i for i in range(num_classes) if per_class_total[i] > 0]
+        if len(valid_classes) > 1:
+            try:
+                val_auc = roc_auc_score(all_labels, val_probs, multi_class='ovr', average='macro', labels=valid_classes)
+            except ValueError:
+                val_auc = 0.0
+        else:
+            val_auc = 0.0
+        
         val_losses.append(avg_val_loss)
         val_accs.append(val_acc)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, LR={current_lr:.2e}")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, balanced_acc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, balanced_acc, val_auc, current_lr])
         
         torch.save({
             'epoch': epoch,
@@ -416,6 +436,27 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
                 'best_val_acc': best_val_acc,
                 'best_val_balanced_acc': best_val_balanced_acc,
             }, os.path.join(output_dir, 'best_model_balanced.pth'))
+        
+        if val_auc > best_val_auc + 0.001:
+            best_val_auc = val_auc
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'best_val_acc': best_val_acc,
+                'best_val_balanced_acc': best_val_balanced_acc,
+                'best_val_auc': best_val_auc,
+            }, os.path.join(output_dir, 'best_model_auc.pth'))
+        
+        if avg_val_loss < best_val_loss - 0.001:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'best_val_acc': best_val_acc,
+                'best_val_balanced_acc': best_val_balanced_acc,
+                'best_val_auc': best_val_auc,
+                'best_val_loss': best_val_loss,
+            }, os.path.join(output_dir, 'best_model_loss.pth'))
     
     checkpoint = torch.load(os.path.join(output_dir, 'best_model.pth'), map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -482,15 +523,28 @@ def main():
         train_paths = []
         for plate in train_plates:
             paths = get_image_paths_for_plate(plate)
-            # Shuffle and take exact number for reproducibility
-            rng = random.Random(SEED + n_train)
-            rng.shuffle(paths)
-            train_paths.extend(paths[:images_per_plate])
+            
+            # Group paths by gene for stratified sampling
+            gene_to_paths = {}
+            for p in paths:
+                gene = get_gene_from_path(p)
+                gene_to_paths.setdefault(gene, []).append(p)
+            
+            # Sample equal number per gene (stratified)
+            per_class = images_per_plate // num_classes
+            for gene, gene_paths in gene_to_paths.items():
+                rng = random.Random(SEED + n_train + hash(gene) % 10000)
+                rng.shuffle(gene_paths)
+                train_paths.extend(gene_paths[:per_class])
         
         # Shuffle final train_paths for good mixing
         random.shuffle(train_paths)
         
         train_labels = [gene_to_idx[get_gene_from_path(p)] for p in train_paths]
+        
+        # Log class distribution for debugging
+        class_dist = Counter(train_labels)
+        print(f"Class distribution: min={min(class_dist.values())}, max={max(class_dist.values())}, total={len(train_paths)}")
         
         print(f"Training: {len(train_paths)} images")
         test_acc = train_and_evaluate(
