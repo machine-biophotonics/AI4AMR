@@ -535,6 +535,8 @@ with open(csv_path, 'w', newline='') as f:
 
 best_val_acc = 0.0
 best_val_balanced_acc = 0.0
+best_val_auc = 0.0
+best_val_loss = float('inf')
 start_epoch = 0
 train_losses, train_accs, val_losses, val_accs = [], [], [], []
 
