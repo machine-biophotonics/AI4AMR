@@ -27,6 +27,8 @@ import random
 from tqdm import tqdm
 import csv
 from datetime import datetime
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 from scipy.cluster.hierarchy import dendrogram, linkage, fcluster
 from collections import Counter
 import io
@@ -330,7 +332,7 @@ class GrayscaleMixedCropDataset(Dataset):
                     positions.append((left, top))
         self.positions = positions
         
-        import albumentations as A
+        
         from albumentations.pytorch import ToTensorV2
         
         if augment:
@@ -549,7 +551,7 @@ if args.test_only:
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    import albumentations as A
+    
     from albumentations.pytorch import ToTensorV2
     
     transform = A.Compose([
