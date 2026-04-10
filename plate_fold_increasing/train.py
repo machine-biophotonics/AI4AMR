@@ -254,19 +254,8 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    plate_counts = Counter(train_plates)
-    n_plates = len(plate_counts)
-    domain_weights = {plate: 1.0 / np.sqrt(count) for plate, count in plate_counts.items()}
-    dom_sum = sum(domain_weights.values())
-    domain_weights = {k: v / dom_sum * n_plates for k, v in domain_weights.items()}
-    print(f"Domain weights: {domain_weights}")
-    
-    def get_combined_weights(plates, labels):
-        weights = []
-        for plate, label in zip(plates, labels):
-            class_w = class_weights[label].item()
-            domain_w = domain_weights.get(plate, 1.0)
-            weights.append(class_w * domain_w)
+    def get_weights(labels):
+        weights = [class_weights[label].item() for label in labels]
         weights = np.array(weights)
         weights = weights / weights.mean()
         return torch.tensor(weights, device=device)
@@ -327,10 +316,10 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         model.train()
         running_loss, correct, total = 0.0, 0, 0
         
-        for images, labels, plates in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+        for images, labels, _ in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            weights = get_combined_weights(plates, labels.cpu().tolist())
+            weights = get_weights(labels.cpu().tolist())
             
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
