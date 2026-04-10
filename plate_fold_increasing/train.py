@@ -246,6 +246,9 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     val_labels = np.array(val_labels)
     test_labels = np.array(test_labels)
     
+    train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, augment=True, seed=SEED)
+    train_plates = train_dataset.plates
+    
     class_counts = Counter(train_labels)
     total = len(train_labels)
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
@@ -268,12 +271,8 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         weights = weights / weights.mean()
         return torch.tensor(weights, device=device)
     
-    train_dataset = GrayscaleMixedCropDataset(train_paths, train_labels, augment=True, seed=SEED)
     val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED, use_center_crop=True)
     test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, augment=False, seed=SEED, use_center_crop=True)
-    
-    # Get plates from dataset for domain weighting
-    train_plates = train_dataset.plates
     
     # Initialize epoch once (deterministic for val/test)
     val_dataset.set_epoch(0)
