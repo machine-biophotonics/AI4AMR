@@ -357,7 +357,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         all_preds, all_labels, all_probs = [], [], []
         
         with torch.inference_mode():
-            for images, labels in val_loader:
+            for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 loss = nn.functional.cross_entropy(outputs, labels)
@@ -470,7 +470,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     
     all_preds, all_labels = [], []
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels, _ in test_loader:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             _, predicted = outputs.max(1)
