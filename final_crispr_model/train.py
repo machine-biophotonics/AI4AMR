@@ -531,7 +531,7 @@ timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
 with open(csv_path, 'w', newline='') as f:
     writer = csv.writer(f)
-    writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc', 'lr'])
+    writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_balanced_acc', 'val_auc', 'lr'])
 
 best_val_acc = 0.0
 best_val_balanced_acc = 0.0
@@ -651,13 +651,14 @@ else:
         
         model.eval()
         running_loss, correct, total = 0.0, 0, 0
-        all_preds, all_labels = [], []
+        all_preds, all_labels, all_probs = [], [], []
         
-        with torch.no_grad():
+        with torch.inference_mode():
             for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 loss = nn.functional.cross_entropy(outputs, labels)
+                probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -665,7 +666,9 @@ else:
                 correct += predicted.eq(labels).sum().item()
                 all_preds.extend(predicted.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                all_probs.append(probs.cpu().numpy())
         
+        all_probs = np.vstack(all_probs)
         avg_val_loss = running_loss / len(val_loader)
         val_acc = 100. * correct / total
         
@@ -675,16 +678,27 @@ else:
         per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
         balanced_acc = np.mean([per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0 for i in range(num_classes)])
         
+        # Compute ROC AUC
+        valid_classes = [i for i in range(num_classes) if per_class_total[i] > 0]
+        if len(valid_classes) > 1:
+            try:
+                y_true_bin = label_binarize(all_labels, classes=np.arange(num_classes))
+                val_auc = roc_auc_score(y_true_bin, all_probs, average='macro', multi_class='ovr')
+            except ValueError:
+                val_auc = 0.0
+        else:
+            val_auc = 0.0
+        
         val_losses.append(avg_val_loss)
         val_accs.append(val_acc)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, LR={current_lr:.2e}")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
         
         # Write to CSV
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, balanced_acc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, balanced_acc, val_auc, current_lr])
         
         # Save LAST model (overwrite each epoch) - always save immediately
         torch.save({
@@ -697,6 +711,8 @@ else:
             'val_accs': val_accs,
             'best_val_acc': best_val_acc,
             'best_val_balanced_acc': best_val_balanced_acc,
+            'best_val_auc': best_val_auc,
+            'best_val_loss': best_val_loss,
         }, os.path.join(OUTPUT_DIR, 'last_model.pth'))
         
         # Save checkpoint every 5 epochs
@@ -718,6 +734,9 @@ else:
                 'val_losses': val_losses,
                 'val_accs': val_accs,
                 'best_val_acc': best_val_acc,
+                'best_val_balanced_acc': best_val_balanced_acc,
+                'best_val_auc': best_val_auc,
+                'best_val_loss': best_val_loss,
             }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
         
         if balanced_acc > best_val_balanced_acc + args.min_delta:
@@ -728,6 +747,23 @@ else:
                 'best_val_acc': best_val_acc,
                 'best_val_balanced_acc': best_val_balanced_acc,
             }, os.path.join(OUTPUT_DIR, 'best_model_balanced.pth'))
+        
+        if val_auc > best_val_auc + 0.001:
+            best_val_auc = val_auc
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'best_val_acc': best_val_acc,
+                'best_val_auc': best_val_auc,
+            }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        if avg_val_loss < best_val_loss - 0.001:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'best_val_loss': best_val_loss,
+            }, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
 
     print("Training complete. Generating test results...")
 
