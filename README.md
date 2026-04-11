@@ -148,6 +148,20 @@ All models use identical augmentation pipeline:
 - **Optimizer**: SAM + AdamW
 - **Loss**: Focal Loss with class weights
 
+### Recommended Models (final_crispr_model, plate_fold_diversity_new)
+Based on Farrar et al. 2025 paper - simpler augmentations work better for bacterial phenotypes:
+
+**Augmentations (matching paper):**
+- Geometric: RandomRotate90, HorizontalFlip, VerticalFlip, Affine(scale=0.6-1.4, rotate=±360°, translate=±20px)
+- Pixel: GaussNoise, RandomBrightnessContrast, PixelDropout
+- **REMOVED (per paper findings):** Shear, Blur (these distort ribosome phenotypes)
+
+**Training Configuration:**
+- **Optimizer**: Adam (no SAM)
+- **Loss**: CrossEntropyLoss with label_smoothing=0.1 + class weights
+- **Crops**: 144 positions per image (12×12 grid), cycle-based permutation
+- **Mixed precision**: GradScaler for AMP
+
 ## Model Comparison
 
 | Model | Backbone | Optimizer | Trainable Params | Feature Dim |
@@ -155,6 +169,8 @@ All models use identical augmentation pipeline:
 | sam_effnet | EfficientNet-B0 | SAM | ~5.3M | 1280 |
 | guide_effnet | EfficientNet-B0 | SAM | ~5.3M | 1280 |
 | plate_fold | EfficientNet-B0 | AdamW | ~5.3M | 1280 |
+| final_crispr_model | EfficientNet-B0 | Adam | ~5.3M | 1280 |
+| plate_fold_diversity_new | EfficientNet-B0 | Adam | ~5.3M | 1280 |
 | dinov3-finetune LR | DINOv3 ViT-L | SAM | ~100K | 1024 |
 | dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | SAM | ~3M | 1024 |
 
@@ -202,6 +218,53 @@ python train.py --plot_fold_comparison
 
 ## Project Structure
 
+```
+.
+├── sam_effnet/                    # EfficientNet-B0 + SAM (CNN)
+│   ├── train.py                   # Training script
+│   ├── plate_well_id_path.json    # 96-class labels
+│   └── trial_1_144_crops/         # Best results (~22.9% well acc)
+│
+├── guide_effnet/                  # Guide generalization experiments
+│   ├── train.py                   # Training with --guide_experiment
+│   ├── plate_well_id_path.json
+│   └── classes.txt
+│
+├── plate_fold/                    # Leave-one-plate-out cross-validation
+│   ├── train.py                   # Training with fold logic
+│   ├── predict_fold.py            # Prediction script
+│   ├── generate_combined_confusion.py  # Aggregate confusion matrices
+│   ├── classes.txt                # 96 class labels
+│   └── fold_P{1-6}/               # Results per fold
+│
+├── plate_fold_increasing/         # Plate diversity experiment (fixed 2016 images)
+│   ├── train.py                   # Tests 1-4 plates
+│   └── increase_{n}_plates/        # Results per n
+│
+├── plate_fold_no_aug/             # Same as plate_fold but no augmentation
+│   ├── train.py
+│   ├── predict_all_crops.py       # Multi-crop prediction
+│   ├── generate_combined_confusion.py
+│   └── fold_P{1-6}/               # Results per fold
+│
+├── plate_fold_diversity_new/      # Plate diversity + paper augmentations
+│   ├── train.py                   # Same as plate_fold_increasing
+│   └── increase_{n}_plates/        # Results per n
+│
+├── final_crispr_model/           # Full CV with paper augmentations
+│   ├── train.py                   # 6-fold cross-validation
+│   └── fold_P{1-6}/               # Results per fold
+│
+├── dinov3-finetune/               # DINOv3 ViT-L fine-tuning
+│   ├── train_plate.py             # Main training script
+│   ├── dino_finetune/
+│   │   └── plate_dataset.py       # Dataset with augmentations
+│   └── output/                    # Saved models and metrics
+│
+├── 1_Dino_embeddings_logistic_regression/  # LR baseline on embeddings
+├── plate maps/                    # Label mappings
+├── dino_weights/                  # DINOv3 pretrained weights
+└── requirements.txt
 ```
 .
 ├── sam_effnet/                    # EfficientNet-B0 + SAM (CNN)
