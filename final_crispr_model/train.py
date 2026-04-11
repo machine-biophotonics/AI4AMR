@@ -339,28 +339,28 @@ class GrayscaleMixedCropDataset(Dataset):
         from albumentations.pytorch import ToTensorV2
         
         if augment:
+            # Exact augmentations from Farrar et al. 2025 paper / KapanidisLab repo
+            # NOTE: Shear and Blur REMOVED per paper findings - "shearing and blurring could cause distortions of the ribosome phenotype and hinder learning"
+            
+            # Geometric transforms (applied always)
+            geometric_transform = A.Compose([
+                A.RandomRotate90(p=1.0),
+                A.HorizontalFlip(p=1.0),
+                A.VerticalFlip(p=1.0),
+                A.Affine(scale=(0.6, 1.4), rotate=(-360, 360), translate_px=(-20, 20), p=1.0),
+            ])
+            
+            # Pixel transforms (applied with probability)
+            pixel_transform = A.Compose([
+                A.GaussNoise(std_range=(0.01, 0.02), per_channel=True, p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.5),
+                A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.05),
+            ])
+            
+            # Combined augmentations
             self.transform = A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.RandomRotate90(p=0.5),
-                A.Affine(translate_percent={'x': (-0.1, 0.1), 'y': (-0.1, 0.1)},
-                         scale={'x': (0.9, 1.1), 'y': (0.9, 1.1)}, rotate=(-15, 15), p=0.5),
-                # Geometric transforms simulating colony deformation and camera angles
-                A.SomeOf([
-                    A.ElasticTransform(alpha=50, sigma=5, p=1.0),
-                    A.Perspective(scale=(0.02, 0.05), p=1.0),
-                    A.GridDistortion(num_steps=5, distort_limit=0.1, p=1.0),
-                    A.OpticalDistortion(distort_limit=0.05, p=1.0),
-                ], n=1, replace=False, p=0.5),
-                # Noise and blur (tighter ranges for microscopy)
-                A.SomeOf([
-                    A.GaussNoise(std_range=(0.05, 0.15), per_channel=False, p=1.0),
-                    A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-                    A.MotionBlur(blur_limit=3, p=1.0),
-                ], n=1, replace=False, p=0.5),
-                # Image quality artifacts
-                A.ImageCompression(quality_range=(85, 100), p=0.3),
-                A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.4),
+                geometric_transform,
+                pixel_transform,
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
