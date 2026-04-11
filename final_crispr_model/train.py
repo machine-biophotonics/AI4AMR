@@ -478,6 +478,21 @@ class_weights = class_weights / class_weights.sum() * num_classes
 class_weights = torch.clamp(class_weights, 0.5, 5.0)
 print(f"Class weights range: {class_weights.min():.4f} - {class_weights.max():.4f}")
 
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
+    """Focal Loss for handling class imbalance."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+    pt = torch.exp(-ce_loss)
+    focal = alpha * (1 - pt) ** gamma * ce_loss
+    return focal.mean()
+
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
+    """Weighted Focal Loss with class weights."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+    pt = torch.exp(-ce_loss)
+    focal = alpha * (1 - pt) ** gamma * ce_loss
+    weighted = focal * weights
+    return weighted.mean()
+
 def weighted_ce_loss(logits, targets, weights, label_smoothing=0.1):
     """CrossEntropyLoss with label smoothing and class weights."""
     return nn.functional.cross_entropy(logits, targets, weight=weights, label_smoothing=label_smoothing)
@@ -628,36 +643,7 @@ else:
             optimizer.zero_grad()
             with torch.autocast(device_type=device.type):
                 outputs = model(images)
-                loss = weighted_ce_loss(outputs, labels, class_weights, label_smoothing=0.1)
-            scaler.scale(loss).backward()
-            
-            # Gradient clipping
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
-            
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-        
-        avg_train_loss = running_loss / len(train_loader)
-        train_acc = 100. * correct / total
-        train_losses.append(avg_train_loss)
-        train_accs.append(train_acc)
-        
-        model.eval()
-        running_loss, correct, total = 0.0, 0, 0
-        all_preds, all_labels, all_probs = [], [], []
-        
-        with torch.inference_mode():
-            for images, labels, _ in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                loss = weighted_ce_loss(outputs, labels, class_weights, label_smoothing=0.1)
+                loss = weighted_focal_loss(outputs, labels, class_weights)
                 probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()

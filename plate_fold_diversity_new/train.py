@@ -236,6 +236,21 @@ class GrayscaleMixedCropDataset(Dataset):
         return crop, self.labels[idx], self.plates[idx]
  
 
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
+    """Focal Loss for handling class imbalance."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+    pt = torch.exp(-ce_loss)
+    focal = alpha * (1 - pt) ** gamma * ce_loss
+    return focal.mean()
+
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
+    """Weighted Focal Loss with class weights."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+    pt = torch.exp(-ce_loss)
+    focal = alpha * (1 - pt) ** gamma * ce_loss
+    weighted = focal * weights
+    return weighted.mean()
+
 def weighted_ce_loss(logits, targets, weights, label_smoothing=0.1):
     """CrossEntropyLoss with label smoothing and class weights - matching final_crispr_model"""
     return nn.functional.cross_entropy(logits, targets, weight=weights, label_smoothing=label_smoothing)
