@@ -149,14 +149,23 @@ Each training run produces:
 
 ## Training Features
 
-All CNN models (sam_effnet, guide_effnet, plate_fold) use:
+### Older Models (sam_effnet, guide_effnet, plate_fold)
 - **SAM optimizer** (Sharpness-Aware Minimization) - except plate_fold uses basic AdamW
 - **Focal Loss** (α=0.25, γ=2.0)
 - **Domain weights** (per-plate, using n_d^-1/2)
 - **144 crops per image** (12×12 grid, 1 random crop per epoch)
-- **Basic augmentations**: Flips, rotation, affine, elastic, blur, noise
-- **GradScaler** for mixed precision (sam_effnet, guide_effnet)
-- **Center loss** (optional, with separate optimizer)
+- **Heavy augmentations**: Flips, rotation, affine, elastic, blur, noise (NOT recommended)
+
+### Recommended (final_crispr_model, plate_fold_diversity_new)
+Based on Farrar et al. 2025 paper - simpler augmentations work better for bacterial phenotypes:
+- **Adam optimizer** (no SAM)
+- **CrossEntropyLoss with label_smoothing=0.1**
+- **Class weights** (for imbalanced data)
+- **144 crops per image** (12×12 grid, cycle-based permutation)
+- **Paper-based augmentations** (NO shear, NO blur - these distort phenotype):
+  - Geometric: RandomRotate90, HorizontalFlip, VerticalFlip, Affine(scale=0.6-1.4, rotate=±360°, translate=±20px)
+  - Pixel: GaussNoise, RandomBrightnessContrast, PixelDropout
+- **GradScaler** for mixed precision
 
 ## Plate Cross-Validation (plate_fold)
 
@@ -316,3 +325,61 @@ Output in `increase_{n}_plates/`:
 - `training_metrics_*.csv` - epoch-level metrics
 
 Final results plotted to `diversity_plot.png`
+
+## Final CRISPR Model (final_crispr_model)
+
+Multi-plate cross-validation with EfficientNet-B0 - uses same augmentations as paper (Farrar et al. 2025):
+- Train on 4 plates, validate on 1, test on 1 (leave-one-out CV)
+- Uses cycle-based crop permutation (144 positions per image)
+- Weighted CE with label smoothing (0.1)
+- Class weights (clipped to [0.5, 5.0])
+- Mixed precision (AMP) training
+- Paper-based augmentations (no shear, no blur)
+
+```bash
+cd final_crispr_model
+
+# Run single fold
+python train.py --test_plate P5 --epochs 200 --batch_size 256
+python train.py --test_plate P6 --epochs 200 --batch_size 256
+
+# Run all 6 folds
+python train.py --run_all_folds --epochs 200 --batch_size 256
+```
+
+Output in `fold_P*/`:
+- `best_model.pth` - highest val ROC AUC (main)
+- `best_model_acc.pth` - highest val accuracy
+- `best_model_balanced.pth` - highest balanced accuracy
+- `best_model_auc.pth` - explicit ROC AUC save
+- `best_model_loss.pth` - lowest validation loss
+- `training_metrics_*.csv` - epoch-level metrics
+- `training_results.json` - final results
+
+## Plate Diversity with Paper Augmentations (plate_fold_diversity_new)
+
+Same as plate_fold_increasing but with paper-based augmentations (Farrar et al. 2025):
+- Tests plate diversity: 1, 2, 3, or 4 plates
+- FIXED total images = 2016 (always same total crops = 290,304)
+- Validation: P5, Test: P6
+- Uses cycle-based crop permutation
+- Weighted CE with label_smoothing=0.1
+- Paper augmentations (no shear, blur)
+
+```bash
+cd plate_fold_diversity_new
+
+python train.py \
+    --epochs 200 \
+    --batch_size 256 \
+    --lr 1e-4 \
+    --warmup_epochs 6
+```
+
+Output in `increase_{n}_plates/`:
+- `best_model.pth` - highest val ROC AUC (primary)
+- `best_model_acc.pth` - highest val accuracy
+- `best_model_balanced.pth` - highest balanced accuracy
+- `best_model_auc.pth` - explicit ROC AUC save
+- `best_model_loss.pth` - lowest validation loss
+- `training_metrics_*.csv` - epoch-level metrics

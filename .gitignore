@@ -96,3 +96,36 @@ plate_fold/train test results/
 !plate_fold/all_folds_*.png
 !plate_fold/all_folds_*.csv
 !plate_fold/plot_fold_comparison.py
+
+# plate_fold_increasing outputs
+plate_fold_increasing/increase_*/
+plate_fold_increasing/*.csv
+plate_fold_increasing/*.png
+plate_fold_increasing/diversity_plot.png
+plate_fold_increasing/diversity_results.csv
+!plate_fold_increasing/classes.txt
+!plate_fold_increasing/plate_well_id_path.json
+
+# plate_fold_no_aug outputs
+plate_fold_no_aug/fold_*/
+plate_fold_no_aug/aggregate/
+plate_fold_no_aug/*.csv
+plate_fold_no_aug/*.png
+!plate_fold_no_aug/classes.txt
+!plate_fold_no_aug/plate_well_id_path.json
+!plate_fold_no_aug/predict_all_crops.py
+!plate_fold_no_aug/generate_combined_confusion.py
+
+# plate_fold_diversity_new outputs
+plate_fold_diversity_new/increase_*/
+plate_fold_diversity_new/*.csv
+plate_fold_diversity_new/*.png
+!plate_fold_diversity_new/classes.txt
+!plate_fold_diversity_new/plate_well_id_path.json
+
+# final_crispr_model outputs
+final_crispr_model/fold_*/
+final_crispr_model/*.csv
+final_crispr_model/*.png
+!final_crispr_model/classes.txt
+!final_crispr_model/plate_well_id_path.json
