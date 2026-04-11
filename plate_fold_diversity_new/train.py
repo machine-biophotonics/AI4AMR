@@ -339,7 +339,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
                 outputs = model(images)
-                loss = weighted_ce_loss(outputs, labels, class_weights, label_smoothing=0.1)
+                loss = weighted_focal_loss(outputs, labels, class_weights)
             loss.backward()
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -364,7 +364,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
             for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
-                loss = weighted_ce_loss(outputs, labels, class_weights, label_smoothing=0.1)
+                loss = weighted_focal_loss(outputs, labels, class_weights)
                 probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
