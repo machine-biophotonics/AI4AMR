@@ -340,7 +340,7 @@ class GrayscaleMixedCropDataset(Dataset):
         
         if augment:
             # Exact augmentations from Farrar et al. 2025 paper / KapanidisLab repo
-            # NOTE: Shear and Blur REMOVED per paper findings - "shearing and blurring could cause distortions of the ribosome phenotype and hinder learning"
+            # NOTE: Shear, Blur, and CoarseDropout REMOVED per paper findings
             
             # Geometric transforms (applied always)
             geometric_transform = A.Compose([
@@ -354,7 +354,6 @@ class GrayscaleMixedCropDataset(Dataset):
             pixel_transform = A.Compose([
                 A.GaussNoise(std_range=(0.01, 0.02), per_channel=True, p=0.5),
                 A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.5),
-                A.CoarseDropout(num_holes_range=(1, 3), hole_height_range=(16, 64), hole_width_range=(16, 64), p=0.05),
             ])
             
             # Combined augmentations
