@@ -257,10 +257,8 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     total = len(train_labels)
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
-    
-    def get_weights(labels):
-        weights = [class_weights[label].item() for label in labels]
-        return torch.tensor(weights, device=device)
+    class_weights = torch.clamp(class_weights, 0.5, 5.0)  # Clip weights like final_crispr_model
+    print(f"Class weights range: {class_weights.min():.4f} - {class_weights.max():.4f}")
     
     val_dataset = GrayscaleMixedCropDataset(val_paths, val_labels, augment=False, seed=SEED, use_center_crop=True)
     test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, augment=False, seed=SEED, use_center_crop=True)
@@ -323,12 +321,10 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         for images, labels, _ in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            weights = get_weights(labels.cpu().tolist())
-            
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
                 outputs = model(images)
-                loss = weighted_ce_loss(outputs, labels, weights, label_smoothing=0.1)
+                loss = weighted_ce_loss(outputs, labels, class_weights, label_smoothing=0.1)
             loss.backward()
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -352,9 +348,8 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         with torch.inference_mode():
             for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
-                weights = get_weights(labels.cpu().tolist())
                 outputs = model(images)
-                loss = weighted_ce_loss(outputs, labels, weights, label_smoothing=0.1)
+                loss = weighted_ce_loss(outputs, labels, class_weights, label_smoothing=0.1)
                 probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
