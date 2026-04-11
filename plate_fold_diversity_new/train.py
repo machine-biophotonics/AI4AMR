@@ -533,10 +533,11 @@ def main():
         rng.shuffle(candidate_plates)
         train_plates = candidate_plates[:n_train]
         
-        # Equal number of images per class PER PLATE
-        # With n_train plates: n_train * 20 images/class * 96 classes = total
-        # 1 plate: 1920 images, 2 plates: 3840, 3 plates: 5760, 4 plates: 7680
-        images_per_class_per_plate = 20
+        # FIXED total images = 2016 (so fixed total crops = 2016 × 144 = 290,304)
+        # This keeps the experiment about plate DIVERSITY, not more data
+        # 1 plate: 2016 images, 2 plates: 1008 each, 3 plates: 672 each, 4 plates: 504 each
+        total_images = 2016
+        images_per_plate = total_images // n_train
         
         train_paths = []
         for plate in train_plates:
@@ -549,10 +550,11 @@ def main():
                 gene_to_paths.setdefault(gene, []).append(p)
             
             # Sample equal number per gene FROM EACH PLATE
+            per_class = images_per_plate // num_classes
             for gene, gene_paths in gene_to_paths.items():
                 rng = random.Random(SEED + n_train + stable_hash(gene))
                 rng.shuffle(gene_paths)
-                train_paths.extend(gene_paths[:images_per_class_per_plate])
+                train_paths.extend(gene_paths[:per_class])
         
         # Shuffle final train_paths for good mixing
         random.shuffle(train_paths)
