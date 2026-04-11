@@ -282,7 +282,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     val_dataset.set_epoch(0)
     test_dataset.set_epoch(0)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
     
@@ -315,6 +315,8 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
+    scaler = torch.amp.GradScaler('cuda')
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(output_dir, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
@@ -340,10 +342,12 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
             with torch.amp.autocast('cuda'):
                 outputs = model(images)
                 loss = weighted_focal_loss(outputs, labels, class_weights)
-            loss.backward()
+            scaler.scale(loss).backward()
             
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             
             running_loss += loss.item()

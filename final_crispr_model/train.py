@@ -33,6 +33,15 @@ from scipy.cluster.hierarchy import dendrogram, linkage, fcluster
 from collections import Counter
 import io
 
+import hashlib
+
+def stable_hash(s):
+    return int(hashlib.md5(s.encode()).hexdigest(), 16) % 10000
+
+def worker_init_fn(worker_id):
+    np.random.seed(SEED + worker_id)
+    random.seed(SEED + worker_id)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(SCRIPT_DIR)
 
@@ -505,9 +514,9 @@ test_dataset = GrayscaleMixedCropDataset(test_paths, test_labels, augment=False,
 val_dataset.set_epoch(0)
 test_dataset.set_epoch(0)
 
-train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
-val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
-test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn, persistent_workers=True)
+val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
+test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
 
 model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
 
