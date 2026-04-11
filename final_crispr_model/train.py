@@ -357,19 +357,19 @@ class GrayscaleMixedCropDataset(Dataset):
             # NOTE: Shear and Blur REMOVED per paper findings - "shearing and blurring could cause distortions of the ribosome phenotype and hinder learning"
             # Affine does NOT include shear (no shear parameter = no shear applied)
             
-            # Geometric transforms (applied always)
+            # Geometric transforms (applied with probability - more conservative)
             geometric_transform = A.Compose([
-                A.RandomRotate90(p=1.0),
-                A.HorizontalFlip(p=1.0),
-                A.VerticalFlip(p=1.0),
-                A.Affine(scale=(0.6, 1.4), rotate=(-360, 360), translate_px=(-20, 20), p=1.0),
+                A.RandomRotate90(p=0.5),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.Affine(scale=(0.6, 1.4), rotate=(-360, 360), translate_px=(-20, 20), p=0.5),
             ])
             
             # Pixel transforms (applied with probability)
             pixel_transform = A.Compose([
-                A.GaussNoise(std_range=(0.01, 0.02), per_channel=True, p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.5),
-                A.PixelDropout(dropout_prob=0.05, per_channel=True, p=0.5),
+                A.GaussNoise(std_range=(0.01, 0.02), per_channel=True, p=0.3),
+                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
+                A.PixelDropout(dropout_prob=0.05, per_channel=True, p=0.3),
             ])
             
             # Combined augmentations
