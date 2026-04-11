@@ -158,14 +158,15 @@ Each training run produces:
 
 ### Recommended (final_crispr_model, plate_fold_diversity_new)
 Based on Farrar et al. 2025 paper - simpler augmentations work better for bacterial phenotypes:
-- **Adam optimizer** (no SAM)
-- **CrossEntropyLoss with label_smoothing=0.1**
-- **Class weights** (for imbalanced data)
+- **AdamW optimizer** with differential LR (backbone 0.1x, classifier 1x)
+- **FocalLoss** (α=0.25, γ=2.0) with label_smoothing=0.1 + class weights
+- **Class weights** (for imbalanced data, clamped [0.5, 5.0])
 - **144 crops per image** (12×12 grid, cycle-based permutation)
 - **Paper-based augmentations** (NO shear, NO blur - these distort phenotype):
-  - Geometric: RandomRotate90, HorizontalFlip, VerticalFlip, Affine(scale=0.6-1.4, rotate=±360°, translate=±20px)
-  - Pixel: GaussNoise, RandomBrightnessContrast, PixelDropout
+  - Geometric (p=0.5): RandomRotate90, HorizontalFlip, VerticalFlip, Affine(scale=0.6-1.4, rotate=±360°, translate=±20px)
+  - Pixel (p=0.3): GaussNoise, RandomBrightnessContrast, PixelDropout
 - **GradScaler** for mixed precision
+- **Gradient clipping**: max_norm=1.0
 
 ## Plate Cross-Validation (plate_fold)
 

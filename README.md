@@ -152,15 +152,16 @@ All models use identical augmentation pipeline:
 Based on Farrar et al. 2025 paper - simpler augmentations work better for bacterial phenotypes:
 
 **Augmentations (matching paper):**
-- Geometric: RandomRotate90, HorizontalFlip, VerticalFlip, Affine(scale=0.6-1.4, rotate=±360°, translate=±20px)
-- Pixel: GaussNoise, RandomBrightnessContrast, PixelDropout
+- Geometric (p=0.5): RandomRotate90, HorizontalFlip, VerticalFlip, Affine(scale=0.6-1.4, rotate=±360°, translate=±20px)
+- Pixel (p=0.3): GaussNoise, RandomBrightnessContrast, PixelDropout
 - **REMOVED (per paper findings):** Shear, Blur (these distort ribosome phenotypes)
 
 **Training Configuration:**
-- **Optimizer**: Adam (no SAM)
-- **Loss**: CrossEntropyLoss with label_smoothing=0.1 + class weights
+- **Optimizer**: AdamW with differential LR (backbone 0.1x, classifier 1x)
+- **Loss**: FocalLoss (α=0.25, γ=2.0) with label_smoothing=0.1 + class weights
 - **Crops**: 144 positions per image (12×12 grid), cycle-based permutation
 - **Mixed precision**: GradScaler for AMP
+- **Gradient clipping**: max_norm=1.0
 
 ## Model Comparison
 
