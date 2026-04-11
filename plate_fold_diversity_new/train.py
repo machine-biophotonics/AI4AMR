@@ -309,13 +309,15 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     num_training_steps = len(train_loader) * args.epochs
     num_warmup_steps = len(train_loader) * args.warmup_epochs
     
-    def lr_lambda(step):
-        if step < num_warmup_steps:
-            return step / num_warmup_steps
-        progress = (step - num_warmup_steps) / (num_training_steps - num_warmup_steps)
-        return 0.5 * (1 + np.cos(np.pi * progress))
-    
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    # ReduceLROnPlateau scheduler based on validation AUC - research-backed (Guluwadi & Suresh 2024)
+    # Paper: "Transformative Breast Cancer Diagnosis using CNNs with Optimized ReduceLROnPlateau"
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='max',           # Maximize AUC
+        factor=0.5,          # Reduce LR by half when plateau detected
+        patience=15,          # Wait 15 epochs before reducing
+        min_lr=1e-6          # Lower bound
+    )
     
     scaler = torch.amp.GradScaler('cuda')
     
@@ -350,7 +352,6 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
             
             running_loss += loss.item()
             _, predicted = outputs.max(1)
@@ -405,6 +406,9 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         
         val_losses.append(avg_val_loss)
         val_accs.append(val_acc)
+        
+        # Step scheduler with validation AUC (ReduceLROnPlateau)
+        scheduler.step(val_auc)
         
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
