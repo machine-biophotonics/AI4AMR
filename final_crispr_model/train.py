@@ -172,16 +172,20 @@ else:
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"Output directory: {OUTPUT_DIR}")
 
-# Determine train/val/test plates based on test_plate
+# Fixed deterministic split: Train 4 plates, Val 1 plate, Test 1 plate
+# Each plate gets tested once, validated by previous plate
 all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
-train_val_plates = [p for p in all_plates if p != args.test_plate]
-# Randomize to avoid order bias
-rng = random.Random(SEED + hash(args.test_plate) % 10000)
-rng.shuffle(train_val_plates)
-# Split train_val: first 4 plates for train, last 1 for val
-train_plates = train_val_plates[:4]
-val_plates = train_val_plates[4:]
 test_plate = args.test_plate
+
+# Find index of test plate
+test_idx = all_plates.index(test_plate)
+# Val plate is the previous plate in the cycle (wraps around)
+val_idx = (test_idx - 1) % 6
+val_plate = all_plates[val_idx]
+# Train plates are the remaining 4
+train_plates = [p for p in all_plates if p != test_plate and p != val_plate]
+
+print(f"Fold config: Train={train_plates}, Val={val_plate}, Test={test_plate}")
 
 # If run_all_folds, loop through all plates
 if args.run_all_folds:
@@ -193,13 +197,14 @@ if args.run_all_folds:
         print(f"Running fold: test on {test_plate}")
         print(f"{'='*60}")
         
-        # Determine train/val plates (exclude test plate)
-        train_val = [p for p in all_plates if p != test_plate]
-        # Shuffle to avoid order bias
-        rng = random.Random(SEED + hash(test_plate) % 10000)
-        rng.shuffle(train_val)
-        fold_train = train_val[:4]
-        fold_val = train_val[4:]
+        # Fixed deterministic split: val = previous plate, train = remaining 4
+        test_idx = all_plates.index(test_plate)
+        val_idx = (test_idx - 1) % 6
+        val_plate = all_plates[val_idx]
+        fold_train = [p for p in all_plates if p != test_plate and p != val_plate]
+        fold_val = [val_plate]
+        
+        print(f"Fold config: Train={fold_train}, Val={fold_val}, Test={test_plate}")
         
         # Update args for this fold
         args.test_plate = test_plate
@@ -444,7 +449,7 @@ for plate in train_plates:
         train_paths.append(path)
         train_labels.append(gene_to_idx[gene])
 
-for plate in val_plates:
+for plate in val_plate:
     paths = get_image_paths_for_plate(plate, BASE_DIR)
     for path in paths:
         gene = get_gene_from_path(path)
