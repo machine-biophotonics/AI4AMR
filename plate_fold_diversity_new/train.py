@@ -234,21 +234,11 @@ class GrayscaleMixedCropDataset(Dataset):
         crop = self.transform(image=crop)['image']
         
         return crop, self.labels[idx], self.plates[idx]
+ 
 
-
-def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
-    pt = torch.exp(-ce_loss)
-    focal = alpha * (1 - pt) ** gamma * ce_loss
-    return focal.mean()
-
-
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
-    pt = torch.exp(-ce_loss)
-    focal = alpha * (1 - pt) ** gamma * ce_loss
-    weighted = focal * weights
-    return weighted.mean()
+def weighted_ce_loss(logits, targets, weights, label_smoothing=0.1):
+    """CrossEntropyLoss with label smoothing and class weights - matching final_crispr_model"""
+    return nn.functional.cross_entropy(logits, targets, weight=weights, label_smoothing=label_smoothing)
 
 
 def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_paths, test_labels, output_dir):
@@ -338,7 +328,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
             optimizer.zero_grad()
             with torch.amp.autocast('cuda'):
                 outputs = model(images)
-                loss = weighted_focal_loss(outputs, labels, weights)
+                loss = weighted_ce_loss(outputs, labels, weights, label_smoothing=0.1)
             loss.backward()
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -362,8 +352,9 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
         with torch.inference_mode():
             for images, labels, _ in val_loader:
                 images, labels = images.to(device), labels.to(device)
+                weights = get_weights(labels.cpu().tolist())
                 outputs = model(images)
-                loss = nn.functional.cross_entropy(outputs, labels)
+                loss = weighted_ce_loss(outputs, labels, weights, label_smoothing=0.1)
                 probs = torch.softmax(outputs, dim=1)
                 
                 running_loss += loss.item()
