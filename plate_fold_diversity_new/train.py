@@ -243,12 +243,14 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return focal.mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    """Weighted Focal Loss with class weights."""
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+def weighted_focal_loss(logits, targets, class_weights, alpha=0.25, gamma=2.0, label_smoothing=0.1):
+    """Weighted Focal Loss with class weights and label smoothing."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
-    weighted = focal * weights
+    # Get weight for each sample based on its class
+    sample_weights = class_weights[targets]
+    weighted = focal * sample_weights
     return weighted.mean()
 
 def weighted_ce_loss(logits, targets, weights, label_smoothing=0.1):
@@ -377,7 +379,7 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
                 correct += predicted.eq(labels).sum().item()
                 all_preds.extend(predicted.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                all_probs.append(probs.cpu().numpy())
+                all_probs.append(probs.detach().cpu().numpy())
         
         all_probs = np.vstack(all_probs)
         avg_val_loss = running_loss / len(val_loader)

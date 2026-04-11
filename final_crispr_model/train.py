@@ -494,12 +494,13 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return focal.mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    """Weighted Focal Loss with class weights."""
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+def weighted_focal_loss(logits, targets, class_weights, alpha=0.25, gamma=2.0, label_smoothing=0.1):
+    """Weighted Focal Loss with class weights and label smoothing."""
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
-    weighted = focal * weights
+    sample_weights = class_weights[targets]
+    weighted = focal * sample_weights
     return weighted.mean()
 
 def weighted_ce_loss(logits, targets, weights, label_smoothing=0.1):
@@ -565,6 +566,8 @@ best_val_loss = float('inf')
 start_epoch = 0
 train_losses, train_accs, val_losses, val_accs = [], [], [], []
 
+all_preds, all_labels, all_probs = [], [], []
+
 if args.resume:
     checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -616,7 +619,7 @@ if args.test_only:
                 
                 output = model(crop)
                 probs = torch.softmax(output, dim=1)
-                all_crops_preds.append(probs.cpu().numpy()[0])
+                all_crops_preds.append(probs.detach().cpu().numpy()[0])
             
             all_crops_preds = np.array(all_crops_preds)
             avg_probs = all_crops_preds.mean(axis=0)
@@ -645,6 +648,7 @@ else:
         train_dataset.set_epoch(epoch)
         model.train()
         running_loss, correct, total = 0.0, 0, 0
+        all_preds, all_labels, all_probs = [], [], []
         
         for images, labels, _ in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
@@ -654,32 +658,63 @@ else:
                 outputs = model(images)
                 loss = weighted_focal_loss(outputs, labels, class_weights)
                 probs = torch.softmax(outputs, dim=1)
-                
-                running_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
-                all_preds.extend(predicted.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                all_probs.append(probs.cpu().numpy())
+            
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probs.append(probs.detach().cpu().numpy())
         
+        avg_train_loss = running_loss / len(train_loader)
+        train_acc = 100. * correct / total
         all_probs = np.vstack(all_probs)
-        avg_val_loss = running_loss / len(val_loader)
-        val_acc = 100. * correct / total
         
-        all_preds = np.array(all_preds)
-        all_labels = np.array(all_labels)
-        per_class_correct = [np.sum((all_preds == i) & (all_labels == i)) for i in range(num_classes)]
-        per_class_total = [np.sum(all_labels == i) for i in range(num_classes)]
+        # Validation phase
+        model.eval()
+        val_running_loss, val_correct, val_total = 0.0, 0, 0
+        val_all_preds, val_all_labels, val_all_probs = [], [], []
+        
+        with torch.no_grad():
+            for images, labels, _ in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                with torch.autocast(device_type=device.type):
+                    outputs = model(images)
+                    loss = weighted_focal_loss(outputs, labels, class_weights)
+                    probs = torch.softmax(outputs, dim=1)
+                
+                val_running_loss += loss.item()
+                _, predicted = outputs.max(1)
+                val_total += labels.size(0)
+                val_correct += predicted.eq(labels).sum().item()
+                val_all_preds.extend(predicted.cpu().numpy())
+                val_all_labels.extend(labels.cpu().numpy())
+                val_all_probs.append(probs.detach().cpu().numpy())
+        
+        avg_val_loss = val_running_loss / len(val_loader)
+        val_acc = 100. * val_correct / val_total
+        
+        val_all_probs = np.vstack(val_all_probs)
+        val_all_preds = np.array(val_all_preds)
+        val_all_labels = np.array(val_all_labels)
+        per_class_correct = [np.sum((val_all_preds == i) & (val_all_labels == i)) for i in range(num_classes)]
+        per_class_total = [np.sum(val_all_labels == i) for i in range(num_classes)]
         per_class_acc = [per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else np.nan for i in range(num_classes)]
         balanced_acc = np.nanmean(per_class_acc)
         
-        # Compute ROC AUC
         valid_classes = [i for i in range(num_classes) if per_class_total[i] > 0]
         if len(valid_classes) > 1:
             try:
-                y_true_bin = label_binarize(all_labels, classes=np.arange(num_classes))
-                val_auc = roc_auc_score(y_true_bin, all_probs, average='macro', multi_class='ovr')
+                y_true_bin = label_binarize(val_all_labels, classes=np.arange(num_classes))
+                val_auc = roc_auc_score(y_true_bin, val_all_probs, average='macro', multi_class='ovr')
             except ValueError:
                 val_auc = 0.0
         else:
