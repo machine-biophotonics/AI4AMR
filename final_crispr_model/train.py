@@ -449,7 +449,7 @@ for plate in train_plates:
         train_paths.append(path)
         train_labels.append(gene_to_idx[gene])
 
-for plate in val_plate:
+for plate in [val_plate]:
     paths = get_image_paths_for_plate(plate, BASE_DIR)
     for path in paths:
         gene = get_gene_from_path(path)
