@@ -183,8 +183,7 @@ class AttentionMILModel(nn.Module):
         )
         feature_dim = 1280
         
-        # Positional encoding for 9 positions (3x3 grid)
-        self.pos_embedding = nn.Parameter(torch.randn(9, feature_dim) * 0.02)
+        # No positional encoding - we shuffle crops in MIL (permutation invariant)
         
         self.attention_pool = AttentionPooling(feature_dim, num_heads)
         self.attention_temp = attention_temp
@@ -212,9 +211,7 @@ class AttentionMILModel(nn.Module):
         mask = (torch.rand(batch_size, num_crops, 1, device=x.device) > 0.1).float()
         x = x * mask
         
-        # Add positional encoding after dropout
-        pos_emb = self.pos_embedding.unsqueeze(0).expand(batch_size, -1, -1)
-        x = x + pos_emb
+        # No positional encoding - MIL is permutation invariant (shuffled crops)
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
