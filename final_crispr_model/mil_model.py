@@ -37,9 +37,7 @@ class AttentionPooling(nn.Module):
         # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
         pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
         
-        # Average heads (more stable than flattening)
-        pooled = pooled.mean(dim=1)  # (B, F)
-        
+        # Return all heads (NOT averaged) - model will flatten later
         return pooled, attn_weights
 
 
@@ -210,14 +208,13 @@ class AttentionMILModel(nn.Module):
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
         
-        # Add positional encoding (3x3 grid: 9 positions)
-        # Relative positions: (-1,-1), (-1,0), ..., (1,1)
-        pos_emb = self.pos_embedding.unsqueeze(0).expand(batch_size, -1, -1)
-        x = x + pos_emb
-        
-        # Instance-level dropout (drop entire crops, not features)
+        # Instance-level dropout (drop entire crops first)
         mask = (torch.rand(batch_size, num_crops, 1, device=x.device) > 0.1).float()
         x = x * mask
+        
+        # Add positional encoding after dropout
+        pos_emb = self.pos_embedding.unsqueeze(0).expand(batch_size, -1, -1)
+        x = x + pos_emb
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
