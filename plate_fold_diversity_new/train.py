@@ -166,7 +166,7 @@ class GrayscaleMixedCropDataset(Dataset):
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
-                A.Affine(scale=(0.6, 1.4), rotate=(-360, 360), translate_px=(-20, 20), p=0.5),
+                A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, rotate=(-10, 10), p=0.5),
             ])
             
             # Pixel transforms (applied with probability)
