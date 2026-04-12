@@ -186,9 +186,6 @@ class AttentionMILModel(nn.Module):
         # Positional encoding for 9 positions (3x3 grid)
         self.pos_embedding = nn.Parameter(torch.randn(9, feature_dim) * 0.02)
         
-        # Instance dropout before attention
-        self.instance_dropout = nn.Dropout(p=0.1)
-        
         self.attention_pool = AttentionPooling(feature_dim, num_heads)
         self.attention_temp = attention_temp
         
@@ -216,8 +213,9 @@ class AttentionMILModel(nn.Module):
         pos_emb = self.pos_embedding.unsqueeze(0).expand(batch_size, -1, -1)
         x = x + pos_emb
         
-        # Instance dropout for regularization
-        x = self.instance_dropout(x)
+        # Instance-level dropout (drop entire crops, not features)
+        mask = (torch.rand(batch_size, num_crops, 1, device=x.device) > 0.1).float()
+        x = x * mask
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
