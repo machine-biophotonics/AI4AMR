@@ -154,6 +154,12 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
 
+def attention_entropy_loss(attn_weights):
+    """Entropy regularization to prevent attention collapse"""
+    # attn_weights: (B, N, H)
+    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
+    return entropy
+
 train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, augment=True, seed=SEED)
 val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, augment=False, seed=SEED)
 test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, augment=False, seed=SEED)
@@ -202,8 +208,13 @@ for epoch in range(args.epochs):
         images, labels = images.to(device), labels.to(device)
         optimizer.zero_grad()
         
-        outputs = model(images)
-        loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+        outputs, attn_weights = model(images, return_attention=True)
+        
+        # Main loss + entropy regularization
+        main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+        ent_loss = attention_entropy_loss(attn_weights)
+        loss = main_loss + 0.01 * ent_loss
+        
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -224,7 +235,7 @@ for epoch in range(args.epochs):
     with torch.no_grad():
         for images, labels in val_loader:
             images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
+            outputs, _ = model(images, return_attention=True)
             probs = torch.softmax(outputs, dim=1)
             _, predicted = outputs.max(1)
             all_preds.extend(predicted.cpu().numpy())
@@ -255,7 +266,7 @@ all_preds, all_probs, all_labels = [], [], []
 with torch.no_grad():
     for images, labels in test_loader:
         images = images.to(device)
-        outputs = model(images)
+        outputs, _ = model(images, return_attention=True)
         probs = torch.softmax(outputs, dim=1)
         _, predicted = outputs.max(1)
         all_preds.extend(predicted.cpu().numpy())
