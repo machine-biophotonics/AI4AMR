@@ -16,7 +16,7 @@ import os
 
 
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling (Ilse et al. 2018)"""
+    """Gated attention MIL pooling (Ilse et al. 2018) with temperature"""
     def __init__(self, in_features, num_heads=4):
         super().__init__()
         self.num_heads = num_heads
@@ -26,15 +26,19 @@ class AttentionPooling(nn.Module):
         self.U = nn.Linear(in_features, in_features // 4)
         self.w = nn.Linear(in_features // 4, num_heads)
     
-    def forward(self, x):
+    def forward(self, x, temperature=0.5):
         # Gated attention: tanh(V) * sigmoid(U)
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
         attn_weights = self.w(A)  # (B, N, H)
-        attn_weights = torch.softmax(attn_weights, dim=1)
+        
+        # Temperature scaling to prevent attention collapse
+        attn_weights = torch.softmax(attn_weights / temperature, dim=1)
         
         # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
         pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
-        pooled = pooled.flatten(1)  # (B, H * F)
+        
+        # Average heads (more stable than flattening)
+        pooled = pooled.mean(dim=1)  # (B, F)
         
         return pooled, attn_weights
 
@@ -161,29 +165,47 @@ class MultiCropDataset(Dataset):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
         super().__init__()
-        self.backbone = nn.Sequential(*list(
-            torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1').children()
-        )[:-1])
+        # Use EfficientNet features with proper flattening
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        self.backbone = nn.Sequential(
+            base_model.features,
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
         feature_dim = 1280
         
+        # Instance dropout before attention
+        self.instance_dropout = nn.Dropout(p=0.1)
+        
         self.attention_pool = AttentionPooling(feature_dim, num_heads)
-        pooled_dim = feature_dim * num_heads
+        self.attention_temp = attention_temp
+        
+        # Pool then project (instead of large flatten)
+        self.proj = nn.Linear(feature_dim, feature_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
-            nn.Linear(pooled_dim, num_classes)
+            nn.Linear(feature_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
+        # Extract features
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
         
-        pooled, attn_weights = self.attention_pool(x)
+        # Instance dropout for regularization
+        x = self.instance_dropout(x)
+        
+        # Attention pooling with temperature
+        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+        
+        # Project to reduce dimension
+        pooled = self.proj(pooled)
         
         output = self.classifier(pooled)
         
