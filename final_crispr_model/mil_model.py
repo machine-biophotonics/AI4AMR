@@ -54,6 +54,7 @@ class MultiCropDataset(Dataset):
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
+        self.single_crop = False  # Default to multi-crop
         
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
@@ -104,11 +105,11 @@ class MultiCropDataset(Dataset):
         num_images = len(self.image_paths)
         
         if not self.augment:
-            # Val/test: use center crop but still with neighbors (9 crops)
-            center_idx = num_pos // 2
-            center_pos = self.positions[center_idx]
-            self.epoch_centers = {i: center_pos for i in range(num_images)}
-            self.single_crop = False  # Use 9 crops for val/test too
+            # Val/test: use TRUE image center (not list middle)
+            center_left = (self.image_size - self.crop_size) // 2
+            center_top = (self.image_size - self.crop_size) // 2
+            self.epoch_centers = {i: (center_left, center_top) for i in range(num_images)}
+            self.single_crop = False
             return
         
         # Train: cycle-based
@@ -163,7 +164,8 @@ class MultiCropDataset(Dataset):
             
             # Shuffle crop order for regularization (fixes position overfitting)
             if self.augment:
-                perm = torch.randperm(9)
+                perm = list(range(9))
+                random.shuffle(perm)
                 crops_list = [crops_list[i] for i in perm]
             
             crops = torch.stack(crops_list)
