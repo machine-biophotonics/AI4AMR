@@ -1,5 +1,5 @@
 """
-MIL with cycle-based crop extraction
+MIL with cycle-based crop extraction + improvements
 """
 
 import torch
@@ -16,21 +16,74 @@ import os
 
 
 class AttentionPooling(nn.Module):
+    """Gated attention MIL pooling (Ilse et al. 2018)"""
     def __init__(self, in_features, num_heads=4):
         super().__init__()
         self.num_heads = num_heads
-        self.attention = nn.Sequential(
-            nn.Linear(in_features, in_features // 4),
-            nn.Tanh(),
-            nn.Linear(in_features // 4, num_heads),
+        
+        # Gated attention: V and U learn what to attend to
+        self.V = nn.Linear(in_features, in_features // 4)
+        self.U = nn.Linear(in_features, in_features // 4)
+        self.w = nn.Linear(in_features // 4, num_heads)
+    
+    def forward(self, x, temperature=0.5):
+        # Gated attention: tanh(V) * sigmoid(U)
+        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        attn_weights = self.w(A)  # (B, N, H)
+        
+        # Temperature scaling to prevent attention collapse
+        attn_weights = torch.softmax(attn_weights / temperature, dim=1)
+        
+        # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
+        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
+        
+        return pooled, attn_weights
+
+
+class AttentionMILModel(nn.Module):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
+        super().__init__()
+        # Use EfficientNet features with proper flattening
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        self.backbone = nn.Sequential(
+            base_model.features,
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        feature_dim = 1280
+        
+        # Gated attention pooling
+        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        self.attention_temp = attention_temp
+        
+        # Multi-head projection (keep head diversity)
+        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
+        
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=0.2),
+            nn.Linear(feature_dim, num_classes)
         )
     
-    def forward(self, x):
-        attn_weights = self.attention(x)
-        attn_weights = torch.softmax(attn_weights, dim=1)
-        x = torch.einsum('bnh,bnf->bhf', attn_weights, x)
-        x = x.flatten(1)
-        return x, attn_weights
+    def forward(self, x, return_attention=False):
+        batch_size, num_crops = x.shape[:2]
+        
+        # Extract features
+        x = x.view(batch_size * num_crops, *x.shape[2:])
+        x = self.backbone(x)
+        x = x.view(batch_size, num_crops, -1)
+        
+        # Attention pooling with temperature
+        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+        
+        # Flatten heads and project
+        pooled = pooled.reshape(batch_size, -1)
+        pooled = self.head_proj(pooled)
+        
+        output = self.classifier(pooled)
+        
+        if return_attention:
+            return output, attn_weights
+        return output
 
 
 class MultiCropDataset(Dataset):
@@ -44,6 +97,7 @@ class MultiCropDataset(Dataset):
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
+        self.single_crop = False  # Default to multi-crop
         
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
@@ -93,10 +147,10 @@ class MultiCropDataset(Dataset):
         num_images = len(self.image_paths)
         
         if not self.augment:
-            # Val/test: use center crop but still with neighbors (9 crops)
-            center_idx = num_pos // 2
-            center_pos = self.positions[center_idx]
-            self.epoch_centers = {i: center_pos for i in range(num_images)}
+            # Val/test: use TRUE image center
+            center_left = (self.image_size - self.crop_size) // 2
+            center_top = (self.image_size - self.crop_size) // 2
+            self.epoch_centers = {i: (center_left, center_top) for i in range(num_images)}
             self.single_crop = False
             return
         
@@ -124,21 +178,24 @@ class MultiCropDataset(Dataset):
         center_left, center_top = self.epoch_centers[idx]
         
         if self.single_crop:
-            # Val/test: single center crop
+            # Single crop mode
             crop = image.crop((center_left, center_top, center_left + self.crop_size, center_top + self.crop_size))
             crop = np.array(crop)
             crop = self.transform(image=crop)['image']
-            crops = crop.unsqueeze(0)  # Add crop dimension
+            crops = crop.unsqueeze(0)
         else:
-            # Train: 3x3 grid around center
-            grid_size = 3
-            stride = (self.image_size - self.crop_size) // (grid_size - 1)
-            
+            # 3x3 grid around center with jitter
+            jitter_range = self.stride // 4
             crops_list = []
             for di in range(-1, 2):
                 for dj in range(-1, 2):
-                    left = center_left + dj * stride
-                    top = center_top + di * stride
+                    if self.augment:
+                        jitter_x = random.randint(-jitter_range, jitter_range)
+                        jitter_y = random.randint(-jitter_range, jitter_range)
+                    else:
+                        jitter_x = jitter_y = 0
+                    left = center_left + dj * self.stride + jitter_x
+                    top = center_top + di * self.stride + jitter_y
                     left = max(0, min(left, self.image_size - self.crop_size))
                     top = max(0, min(top, self.image_size - self.crop_size))
                     crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
@@ -146,41 +203,15 @@ class MultiCropDataset(Dataset):
                     crop = self.transform(image=crop)['image']
                     crops_list.append(crop)
             
+            # Shuffle crop order
+            if self.augment:
+                perm = list(range(9))
+                random.shuffle(perm)
+                crops_list = [crops_list[i] for i in perm]
+            
             crops = torch.stack(crops_list)
         
         return crops, self.labels[idx]
-
-
-class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4):
-        super().__init__()
-        self.backbone = nn.Sequential(*list(
-            torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1').children()
-        )[:-1])
-        feature_dim = 1280
-        
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
-        pooled_dim = feature_dim * num_heads
-        
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=0.2),
-            nn.Linear(pooled_dim, num_classes)
-        )
-    
-    def forward(self, x, return_attention=False):
-        batch_size, num_crops = x.shape[:2]
-        
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
-        
-        pooled, attn_weights = self.attention_pool(x)
-        
-        output = self.classifier(pooled)
-        
-        if return_attention:
-            return output, attn_weights
-        return output
 
 
 def extract_well_from_filename(filename):
