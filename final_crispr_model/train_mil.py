@@ -160,9 +160,9 @@ def attention_entropy_loss(attn_weights):
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
     return entropy
 
-train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, augment=True, seed=SEED)
-val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, augment=False, seed=SEED)
-test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, augment=False, seed=SEED)
+train_dataset = MultiCropDataset(train_paths, train_labels, augment=True, seed=SEED)
+val_dataset = MultiCropDataset(val_paths, val_labels, augment=False, seed=SEED)
+test_dataset = MultiCropDataset(test_paths, test_labels, augment=False, seed=SEED)
 
 train_dataset.set_epoch(0)
 val_dataset.set_epoch(0)
@@ -282,7 +282,7 @@ print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.
 
 results = {
     'timestamp': timestamp,
-    'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'num_heads': args.num_heads, 'test_plate': args.test_plate},
+    'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': args.test_plate},
     'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
 }
 
