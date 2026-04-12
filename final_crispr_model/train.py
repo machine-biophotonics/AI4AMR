@@ -355,9 +355,9 @@ class GrayscaleMixedCropDataset(Dataset):
         if augment:
             # Exact augmentations from Farrar et al. 2025 paper / KapanidisLab repo
             # NOTE: Shear and Blur REMOVED per paper findings - "shearing and blurring could cause distortions of the ribosome phenotype and hinder learning"
-            # Affine does NOT include shear (no shear parameter = no shear applied)
+            # Same augmentations as plate_fold_no_aug (ff98a76)
             
-            # Geometric transforms (applied with probability - more conservative)
+            # Geometric transforms
             geometric_transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
@@ -365,11 +365,11 @@ class GrayscaleMixedCropDataset(Dataset):
                 A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, rotate=(-10, 10), p=0.5),
             ])
             
-            # Pixel transforms (applied with probability)
+            # Pixel transforms
             pixel_transform = A.Compose([
-                
-                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
-                
+                A.GaussNoise(std_range=(0.02, 0.08), per_channel=False, p=0.3),
+                A.GaussianBlur(blur_limit=(3, 5), p=0.3),
+                A.CoarseDropout(num_holes_range=(1, 2), hole_height_range=(16, 32), hole_width_range=(16, 32), p=0.3),
             ])
             
             # Combined augmentations
@@ -540,15 +540,17 @@ optimizer = torch.optim.AdamW([
     {'params': classifier_params, 'lr': args.lr}       # Higher LR for classifier
 ], weight_decay=0.01)
 
-# ReduceLROnPlateau scheduler based on validation AUC - research-backed (Guluwadi & Suresh 2024)
-# Paper: "Transformative Breast Cancer Diagnosis using CNNs with Optimized ReduceLROnPlateau"
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer,
-    mode='max',           # Maximize AUC
-    factor=0.5,          # Reduce LR by half when plateau detected
-    patience=15,          # Wait 15 epochs before reducing
-    min_lr=1e-6          # Lower bound
-)
+# Cosine annealing with warmup (same as plate_fold_no_aug)
+num_training_steps = len(train_loader) * args.epochs
+num_warmup_steps = len(train_loader) * args.warmup_epochs
+
+def lr_lambda(step):
+    if step < num_warmup_steps:
+        return step / num_warmup_steps
+    progress = (step - num_warmup_steps) / (num_training_steps - num_warmup_steps)
+    return 0.5 * (1 + np.cos(np.pi * progress))
+
+scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 scaler = torch.amp.GradScaler()
 
@@ -723,7 +725,7 @@ else:
         val_accs.append(val_acc)
         
         # Step scheduler with validation AUC (ReduceLROnPlateau)
-        scheduler.step(val_auc)
+        scheduler.step()
         
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Balanced Acc={balanced_acc:.4f}, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
