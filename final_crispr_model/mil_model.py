@@ -141,12 +141,19 @@ class MultiCropDataset(Dataset):
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)  # Add crop dimension
         else:
-            # Train: 3x3 grid around center - use self.stride for consistency
+            # Train: 3x3 grid around center with jitter
+            jitter_range = self.stride // 4
             crops_list = []
             for di in range(-1, 2):
                 for dj in range(-1, 2):
-                    left = center_left + dj * self.stride
-                    top = center_top + di * self.stride
+                    # Add random jitter for more diversity
+                    if self.augment:
+                        jitter_x = random.randint(-jitter_range, jitter_range)
+                        jitter_y = random.randint(-jitter_range, jitter_range)
+                    else:
+                        jitter_x = jitter_y = 0
+                    left = center_left + dj * self.stride + jitter_x
+                    top = center_top + di * self.stride + jitter_y
                     left = max(0, min(left, self.image_size - self.crop_size))
                     top = max(0, min(top, self.image_size - self.crop_size))
                     crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
@@ -176,6 +183,9 @@ class AttentionMILModel(nn.Module):
         )
         feature_dim = 1280
         
+        # Positional encoding for 9 positions (3x3 grid)
+        self.pos_embedding = nn.Parameter(torch.randn(9, feature_dim) * 0.02)
+        
         # Instance dropout before attention
         self.instance_dropout = nn.Dropout(p=0.1)
         
@@ -184,6 +194,9 @@ class AttentionMILModel(nn.Module):
         
         # Pool then project (instead of large flatten)
         self.proj = nn.Linear(feature_dim, feature_dim)
+        
+        # Multi-head projection (keep head diversity)
+        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
@@ -198,14 +211,20 @@ class AttentionMILModel(nn.Module):
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
         
+        # Add positional encoding (3x3 grid: 9 positions)
+        # Relative positions: (-1,-1), (-1,0), ..., (1,1)
+        pos_emb = self.pos_embedding.unsqueeze(0).expand(batch_size, -1, -1)
+        x = x + pos_emb
+        
         # Instance dropout for regularization
         x = self.instance_dropout(x)
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
-        # Project to reduce dimension
-        pooled = self.proj(pooled)
+        # Flatten heads and project (keep diversity)
+        pooled = pooled.view(batch_size, -1)
+        pooled = self.head_proj(pooled)
         
         output = self.classifier(pooled)
         
