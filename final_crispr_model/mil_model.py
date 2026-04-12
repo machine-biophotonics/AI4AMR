@@ -16,28 +16,26 @@ import os
 
 
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling (Ilse et al. 2018) with temperature"""
-    def __init__(self, in_features, num_heads=4):
+    """Gated attention MIL pooling (Ilse et al. 2018) - single head for correct MIL"""
+    def __init__(self, in_features):
         super().__init__()
-        self.num_heads = num_heads
         
-        # Gated attention: V and U learn what to attend to
+        # Gated attention: single head
         self.V = nn.Linear(in_features, in_features // 4)
         self.U = nn.Linear(in_features, in_features // 4)
-        self.w = nn.Linear(in_features // 4, num_heads)
+        self.w = nn.Linear(in_features // 4, 1)
     
     def forward(self, x, temperature=0.5):
         # Gated attention: tanh(V) * sigmoid(U)
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
-        attn_weights = self.w(A)  # (B, N, H)
+        attn_weights = self.w(A).squeeze(-1)  # (B, N)
         
         # Temperature scaling to prevent attention collapse
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
         
-        # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
-        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
+        # Weighted sum: (B, N) x (B, N, F) -> (B, F)
+        pooled = torch.sum(attn_weights.unsqueeze(-1) * x, dim=1)
         
-        # Return all heads (NOT averaged) - model will flatten later
         return pooled, attn_weights
 
 
@@ -183,16 +181,10 @@ class AttentionMILModel(nn.Module):
         )
         feature_dim = 1280
         
-        # No positional encoding - we shuffle crops in MIL (permutation invariant)
-        
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        # No positional encoding - MIL is permutation invariant
+        # Single-head gated attention
+        self.attention_pool = AttentionPooling(feature_dim)
         self.attention_temp = attention_temp
-        
-        # Pool then project (instead of large flatten)
-        self.proj = nn.Linear(feature_dim, feature_dim)
-        
-        # Multi-head projection (keep head diversity)
-        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
@@ -211,14 +203,8 @@ class AttentionMILModel(nn.Module):
         mask = (torch.rand(batch_size, num_crops, 1, device=x.device) > 0.1).float()
         x = x * mask
         
-        # No positional encoding - MIL is permutation invariant (shuffled crops)
-        
-        # Attention pooling with temperature
+        # Gated attention pooling (returns (B, F) directly)
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
-        
-        # Flatten heads and project (keep diversity)
-        pooled = pooled.view(batch_size, -1)
-        pooled = self.head_proj(pooled)
         
         output = self.classifier(pooled)
         

@@ -177,7 +177,7 @@ test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False
 
 print(f"Crops per image: 9 (center + 8 neighbors)")
 
-model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
+model = AttentionMILModel(num_classes=num_classes)
 model = model.to(device)
 
 backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
