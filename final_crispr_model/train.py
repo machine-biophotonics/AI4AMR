@@ -367,9 +367,9 @@ class GrayscaleMixedCropDataset(Dataset):
             
             # Pixel transforms (applied with probability)
             pixel_transform = A.Compose([
-                A.GaussNoise(std_range=(0.01, 0.02), per_channel=True, p=0.3),
+                
                 A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
-                A.PixelDropout(dropout_prob=0.05, per_channel=True, p=0.3),
+                
             ])
             
             # Combined augmentations
