@@ -16,21 +16,27 @@ import os
 
 
 class AttentionPooling(nn.Module):
+    """Gated attention MIL pooling (Ilse et al. 2018)"""
     def __init__(self, in_features, num_heads=4):
         super().__init__()
         self.num_heads = num_heads
-        self.attention = nn.Sequential(
-            nn.Linear(in_features, in_features // 4),
-            nn.Tanh(),
-            nn.Linear(in_features // 4, num_heads),
-        )
+        
+        # Gated attention: V and U learn what to attend to
+        self.V = nn.Linear(in_features, in_features // 4)
+        self.U = nn.Linear(in_features, in_features // 4)
+        self.w = nn.Linear(in_features // 4, num_heads)
     
     def forward(self, x):
-        attn_weights = self.attention(x)
+        # Gated attention: tanh(V) * sigmoid(U)
+        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        attn_weights = self.w(A)  # (B, N, H)
         attn_weights = torch.softmax(attn_weights, dim=1)
-        x = torch.einsum('bnh,bnf->b hf', attn_weights, x)
-        x = x.flatten(1)
-        return x, attn_weights
+        
+        # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
+        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
+        pooled = pooled.flatten(1)  # (B, H * F)
+        
+        return pooled, attn_weights
 
 
 class MultiCropDataset(Dataset):
@@ -131,21 +137,23 @@ class MultiCropDataset(Dataset):
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)  # Add crop dimension
         else:
-            # Train: 3x3 grid around center
-            grid_size = 3
-            stride = (self.image_size - self.crop_size) // (grid_size - 1)
-            
+            # Train: 3x3 grid around center - use self.stride for consistency
             crops_list = []
             for di in range(-1, 2):
                 for dj in range(-1, 2):
-                    left = center_left + dj * stride
-                    top = center_top + di * stride
+                    left = center_left + dj * self.stride
+                    top = center_top + di * self.stride
                     left = max(0, min(left, self.image_size - self.crop_size))
                     top = max(0, min(top, self.image_size - self.crop_size))
                     crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
                     crop = np.array(crop)
                     crop = self.transform(image=crop)['image']
                     crops_list.append(crop)
+            
+            # Shuffle crop order for regularization (fixes position overfitting)
+            if self.augment:
+                perm = torch.randperm(9)
+                crops_list = [crops_list[i] for i in perm]
             
             crops = torch.stack(crops_list)
         
