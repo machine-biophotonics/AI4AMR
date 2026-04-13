@@ -159,9 +159,24 @@ def train_single_fold(test_plate):
     
     print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
     
+    if len(train_paths) == 0:
+        print(f"ERROR: No training data found for fold {test_plate}. Check --data_root path.")
+        return None
+    
     class_counts = Counter(train_labels)
     total = len(train_labels)
-    class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
+    
+    # Safety check: handle missing classes
+    class_weights_list = []
+    for i in range(num_classes):
+        count = class_counts.get(i, 0)
+        if count == 0:
+            print(f"WARNING: Class {i} has 0 samples in training set. Using weight=1.0")
+            class_weights_list.append(1.0)
+        else:
+            class_weights_list.append(total / (num_classes * count))
+    
+    class_weights = torch.tensor(class_weights_list, device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
     train_dataset = MultiCropDataset(train_paths, train_labels, plate_data, augment=True, seed=SEED)
@@ -200,7 +215,12 @@ def train_single_fold(test_plate):
         writer = csv.writer(f)
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
     
-    best_val_auc = 0.0
+    # Track best metrics for multiple save criteria
+    best_metrics = {
+        'val_auc': 0.0,
+        'val_acc': 0.0,
+        'val_loss': float('inf')
+    }
     
     print("Training...")
     for epoch in range(args.epochs):
@@ -234,34 +254,67 @@ def train_single_fold(test_plate):
         
         model.eval()
         all_preds, all_probs, all_labels = [], [], []
+        val_total_loss = 0.0
         
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                val_total_loss += val_loss.item()
                 probs = torch.softmax(outputs, dim=1)
                 _, predicted = outputs.max(1)
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
         
+        avg_val_loss = val_total_loss / len(val_loader)
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
         all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
         val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, 0, val_acc, val_auc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
         
-        if val_auc > best_val_auc:
-            best_val_auc = val_auc
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+        # Save best models based on different metrics
+        if val_auc > best_metrics['val_auc']:
+            best_metrics['val_auc'] = val_auc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, 
+                      os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        if val_acc > best_metrics['val_acc']:
+            best_metrics['val_acc'] = val_acc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, 
+                      os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        if avg_val_loss < best_metrics['val_loss']:
+            best_metrics['val_loss'] = avg_val_loss
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, 
+                      os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
+        
+        # Save checkpoint every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, 
+                      os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
     
     print("Testing...")
-    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
+    
+    # Try to load best model (by AUC), fallback to others if not exists
+    best_model_path = os.path.join(OUTPUT_DIR, 'best_model_auc.pth')
+    if not os.path.exists(best_model_path):
+        best_model_path = os.path.join(OUTPUT_DIR, 'best_model_acc.pth')
+    if not os.path.exists(best_model_path):
+        best_model_path = os.path.join(OUTPUT_DIR, 'best_model_loss.pth')
+    
+    if not os.path.exists(best_model_path):
+        print(f"ERROR: No best model found in {OUTPUT_DIR}")
+        return None
+    
+    checkpoint = torch.load(best_model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
@@ -286,7 +339,9 @@ def train_single_fold(test_plate):
     results = {
         'timestamp': timestamp,
         'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': test_plate},
-        'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
+        'results': {'best_val_auc': float(best_metrics['val_auc']), 'best_val_acc': float(best_metrics['val_acc']), 
+                    'best_val_loss': float(best_metrics['val_loss']), 
+                    'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
     }
     
     with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
