@@ -448,3 +448,24 @@ python train_mil.py \
 - `checkpoint_epoch_N.pth` - Every 10 epochs
 - `training_metrics_*.csv` - Epoch metrics
 - `training_results.json` - Final results
+
+## Visualization Scripts
+
+Visualize MIL crop extraction and augmentation.
+
+```bash
+cd final_crispr_model
+
+# Crop positions visualization
+python visualize_mil_crops.py --image_path /home/student/Desktop/CRISPRi_Imaging/P1/WellA01_PointA01_0000_ChannelCam-DIA\th Master\tt Screening_Seq0000_sharpest_image_1.tif --output_dir ./crop_visualizations
+
+# Augmented crops visualization
+python visualize_augmented_crops.py --image_path /home/student/Desktop/CRISPRi_Imaging/P1/WellA01_PointA01_0000_ChannelCam-DIA\th Master\tt Screening_Seq0000_sharpest_image_1.tif --output_dir ./crop_visualizations
+```
+
+### Output Files
+
+- `crop_positions_visualization.png` - Full image with position grid (yellow=valid, red=edges, green=example)
+- `crop_group_example.png` - 9 crops in 3x3 grid
+- `crop_01.png` to `crop_09.png` - Individual crop images
+- `crop_group_augmented.png` - Original + augmented versions
