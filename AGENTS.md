@@ -377,10 +377,74 @@ python train.py \
     --warmup_epochs 6
 ```
 
-Output in `increase_{n}_plates/`:
-- `best_model.pth` - highest val ROC AUC (primary)
-- `best_model_acc.pth` - highest val accuracy
-- `best_model_balanced.pth` - highest balanced accuracy
-- `best_model_auc.pth` - explicit ROC AUC save
-- `best_model_loss.pth` - lowest validation loss
-- `training_metrics_*.csv` - epoch-level metrics
+## MIL Training (final_crispr_model/train_mil.py)
+
+Multiple Instance Learning with Gated Attention Pooling for plate classification.
+
+### Architecture
+
+```
+Input: 9 crops per image (3×3 grid)
+    │
+    ▼
+EfficientNet-B0 → 9 × 1280-dim features
+    │
+    ▼ (no transformer - attention learns cross-crop weights)
+Gated Attention Pooling (4 heads)
+    │  tanh(V) ⊙ sigmoid(U) - learns which crops matter
+    ▼
+Head Projection (5120 → 1280)
+    │
+Classifier (1280 → 96 classes)
+```
+
+### How It Works
+
+1. **9 crops** extracted in 3×3 grid around center
+2. **EfficientNet-B0** processes each crop → 9 × 1280-dim features
+3. **Gated Attention** learns weights for each crop:
+   - 4 heads learn different aspects (center-focused, edge-focused, texture, morphology)
+   - Gating suppresses irrelevant crops
+4. **Weighted combination** of all 9 crops → classification
+
+### Training
+
+```bash
+cd final_crispr_model
+
+# Single fold
+python train_mil.py \
+    --epochs 200 \
+    --batch_size 16 \
+    --lr 1e-4 \
+    --test_plate P6 \
+    --data_root /path/to/AI4AMR
+
+# All 6 folds
+python train_mil.py \
+    --epochs 200 \
+    --batch_size 16 \
+    --lr 1e-4 \
+    --run_all_folds \
+    --data_root /path/to/AI4AMR
+```
+
+### Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--epochs` | Training epochs | 200 |
+| `--batch_size` | Batch size | 16 |
+| `--lr` | Learning rate | 1e-4 |
+| `--test_plate` | Test plate (P1-P6) | P6 |
+| `--data_root` | Path to P1-P6 folders | parent dir |
+| `--run_all_folds` | Run all 6 folds | disabled |
+
+### Output Files
+
+- `best_model_auc.pth` - Best by validation AUC
+- `best_model_acc.pth` - Best by validation accuracy
+- `best_model_loss.pth` - Best by lowest validation loss
+- `checkpoint_epoch_N.pth` - Every 10 epochs
+- `training_metrics_*.csv` - Epoch metrics
+- `training_results.json` - Final results

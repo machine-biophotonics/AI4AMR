@@ -175,6 +175,87 @@ Based on Farrar et al. 2025 paper - simpler augmentations work better for bacter
 | dinov3-finetune LR | DINOv3 ViT-L | SAM | ~100K | 1024 |
 | dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | SAM | ~3M | 1024 |
 
+## MIL Model (final_crispr_model/train_mil.py)
+
+Multiple Instance Learning (MIL) approach for plate classification using attention pooling.
+
+### Architecture
+
+```
+Input: 9 crops per image (3×3 grid around center)
+    │
+    ▼
+EfficientNet-B0 (backbone)
+    │  Extracts 1280-dim features per crop
+    ▼
+Gated Attention Pooling (4 heads)
+    │  Learns which crops matter most
+    │  tanh(V) ⊙ sigmoid(U) gating mechanism
+    ▼
+Head Projection (5120 → 1280)
+    │
+Classifier (1280 → 96 classes)
+```
+
+### How It Works
+
+1. **Crop Extraction**: 9 crops extracted in 3×3 grid around center position
+2. **Feature Extraction**: EfficientNet-B0 processes each crop independently → 9 × 1280-dim features
+3. **Gated Attention**: Multi-head attention learns weights for each crop:
+   - 4 heads can learn different "aspects" (e.g., center-focused, edge-focused, texture, morphology)
+   - Gating mechanism (tanh(V) ⊙ sigmoid(U)) suppresses irrelevant crops
+4. **Weighted Combination**: All 9 crops contribute with learned weights → classification
+
+### Training
+
+```bash
+cd final_crispr_model
+
+# Single fold
+python train_mil.py \
+    --epochs 200 \
+    --batch_size 16 \
+    --lr 1e-4 \
+    --test_plate P6 \
+    --data_root /path/to/AI4AMR
+
+# All 6 folds (cross-validation)
+python train_mil.py \
+    --epochs 200 \
+    --batch_size 16 \
+    --lr 1e-4 \
+    --run_all_folds \
+    --data_root /path/to/AI4AMR
+```
+
+### Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--epochs` | Number of training epochs | 200 |
+| `--batch_size` | Batch size | 16 |
+| `--lr` | Learning rate | 1e-4 |
+| `--test_plate` | Test plate (P1-P6) | P6 |
+| `--data_root` | Path to folder containing P1-P6 | parent dir |
+| `--run_all_folds` | Run all 6 folds | disabled |
+
+### Output Files
+
+| File | Description |
+|------|-------------|
+| `best_model_auc.pth` | Best model by validation AUC |
+| `best_model_acc.pth` | Best model by validation accuracy |
+| `best_model_loss.pth` | Best model by lowest validation loss |
+| `checkpoint_epoch_N.pth` | Checkpoint every 10 epochs |
+| `training_metrics_*.csv` | Epoch-level metrics |
+| `training_results.json` | Final results |
+
+### Multi-Head Attention Details
+
+- **4 heads**: Each head learns different attention patterns
+- **Gated attention**: tanh(V) ⊙ sigmoid(U) - learns what to attend to AND gates irrelevant crops
+- **Weighted sum**: All 9 crops contribute, weighted by learned attention
+
 ## Plate Cross-Validation (plate_fold)
 
 Leave-one-plate-out cross-validation for robust evaluation.
@@ -254,6 +335,11 @@ python train.py --plot_fold_comparison
 │
 ├── final_crispr_model/           # Full CV with paper augmentations
 │   ├── train.py                   # 6-fold cross-validation
+│   ├── train_mil.py              # MIL training with attention pooling
+│   ├── mil_model.py               # MIL model architecture
+│   ├── predict_all_crops.py       # Prediction script
+│   ├── generate_combined_confusion.py  # Confusion matrix
+│   ├── plate_well_id_path.json    # Labels
 │   └── fold_P{1-6}/               # Results per fold
 │
 ├── dinov3-finetune/               # DINOv3 ViT-L fine-tuning
