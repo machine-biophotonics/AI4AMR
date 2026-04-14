@@ -20,10 +20,6 @@ from pathlib import Path
 
 
 SCRIPT_DIR: str = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR: str = os.path.dirname(SCRIPT_DIR)
-
-with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
-    PLATE_WELL_ID: dict = json.load(f)
 
 
 def main() -> None:
@@ -39,8 +35,21 @@ def main() -> None:
                         help='Maximum number of images to process')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='Batch size for inference')
+    parser.add_argument('--checkpoint', type=str, default='best_model_auc.pth',
+                        help='Checkpoint filename to use (best_model_auc.pth, best_model_acc.pth, best_model_loss.pth)')
+    parser.add_argument('--data_root', type=str, default=None,
+                        help='Path to parent folder containing P1-P6 (default: parent of script dir)')
     
     args: argparse.Namespace = parser.parse_args()
+    
+    with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+        PLATE_WELL_ID: dict = json.load(f)
+    
+    # Set BASE_DIR based on data_root argument
+    if args.data_root:
+        BASE_DIR: str = args.data_root
+    else:
+        BASE_DIR: str = os.path.dirname(SCRIPT_DIR)
     
     crop_size: int = args.crop_size
     grid_size: int = args.grid_size
@@ -66,21 +75,26 @@ def main() -> None:
     # Import the MIL model
     from mil_model import AttentionMILModel
     
-    # Default fold is P6 if not specified
+# Default fold is P6 if not specified
     test_plate: str = args.fold if args.fold else 'P6'
     fold_dir: str = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
-    checkpoint_path: str = os.path.join(fold_dir, 'best_model.pth')
+    checkpoint_path: str = os.path.join(fold_dir, args.checkpoint)
     image_dir: str = os.path.join(BASE_DIR, test_plate)
     output_dir: str = fold_dir
 
-    print(f"\n{'='*60}")
-    print(f"Processing fold: test plate={test_plate}")
-    print(f"  checkpoint: {checkpoint_path}")
-    print(f"  image_dir: {image_dir}")
-    print(f"{'='*60}")
+    print(f'\n{'='*60}')
+    print(f'Processing fold: test plate={test_plate}')
+    print(f'  checkpoint: {checkpoint_path}')
+    print(f'  image_dir: {image_dir}')
+    print(f'  mil_mode: {mil_mode}')
+    print(f'{'='*60}')
     
     if not os.path.exists(checkpoint_path):
-        print(f"ERROR: Checkpoint not found: {checkpoint_path}")
+        print(f'ERROR: Checkpoint not found: {checkpoint_path}')
+        print(f'Available checkpoints in {fold_dir}:')
+        for f in os.listdir(fold_dir):
+            if f.endswith('.pth'):
+                print(f'  - {f}')
         return
     
     # Load model

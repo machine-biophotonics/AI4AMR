@@ -284,11 +284,14 @@ def plot_percentage_cm(cm_sum, labels, title, output_path, show_annot=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for plate_fold_no_aug')
+    parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for final_crispr_model')
     parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
     parser.add_argument('--guide', action='store_true', help='Generate only guide-level')
     parser.add_argument('--family', action='store_true', help='Generate only family-level')
-    parser.add_argument('--csv_name', type=str, default=None, help='CSV filename to look for (default: predictions_all_crops.csv or predictions_all_crops_mil_100pos.csv)')
+    parser.add_argument('--csv_name', type=str, default=None, 
+                        help='CSV filename to look for (default: predictions_all_crops.csv or predictions_all_crops_mil_100pos.csv)')
+    parser.add_argument('--prediction_csv', type=str, default=None,
+                        help='Specific prediction CSV file to use')
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -309,12 +312,18 @@ def main():
     for fold in folds:
         fold_dir = os.path.join(SCRIPT_DIR, f'fold_{fold}')
         
-        if args.csv_name:
+        if args.prediction_csv:
+            csv_path = os.path.join(fold_dir, args.prediction_csv)
+        elif args.csv_name:
             csv_path = os.path.join(fold_dir, args.csv_name)
         else:
             csv_path = os.path.join(fold_dir, 'predictions_all_crops.csv')
             if not os.path.exists(csv_path):
                 csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_100pos.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(fold_dir, 'image_predictions_mil.csv')
 
         if not os.path.exists(csv_path):
             print(f"Skipping {fold}: no CSV file found")
