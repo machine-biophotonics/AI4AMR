@@ -356,16 +356,22 @@ if __name__ == '__main__':
         all_results = []
         for test_plate in all_plates:
             fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
-            results_file = os.path.join(fold_dir, 'training_results.json')
             
-            # Skip if already trained
-            if os.path.exists(results_file):
+            # Skip if already trained (check for best model files)
+            best_model_auc = os.path.join(fold_dir, 'best_model_auc.pth')
+            best_model_acc = os.path.join(fold_dir, 'best_model_acc.pth')
+            best_model_loss = os.path.join(fold_dir, 'best_model_loss.pth')
+            
+            if os.path.exists(best_model_auc) or os.path.exists(best_model_acc) or os.path.exists(best_model_loss):
                 print(f"\n{'='*60}")
-                print(f"Skipping {test_plate}: already trained (results exist)")
+                print(f"Skipping {test_plate}: already trained (best model exists)")
                 print(f"{'='*60}")
-                with open(results_file, 'r') as f:
-                    existing_result = json.load(f)
-                    all_results.append(existing_result)
+                # Try to load existing results if available
+                results_file = os.path.join(fold_dir, 'training_results.json')
+                if os.path.exists(results_file):
+                    with open(results_file, 'r') as f:
+                        existing_result = json.load(f)
+                        all_results.append(existing_result)
                 continue
             
             print(f"\n{'='*60}")
