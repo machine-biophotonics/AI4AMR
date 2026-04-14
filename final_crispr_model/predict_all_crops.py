@@ -376,6 +376,11 @@ def main() -> None:
     
     df: pd.DataFrame = pd.DataFrame(all_results)
     
+    if df.empty or 'image_name' not in df.columns:
+        print('ERROR: No valid predictions. Skipping per-image aggregation.')
+        print('Results were empty.')
+        return
+    
     output_csv: str = os.path.join(output_dir, f'predictions_all_crops_mil.csv')
     if mil_mode:
         output_csv = os.path.join(output_dir, f'predictions_all_crops_mil_100pos.csv')
