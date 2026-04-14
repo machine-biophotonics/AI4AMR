@@ -144,7 +144,7 @@ class ClassBucketDataset(Dataset):
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, rotate=(-10, 10), p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
+                A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
@@ -154,56 +154,49 @@ class ClassBucketDataset(Dataset):
                 ToTensorV2(),
             ])
         
-        # Tracking for exhaust-then-reset
-        self.used_images = defaultdict(set)  # Track used image indices per class
+        # Tracking for exhaust-then-reset (ALL position pairs, not just images)
+        self.used_pairs = defaultdict(set)  # Track (image_idx, position) pairs per class
         self.epoch_coverage = {}
-        self.total_images = sum(len(v) for v in self.class_to_images.values())
+        self.total_pairs = sum(len(v) for v in self.class_buckets.values())
         
         # Unique classes for batch iteration
         self.unique_classes = sorted(self.class_buckets.keys())
     
     def set_epoch(self, epoch):
-        """Set up new random sample for epoch - ensure 9 DIFFERENT images"""
+        """Set up new random sample for epoch - exhaust ALL (image, position) pairs before reusing"""
         self.current_epoch = epoch
-        self.used_images.clear()
+        self.used_pairs.clear()  # Track (image_idx, position) pairs
         self.epoch_coverage = {}
         
         rng = random.Random(self.seed + epoch)
         
-        # For each class, sample 9 DIFFERENT images, then 1 random position from each
+        # For each class, sample 9 DIFFERENT (image, position) pairs
         for class_label in self.unique_classes:
-            # Get available images for this class
-            available_imgs = list(self.class_to_images[class_label])
+            bucket = self.class_buckets[class_label]  # All (img_idx, position) pairs
+            total_pairs = len(bucket)
             
-            # Exhaust-then-reset: if we've used all images, reset
-            if len(self.used_images[class_label]) >= len(available_imgs):
-                self.used_images[class_label].clear()
+            # Exhaust-then-reset: if we've used all pairs, reset
+            if len(self.used_pairs[class_label]) >= total_pairs:
+                self.used_pairs[class_label].clear()
             
-            # Get unused images
-            unused_imgs = [i for i in available_imgs if i not in self.used_images[class_label]]
+            # Get unused pairs
+            unused_pairs = [p for p in bucket if p not in self.used_pairs[class_label]]
             
             # If not enough unused, sample from all available
-            if len(unused_imgs) < self.num_crops_per_class:
-                self.used_images[class_label].clear()
-                unused_imgs = available_imgs
+            if len(unused_pairs) < self.num_crops_per_class:
+                self.used_pairs[class_label].clear()
+                unused_pairs = bucket
             
-            # Sample 9 different images
-            if len(unused_imgs) >= self.num_crops_per_class:
-                sampled_imgs = rng.sample(unused_imgs, self.num_crops_per_class)
+            # Sample 9 different (image, position) pairs
+            if len(unused_pairs) >= self.num_crops_per_class:
+                sampled = rng.sample(unused_pairs, self.num_crops_per_class)
             else:
                 # If insufficient, allow repeats from remaining
-                sampled_imgs = rng.choices(unused_imgs, k=self.num_crops_per_class)
+                sampled = rng.choices(unused_pairs, k=self.num_crops_per_class)
             
-            # Mark these images as used
-            for img_idx in sampled_imgs:
-                self.used_images[class_label].add(img_idx)
-            
-            # For each sampled image, pick 1 random position
-            sampled = []
-            for img_idx in sampled_imgs:
-                positions = self.image_positions[class_label][img_idx]
-                pos = rng.choice(positions)
-                sampled.append((img_idx, pos))
+            # Mark these pairs as used
+            for pair in sampled:
+                self.used_pairs[class_label].add(pair)
             
             self.epoch_coverage[class_label] = sampled
     
@@ -243,9 +236,6 @@ class ClassBucketDataset(Dataset):
                 crop = np.array(crop)
                 crop = self.transform(image=crop)['image']
                 crops_list.append(crop)
-                
-                # Track coverage (mark image as used for exhaust tracking)
-                self.used_images[class_label].add(img_idx)
         
         # Shuffle crop order
         if self.augment and self.mode == 'train':
@@ -261,12 +251,12 @@ class ClassBucketDataset(Dataset):
         return crops, class_idx
     
     def get_coverage_report(self):
-        """Report on epoch coverage - how many unique images sampled"""
-        total_used = sum(len(v) for v in self.used_images.values())
+        """Report on epoch coverage - how many unique (image, position) pairs sampled"""
+        total_used = sum(len(v) for v in self.used_pairs.values())
         return {
-            'unique_images_sampled': total_used,
-            'total_unique_images': self.total_images,
-            'coverage_pct': total_used / self.total_images * 100
+            'unique_pairs_sampled': total_used,
+            'total_pairs': self.total_pairs,
+            'coverage_pct': total_used / self.total_pairs * 100
         }
 
 
@@ -309,7 +299,7 @@ class SingleImageDataset(Dataset):
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, rotate=(-10, 10), p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
+                A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
