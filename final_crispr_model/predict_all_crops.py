@@ -382,8 +382,10 @@ def main() -> None:
         return
     
     output_csv: str = os.path.join(output_dir, f'predictions_all_crops_mil.csv')
+    # Include checkpoint name in filename
+    checkpoint_name = args.checkpoint.replace('.pth', '')
     if mil_mode:
-        output_csv = os.path.join(output_dir, f'predictions_all_crops_mil_100pos.csv')
+        output_csv = os.path.join(output_dir, f'predictions_all_crops_mil_{checkpoint_name}.csv')
     df.to_csv(output_csv, index=False)
     print(f"\nSaved predictions to {output_csv}")
     
@@ -395,67 +397,6 @@ def main() -> None:
         print(f"  F1: {metrics['f1']:.4f}")
         if metrics.get('roc_auc') is not None:
             print(f"  ROC-AUC: {metrics['roc_auc']:.4f}")
-    
-    print(f"\n--- Per-image averaged predictions (majority vote) ---")
-    
-    image_preds: list[dict] = []
-    for img_name in df['image_name'].unique():
-        img_df = df[df['image_name'] == img_name]
-        pred_counts = img_df['predicted_class_idx'].value_counts()
-        majority_pred = int(pred_counts.index[0])
-        well = img_df['well'].iloc[0] if 'well' in img_df.columns else None
-        gt_label = img_df['ground_truth_label'].iloc[0] if 'ground_truth_label' in img_df.columns else None
-        gt_idx = int(img_df['ground_truth_idx'].iloc[0]) if 'ground_truth_idx' in img_df.columns else -1
-        
-        avg_probs = np.mean(np.array(img_df['probs'].tolist()), axis=0)
-        avg_pred = int(np.argmax(avg_probs))
-        
-        # Get attention-weighted prediction
-        attn_weights = np.array(img_df['attention'].tolist())
-        attn_probs = np.array(img_df['probs'].tolist())
-        n_classes = attn_probs.shape[1]
-        n_attn = attn_weights.shape[1]
-        min_dim = min(n_classes, n_attn)
-        weighted_probs = np.sum(attn_probs[:, :min_dim] * attn_weights[:, :min_dim], axis=0)
-        attn_pred = int(np.argmax(weighted_probs))
-        
-        image_preds.append({
-            'image_name': img_name,
-            'well': well,
-            'ground_truth_label': gt_label,
-            'ground_truth_idx': gt_idx,
-            'majority_vote_pred': majority_pred,
-            'avg_prob_pred': avg_pred,
-            'attn_weighted_pred': attn_pred,
-        })
-    
-    img_df_final = pd.DataFrame(image_preds)
-    img_df_final = img_df_final[img_df_final['ground_truth_label'].notna()]
-    
-    if len(img_df_final) > 0:
-        maj_correct = int((img_df_final['majority_vote_pred'] == img_df_final['ground_truth_idx']).sum())
-        avg_correct = int((img_df_final['avg_prob_pred'] == img_df_final['ground_truth_idx']).sum())
-        attn_correct = int((img_df_final['attn_weighted_pred'] == img_df_final['ground_truth_idx']).sum())
-        total = len(img_df_final)
-        
-        print(f"Images with ground truth: {total}")
-        print(f"Majority vote accuracy: {maj_correct / total:.4f} ({maj_correct}/{total})")
-        print(f"Average probability accuracy: {avg_correct / total:.4f} ({avg_correct}/{total})")
-        print(f"Attention-weighted accuracy: {attn_correct / total:.4f} ({attn_correct}/{total})")
-        
-        metrics['majority_vote_accuracy'] = maj_correct / total
-        metrics['avg_prob_accuracy'] = avg_correct / total
-        metrics['attn_weighted_accuracy'] = attn_correct / total
-        metrics['num_test_images'] = total
-    
-    img_output_csv: str = os.path.join(output_dir, f'image_predictions_mil.csv')
-    if mil_mode:
-        img_output_csv = os.path.join(output_dir, f'image_predictions_mil_100pos.csv')
-    img_df_final.to_csv(img_output_csv, index=False)
-    print(f"Saved per-image predictions to {img_output_csv}")
-
-    del model
-    torch.cuda.empty_cache()
     
     print(f"\n{'='*60}")
     print(f"Done! Fold {test_plate}")
