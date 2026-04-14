@@ -166,11 +166,6 @@ def main():
     plt.close()
     print(f'Saved: {output_path}')
     
-    # Also save individual crops
-    for idx, crop in enumerate(crops):
-        crop.save(os.path.join(args.output_dir, f'crop_{idx+1:02d}.png'))
-    print(f'Saved 9 individual crops to {args.output_dir}')
-    
     print(f'\nAll outputs saved to: {args.output_dir}')
 
 

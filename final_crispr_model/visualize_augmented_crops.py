@@ -108,36 +108,41 @@ def main():
     # Extract original 9 crops
     original_crops = extract_9_crops(image, example_left, example_top, stride_x, stride_y, args.crop_size)
     
-    # Create figure with original + augmented versions
+    # Apply augmentations and create 3x3 grid for each version
     n_augmented = args.num_augmented
-    rows = n_augmented + 1
-    fig, axes = plt.subplots(rows, 3, figsize=(9, 3 * rows))
     
-    if rows == 1:
-        axes = axes.reshape(1, -1)
-    
-    # Plot original
-    for idx, (ax, crop) in enumerate(zip(axes[0], original_crops)):
-        ax.imshow(crop)
-        row = idx // 3 - 1
-        col = idx % 3 - 1
-        ax.set_title(f'Original\ndx={col}, dy={row}', fontsize=8)
-        ax.axis('off')
-    
-    # Plot augmented versions
     for aug_idx in range(n_augmented):
         aug_crops = [apply_augmentations(crop, aug_idx * 100 + i) for i, crop in enumerate(original_crops)]
         
-        for idx, (ax, crop) in enumerate(zip(axes[aug_idx + 1], aug_crops)):
+        fig, axes = plt.subplots(3, 3, figsize=(9, 9))
+        for idx, (ax, crop) in enumerate(zip(axes.flat, aug_crops)):
             ax.imshow(crop)
-            if idx == 0:
-                ax.set_title(f'Augmented v{aug_idx + 1}', fontsize=8)
+            row = idx // 3 - 1
+            col = idx % 3 - 1
+            ax.set_title(f'dx={col}, dy={row}', fontsize=8)
             ax.axis('off')
+        
+        plt.suptitle(f'Augmented Version {aug_idx + 1}', fontsize=12)
+        plt.tight_layout()
+        
+        output_path = os.path.join(args.output_dir, f'crop_group_augmented_v{aug_idx + 1}.png')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f'Saved: {output_path}')
     
-    plt.suptitle(f'Original and {n_augmented} Augmented Versions (Same 9 Crops)', fontsize=12, y=1.02)
+    # Also save original (no augmentation) as v0
+    fig, axes = plt.subplots(3, 3, figsize=(9, 9))
+    for idx, (ax, crop) in enumerate(zip(axes.flat, original_crops)):
+        ax.imshow(crop)
+        row = idx // 3 - 1
+        col = idx % 3 - 1
+        ax.set_title(f'dx={col}, dy={row}', fontsize=8)
+        ax.axis('off')
+    
+    plt.suptitle(f'Original (No Augmentation)', fontsize=12)
     plt.tight_layout()
     
-    output_path = os.path.join(args.output_dir, 'crop_group_augmented.png')
+    output_path = os.path.join(args.output_dir, 'crop_group_augmented_v0.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f'Saved: {output_path}')
