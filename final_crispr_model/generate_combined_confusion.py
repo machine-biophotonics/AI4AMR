@@ -292,12 +292,17 @@ def main():
                         help='CSV filename to look for (default: predictions_all_crops.csv or predictions_all_crops_mil_100pos.csv)')
     parser.add_argument('--prediction_csv', type=str, default=None,
                         help='Specific prediction CSV file to use')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Output directory for confusion matrices')
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     folds = args.folds.split(',')
 
-    output_dir = os.path.join(SCRIPT_DIR, 'aggregate', 'combined')
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        output_dir = os.path.join(SCRIPT_DIR, 'aggregate', 'combined')
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Aggregating across folds: {folds}")
