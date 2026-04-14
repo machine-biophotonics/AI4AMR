@@ -355,6 +355,22 @@ if __name__ == '__main__':
     if args.run_all_folds:
         all_results = []
         for test_plate in all_plates:
+            fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+            results_file = os.path.join(fold_dir, 'training_results.json')
+            
+            # Skip if already trained
+            if os.path.exists(results_file):
+                print(f"\n{'='*60}")
+                print(f"Skipping {test_plate}: already trained (results exist)")
+                print(f"{'='*60}")
+                with open(results_file, 'r') as f:
+                    existing_result = json.load(f)
+                    all_results.append(existing_result)
+                continue
+            
+            print(f"\n{'='*60}")
+            print(f"Running fold: test_plate={test_plate}")
+            print(f"{'='*60}")
             result = train_single_fold(test_plate)
             all_results.append(result)
         
