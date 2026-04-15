@@ -178,29 +178,17 @@ def train_single_fold(test_plate):
     val_dataset.set_epoch(0)
     test_dataset.set_epoch(0)
     
-    # Windows Python 3.14: try workers with module-level worker_init_fn
+    # Windows Python 3.14: MUST use 0 workers due to multiprocessing pickling changes
     if sys.platform.startswith('win'):
-        effective_workers = 4  # Try 4 workers
-        print(f"Using {effective_workers} workers (module-level worker_init_fn)")
+        effective_workers = 0
+        print(f"Using {effective_workers} workers (Windows Python 3.14 - multiprocessing spawn required)")
     else:
         effective_workers = NUM_WORKERS
         print(f"Using {effective_workers} workers")
     
-    # Use module-level worker_init_fn for Windows compatibility
-    def make_loader(dataset, shuffle, drop_last=False):
-        return DataLoader(
-            dataset, 
-            batch_size=args.batch_size, 
-            shuffle=shuffle, 
-            num_workers=effective_workers, 
-            pin_memory=True, 
-            drop_last=drop_last,
-            worker_init_fn=worker_init_fn
-        )
-    
-    train_loader = make_loader(train_dataset, shuffle=True, drop_last=True)
-    val_loader = make_loader(val_dataset, shuffle=False)
-    test_loader = make_loader(test_dataset, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
     print(f"Crops per image: 9 (center + 8 neighbors)")
     
