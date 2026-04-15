@@ -1,7 +1,8 @@
 """
 MIL with class-bucket random sampling for diverse crop coverage
-- Training: 9 crops from 9 DIFFERENT images of SAME class
-- Val/Test: 9 crops from center + neighbors (same image)
+- Training: 144 crops per image, 9 crops from 9 DIFFERENT images per class per epoch
+- Val/Test: 9 crops from center + 3x3 neighborhood (same image)
+- One epoch = exhaust all (image, position) pairs
 """
 
 import torch
@@ -75,68 +76,83 @@ class AttentionMILModel(nn.Module):
 
 
 class ClassBucketDataset(Dataset):
-    """Class-bucket random sampling: 9 crops from 9 DIFFERENT images per class"""
+    """
+    Class-bucket random sampling: 144 crops per image, 9 crops from 9 DIFFERENT images per class.
     
-    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=True, seed=42, 
-                 mode='train', num_crops_per_class=9):
-        """
-        mode: 'train' = sample from different images
-              'val/test' = same image center + neighbors
-        """
+    - Grid: 12x12 = 144 positions per image (ALL positions, no neighborhood requirement)
+    - Per class: 84 images × 144 positions = 12,096 (image, position) pairs
+    - Per epoch: 96 classes × 9 pairs = 864 pairs sampled
+    - Epochs to exhaust: 12,096 / 864 = 14 epochs
+    """
+    
+    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=True, seed=42, num_crops_per_class=9):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
         self.grid_size = grid_size
         self.augment = augment
         self.seed = seed
-        self.mode = mode
         self.num_crops_per_class = num_crops_per_class
         
+        # Get image size from first image
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
         self.image_size = w
         
-        stride = (w - crop_size) // (grid_size - 1)
-        self.stride = stride
+        # Calculate stride for 144 positions (all grid positions)
+        self.stride = (w - crop_size) // (grid_size - 1)
         
-        # All valid positions for cropping
+        # ALL 144 positions per image (no neighborhood requirement)
         self.all_positions = []
         for i in range(grid_size):
             for j in range(grid_size):
-                left = j * stride
-                top = i * stride
+                left = j * self.stride
+                top = i * self.stride
                 if left + crop_size <= w and top + crop_size <= h:
-                    can_left = left - stride >= 0
-                    can_right = left + stride + crop_size <= w
-                    can_top = top - stride >= 0
-                    can_bottom = top + stride + crop_size <= h
-                    if can_left and can_right and can_top and can_bottom:
-                        self.all_positions.append((left, top))
+                    self.all_positions.append((left, top))
         
-        # Build class buckets: (image_idx, position) AND track unique images per class
+        print(f"Total positions per image: {len(self.all_positions)}")
+        
+        # Build class buckets: (image_idx, position_idx)
         self.class_buckets = defaultdict(list)
-        self.class_to_images = defaultdict(set)  # Track unique images per class
+        self.class_to_images = defaultdict(set)
+        
         for img_idx, label in enumerate(labels):
-            for pos in self.all_positions:
-                self.class_buckets[label].append((img_idx, pos))
+            for pos_idx, pos in enumerate(self.all_positions):
+                self.class_buckets[label].append((img_idx, pos_idx))
                 self.class_to_images[label].add(img_idx)
         
-        # Get unique images count per class
-        self.images_per_class = {c: len(imgs) for c, imgs in self.class_to_images.items()}
-        
         # Pre-compute: positions available per image for each class
-        self.image_positions = defaultdict(lambda: defaultdict(list))
+        self.image_positions = defaultdict(dict)
         for label in self.class_buckets:
-            for img_idx, pos in self.class_buckets[label]:
-                self.image_positions[label][img_idx].append(pos)
+            for img_idx, pos_idx in self.class_buckets[label]:
+                if img_idx not in self.image_positions[label]:
+                    self.image_positions[label][img_idx] = []
+                self.image_positions[label][img_idx].append(pos_idx)
         
-        # Print bucket sizes
-        bucket_sizes = [len(v) for v in self.class_buckets.values()]
-        unique_img_counts = list(self.images_per_class.values())
-        print(f"ClassBucketDataset: {len(self.class_buckets)} classes, "
-              f"avg {np.mean(bucket_sizes):.0f} total positions, "
-              f"avg {np.mean(unique_img_counts):.0f} unique images/class, "
-              f"mode={mode}")
+        # Statistics
+        self.num_images_per_class = {c: len(imgs) for c, imgs in self.class_to_images.items()}
+        self.num_pairs_per_class = len(self.all_positions) * len(self.num_images_per_class)
+        self.total_pairs = sum(len(v) for v in self.class_buckets.values())
+        
+        # Epoch tracking for cycling
+        self.epoch_shuffle_seeds = {}
+        self.epoch_coverage = {}
+        
+        # Unique classes for batch iteration
+        self.unique_classes = sorted(self.class_buckets.keys())
+        
+        # Class index mapping
+        self.class_to_idx = {c: i for i, c in enumerate(self.unique_classes)}
+        
+        print(f"ClassBucketDataset:")
+        print(f"  - Classes: {len(self.unique_classes)}")
+        print(f"  - Images per class: avg {np.mean(list(self.num_images_per_class.values())):.0f}")
+        print(f"  - Positions per image: {len(self.all_positions)}")
+        print(f"  - Pairs per class: {self.num_pairs_per_class}")
+        print(f"  - Total pairs: {self.total_pairs}")
+        print(f"  - Pairs per epoch: {len(self.unique_classes) * num_crops_per_class}")
+        print(f"  - Epochs to exhaust: {self.num_pairs_per_class / (len(self.unique_classes) * num_crops_per_class):.1f}")
         
         if augment:
             self.transform = A.Compose([
@@ -153,115 +169,84 @@ class ClassBucketDataset(Dataset):
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
-        
-        # Tracking for exhaust-then-reset (ALL position pairs, not just images)
-        self.used_pairs = defaultdict(set)  # Track (image_idx, position) pairs per class
-        self.epoch_coverage = {}
-        self.total_pairs = sum(len(v) for v in self.class_buckets.values())
-        
-        # Unique classes for batch iteration
-        self.unique_classes = sorted(self.class_buckets.keys())
     
     def set_epoch(self, epoch):
-        """Set up new random sample for epoch - exhaust ALL (image, position) pairs before reusing"""
+        """
+        One epoch samples 9 pairs from each class.
+        Cycles through all (image, position) pairs, then reshuffles with new seed.
+        """
         self.current_epoch = epoch
-        self.used_pairs.clear()  # Track (image_idx, position) pairs
-        self.epoch_coverage = {}
         
-        rng = random.Random(self.seed + epoch)
+        epochs_needed = self.num_pairs_per_class // self.num_crops_per_class
         
-        # For each class, sample 9 DIFFERENT (image, position) pairs
+        cycle_number = epoch // epochs_needed
+        epoch_in_cycle = epoch % epochs_needed
+        
         for class_label in self.unique_classes:
-            bucket = self.class_buckets[class_label]  # All (img_idx, position) pairs
-            total_pairs = len(bucket)
+            bucket = self.class_buckets[class_label]
             
-            # Exhaust-then-reset: if we've used all pairs, reset
-            if len(self.used_pairs[class_label]) >= total_pairs:
-                self.used_pairs[class_label].clear()
+            if class_label not in self.epoch_shuffle_seeds:
+                self.epoch_shuffle_seeds[class_label] = {}
             
-            # Get unused pairs
-            unused_pairs = [p for p in bucket if p not in self.used_pairs[class_label]]
+            if cycle_number not in self.epoch_shuffle_seeds[class_label]:
+                self.epoch_shuffle_seeds[class_label][cycle_number] = random.Random(
+                    self.seed + class_label * 10000 + cycle_number * 1000
+                )
             
-            # If not enough unused, sample from all available
-            if len(unused_pairs) < self.num_crops_per_class:
-                self.used_pairs[class_label].clear()
-                unused_pairs = bucket
+            rng = self.epoch_shuffle_seeds[class_label][cycle_number]
             
-            # Sample 9 different (image, position) pairs
-            if len(unused_pairs) >= self.num_crops_per_class:
-                sampled = rng.sample(unused_pairs, self.num_crops_per_class)
-            else:
-                # If insufficient, allow repeats from remaining
-                sampled = rng.choices(unused_pairs, k=self.num_crops_per_class)
+            shuffled = bucket.copy()
+            rng.shuffle(shuffled)
             
-            # Mark these pairs as used
-            for pair in sampled:
-                self.used_pairs[class_label].add(pair)
-            
+            sampled = shuffled[:self.num_crops_per_class]
             self.epoch_coverage[class_label] = sampled
     
     def __len__(self):
         return len(self.unique_classes)
     
     def __getitem__(self, class_idx):
-        """Return 9 crops from 9 DIFFERENT images of the same class"""
+        """Return 9 crops from 9 DIFFERENT images of the same class."""
         class_label = self.unique_classes[class_idx]
+        sampled = self.epoch_coverage[class_label]
         
-        if self.mode == 'val' or self.mode == 'test':
-            # Val/test: use center crop + 3x3 neighborhood from SAME image
-            img_idx = random.randint(0, len(self.image_paths) - 1)
-            center_left = (self.image_size - self.crop_size) // 2
-            center_top = (self.image_size - self.crop_size) // 2
+        crops_list = []
+        for img_idx, pos_idx in sampled:
+            img_path = self.image_paths[img_idx]
+            left, top = self.all_positions[pos_idx]
             
-            crops_list = []
-            for di in range(-1, 2):
-                for dj in range(-1, 2):
-                    left = center_left + dj * self.stride
-                    top = center_top + di * self.stride
-                    img_path = self.image_paths[img_idx]
-                    image = Image.open(img_path).convert('RGB')
-                    crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
-                    crop = np.array(crop)
-                    crop = self.transform(image=crop)['image']
-                    crops_list.append(crop)
-        else:
-            # Train: sample 9 from DIFFERENT images + 1 random position each
-            sampled = self.epoch_coverage[class_label]
-            
-            crops_list = []
-            for img_idx, (left, top) in sampled:
-                img_path = self.image_paths[img_idx]
-                image = Image.open(img_path).convert('RGB')
-                crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
-                crop = np.array(crop)
-                crop = self.transform(image=crop)['image']
-                crops_list.append(crop)
+            image = Image.open(img_path).convert('RGB')
+            crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
+            crop = np.array(crop)
+            crop = self.transform(image=crop)['image']
+            crops_list.append(crop)
         
-        # Shuffle crop order
-        if self.augment and self.mode == 'train':
+        # Shuffle crop order for augmentation
+        if self.augment:
             perm = list(range(self.num_crops_per_class))
             random.shuffle(perm)
             crops_list = [crops_list[i] for i in perm]
         
         crops = torch.stack(crops_list)
+        label_idx = self.class_to_idx[class_label]
         
-        # Get class index for label
-        class_idx = self.unique_classes.index(class_label)
-        
-        return crops, class_idx
+        return crops, label_idx
     
     def get_coverage_report(self):
-        """Report on epoch coverage - how many unique (image, position) pairs sampled"""
-        total_used = sum(len(v) for v in self.used_pairs.values())
+        """Report on epoch coverage."""
+        epochs_needed = self.num_pairs_per_class // self.num_crops_per_class
+        cycle_number = self.current_epoch // epochs_needed
+        epoch_in_cycle = self.current_epoch % epochs_needed
         return {
-            'unique_pairs_sampled': total_used,
-            'total_pairs': self.total_pairs,
-            'coverage_pct': total_used / self.total_pairs * 100
+            'epoch': self.current_epoch,
+            'cycle': cycle_number,
+            'epoch_in_cycle': epoch_in_cycle,
+            'pairs_per_epoch': len(self.unique_classes) * self.num_crops_per_class,
+            'epochs_per_cycle': epochs_needed
         }
 
 
 class SingleImageDataset(Dataset):
-    """Original: 9 crops from SAME image (for testing/validation)"""
+    """9 crops from SAME image (center + 3x3 neighborhood) for val/test."""
     
     def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=False, seed=42):
         self.image_paths = image_paths
@@ -278,6 +263,7 @@ class SingleImageDataset(Dataset):
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
+        # Only positions with full neighborhood
         positions = []
         for i in range(grid_size):
             for j in range(grid_size):
@@ -351,3 +337,8 @@ def get_gene_from_path(img_path, plate_maps):
     if plate in plate_maps and well in plate_maps[plate]:
         return plate_maps[plate][well]
     return 'WT'
+
+
+# Module-level worker init function for Windows Python 3.14 compatibility
+def worker_init_fn(worker_id, seed=42):
+    random.seed(seed + worker_id)

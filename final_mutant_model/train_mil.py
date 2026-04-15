@@ -179,12 +179,10 @@ def train_single_fold(test_plate):
     class_weights = torch.tensor(class_weights_list, device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    # Training: ClassBucketDataset - 9 crops from 9 different images per class
     train_dataset = ClassBucketDataset(
         train_paths, train_labels,
-        augment=True, seed=SEED, mode='train', num_crops_per_class=9
+        augment=True, seed=SEED, num_crops_per_class=9
     )
-    # Validation/Test: SingleImageDataset - 9 crops from same image (center + neighbors)
     val_dataset = SingleImageDataset(val_paths, val_labels, augment=False, seed=SEED)
     test_dataset = SingleImageDataset(test_paths, test_labels, augment=False, seed=SEED)
     
@@ -192,12 +190,23 @@ def train_single_fold(test_plate):
     val_dataset.set_epoch(0)
     test_dataset.set_epoch(0)
     
-    def worker_init_fn(worker_id):
-        random.seed(SEED + worker_id)
+    num_workers = 0 if os.name == 'nt' else 4
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn, persistent_workers=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, persistent_workers=True)
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True, drop_last=True,
+        persistent_workers=num_workers > 0
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+        persistent_workers=num_workers > 0
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+        persistent_workers=num_workers > 0
+    )
     
     print(f"Crops per batch: {train_dataset.num_crops_per_class} crops x {args.batch_size} classes = {train_dataset.num_crops_per_class * args.batch_size} total")
     
@@ -232,6 +241,10 @@ def train_single_fold(test_plate):
         train_dataset.set_epoch(epoch)
         model.train()
         run_loss, correct, total = 0.0, 0, 0
+        
+        coverage = train_dataset.get_coverage_report()
+        if epoch < 15 or epoch % 50 == 0:
+            print(f"Epoch {epoch} (cycle {coverage['cycle']}, in-cycle: {coverage['epoch_in_cycle']}/{coverage['epochs_per_cycle']})")
         
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
