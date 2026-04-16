@@ -138,3 +138,19 @@ final_crispr_model/all_folds_results.json
 !final_crispr_model/train_mil.py
 !final_crispr_model/predict_all_crops.py
 !final_crispr_model/generate_combined_confusion.py
+
+# final_mutant_model outputs (MIL with class-bucket sampling)
+final_mutant_model/fold_*/
+final_mutant_model/*.csv
+final_mutant_model/*.png
+final_mutant_model/*.json
+final_mutant_model/checkpoint_*
+final_mutant_model/best_model_*
+final_mutant_model/training_metrics_*
+final_mutant_model/training_results.json
+final_mutant_model/all_folds_results.json
+!final_mutant_model/classes.txt
+!final_mutant_model/plate_well_id_path.json
+!final_mutant_model/mil_model.py
+!final_mutant_model/train_mil.py
+!final_mutant_model/predict_all_crops.py

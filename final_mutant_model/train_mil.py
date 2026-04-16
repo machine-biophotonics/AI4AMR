@@ -4,12 +4,11 @@ MIL training with class-bucket sampling and configurable attention heads.
 - Training: 9 crops from 9 DIFFERENT images per class per epoch
 - Val/Test: 9 crops from center + 3x3 neighborhood (same image)
 - Warmup (6 epochs) + Cosine Annealing decay
-- Configurable attention heads (default: 8, recommended: 4-8)
+- Configurable attention heads (default: 20)
 
-Attention Heads Recommendation:
-- 4-8 heads: SAFE for this dataset size (~8K training images)
-- 20 heads: AGGRESSIVE - may overfit with limited data
-- Each head adds ~165K parameters to the attention layer
+Usage:
+    python train_mil.py --epochs 200 --num_heads 20  # Default
+    python train_mil.py --epochs 200 --num_heads 8   # Alternative
 """
 
 from __future__ import annotations
@@ -479,7 +478,7 @@ def main() -> None:
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size (default: 32)')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (default: 1e-4)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed (default: 42)')
-    parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads (default: 8, recommended: 4-8)')
+    parser.add_argument('--num_heads', type=int, default=20, help='Number of attention heads (default: 20)')
     parser.add_argument('--test_plate', type=str, default='P6', help='Test plate (default: P6)')
     parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
     parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds with skip for done folds')

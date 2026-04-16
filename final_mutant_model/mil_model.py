@@ -2,15 +2,13 @@
 MIL with class-bucket random sampling for diverse crop coverage.
 - Training: 144 positions per image, 9 crops from 9 DIFFERENT images per class per epoch
 - Val/Test: 9 crops from center + 3x3 neighborhood (same image)
-- Configurable attention heads (default: 8, recommended: 4-8 to avoid overfitting)
+- Configurable attention heads (default: 20)
 - One epoch samples 9 pairs from each class
 - Total epochs to exhaust: 12,096 / 9 = 1,344 epochs per class
 
-Attention Heads Analysis:
-- Each head: V(1280→64) + U(1280→64) + w(64→n_heads) ≈ 165K params
-- 8 heads = ~1.3M attention params
-- 20 heads = ~3.3M attention params (AGGRESSIVE - may overfit)
-- With only 8,064 training images, 4-8 heads is recommended
+Usage:
+    python train_mil.py --epochs 200 --num_heads 20  # Default (20 heads)
+    python train_mil.py --epochs 200 --num_heads 8   # Alternative (8 heads)
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ from albumentations.pytorch import ToTensorV2
 NORMALIZE_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 NORMALIZE_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-NUM_HEADS = 8  # Recommended: 4-8 heads for this dataset. 20 heads is aggressive and may overfit.
+NUM_HEADS = 20  # Default: 20 heads. Configurable via --num_heads argument.
 
 
 class AttentionPooling(nn.Module):

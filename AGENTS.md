@@ -449,6 +449,79 @@ python train_mil.py \
 - `training_metrics_*.csv` - Epoch metrics
 - `training_results.json` - Final results
 
+## MIL Model (final_mutant_model/)
+
+Multiple Instance Learning with class-bucket sampling - improved version.
+
+### Architecture
+
+```
+Input: (batch, 9_crops, 3, 224, 224)
+           │
+           ▼
+    EfficientNet-B0 backbone
+           │  Extracts 1280-dim features per crop
+           ▼
+    Gated Attention Pooling (20 heads × 64 = 1280)
+           │  tanh(V) ⊙ sigmoid(U) gating mechanism
+           ▼
+    Head projection (1280 → 1280)
+           │
+Classifier (1280 → 96 classes)
+```
+
+### Key Innovation: Class-Bucket Sampling
+
+- **Training**: 9 crops from 9 DIFFERENT images per class per epoch
+- **Val/Test**: 9 crops from SAME image (center + 3×3 neighborhood)
+- **144 positions** per image (12×12 grid)
+- **1,344 epochs** to exhaust all training data once
+
+### Data Split
+
+| Set | Plates | Images | Purpose |
+|-----|--------|--------|---------|
+| Train | P1-P4 | 8,064 | Diverse crops |
+| Val | P5 | 96 (1/class) | Hyperparameter tuning |
+| Test | P6 | 96 (1/class) | Final evaluation |
+
+### Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--epochs` | Training epochs | 200 |
+| `--batch_size` | Batch size | 32 |
+| `--lr` | Learning rate | 1e-4 |
+| `--warmup_epochs` | Warmup epochs | 6 |
+| `--num_heads` | Attention heads | 20 |
+| `--seed` | Random seed | 42 |
+| `--test_plate` | Test plate (P1-P6) | P6 |
+| `--run_all_folds` | Run all 6 folds | disabled |
+
+### Training
+
+```bash
+cd final_mutant_model
+
+# Default: 20 heads
+python train_mil.py --epochs 200 --num_heads 20 --test_plate P6
+
+# Alternative: 8 heads
+python train_mil.py --epochs 200 --num_heads 8 --test_plate P6
+
+# All 6 folds
+python train_mil.py --epochs 200 --num_heads 20 --run_all_folds
+```
+
+### Attention Heads
+
+Each head: V(1280→64) + U(1280→64) + w(64→n_heads) ≈ 165K params
+
+| Heads | Attention Params |
+|-------|------------------|
+| 20 | ~3.3M (default) |
+| 8 | ~1.3M |
+
 ## Visualization Scripts
 
 Visualize MIL crop extraction and augmentation.

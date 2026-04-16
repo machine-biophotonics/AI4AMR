@@ -175,69 +175,89 @@ Based on Farrar et al. 2025 paper - simpler augmentations work better for bacter
 | dinov3-finetune LR | DINOv3 ViT-L | SAM | ~100K | 1024 |
 | dinov3-finetune LoRA | DINOv3 ViT-L + LoRA | SAM | ~3M | 1024 |
 
-## MIL Model (final_crispr_model/train_mil.py)
+## MIL Model (final_mutant_model/)
 
-Multiple Instance Learning (MIL) approach for plate classification using attention pooling.
+Multiple Instance Learning (MIL) with class-bucket sampling for plate classification.
+
+### Key Innovation: Class-Bucket Sampling
+
+Training uses a unique sampling strategy:
+- **144 positions** per image (12×12 grid)
+- **9 crops from 9 DIFFERENT images** per class per epoch
+- **1,344 epochs** to exhaust all training data once
+- Cycle-based sampling with new shuffle each cycle
 
 ### Architecture
 
 ```
-Input: 9 crops per image (3×3 grid around center)
-    │
-    ▼
-EfficientNet-B0 (backbone)
-    │  Extracts 1280-dim features per crop
-    ▼
-Gated Attention Pooling (4 heads)
-    │  Learns which crops matter most
-    │  tanh(V) ⊙ sigmoid(U) gating mechanism
-    ▼
-Head Projection (5120 → 1280)
-    │
+Input: (batch, 9_crops, 3, 224, 224)
+           │
+           ▼
+    EfficientNet-B0 backbone
+           │  Extracts 1280-dim features per crop
+           ▼
+    Gated Attention Pooling (20 heads × 64 = 1280)
+           │  tanh(V) ⊙ sigmoid(U) gating mechanism
+           │  Each head learns different attention pattern
+           ▼
+    Head projection (1280 → 1280)
+           │
 Classifier (1280 → 96 classes)
 ```
 
-### How It Works
+### Training vs Validation Strategy
 
-1. **Crop Extraction**: 9 crops extracted in 3×3 grid around center position
-2. **Feature Extraction**: EfficientNet-B0 processes each crop independently → 9 × 1280-dim features
-3. **Gated Attention**: Multi-head attention learns weights for each crop:
-   - 4 heads can learn different "aspects" (e.g., center-focused, edge-focused, texture, morphology)
-   - Gating mechanism (tanh(V) ⊙ sigmoid(U)) suppresses irrelevant crops
-4. **Weighted Combination**: All 9 crops contribute with learned weights → classification
-
-### Training
-
-```bash
-cd final_crispr_model
-
-# Single fold
-python train_mil.py \
-    --epochs 200 \
-    --batch_size 16 \
-    --lr 1e-4 \
-    --test_plate P6 \
-    --data_root /path/to/AI4AMR
-
-# All 6 folds (cross-validation)
-python train_mil.py \
-    --epochs 200 \
-    --batch_size 16 \
-    --lr 1e-4 \
-    --run_all_folds \
-    --data_root /path/to/AI4AMR
-```
+| Dataset | Sampling | Rationale |
+|---------|----------|-----------|
+| **Training** | 9 crops from 9 DIFFERENT images | Emphasizes diversity |
+| **Val/Test** | 9 crops from SAME image (3×3) | Tests spatial coherence |
 
 ### Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `--epochs` | Number of training epochs | 200 |
-| `--batch_size` | Batch size | 16 |
+| `--batch_size` | Batch size | 32 |
 | `--lr` | Learning rate | 1e-4 |
+| `--warmup_epochs` | Warmup epochs | 6 |
+| `--num_heads` | Attention heads | 20 |
 | `--test_plate` | Test plate (P1-P6) | P6 |
-| `--data_root` | Path to folder containing P1-P6 | parent dir |
+| `--seed` | Random seed | 42 |
 | `--run_all_folds` | Run all 6 folds | disabled |
+
+### Training
+
+```bash
+cd final_mutant_model
+
+# Default: 20 heads
+python train_mil.py --epochs 200 --num_heads 20 --test_plate P6
+
+# Alternative: 8 heads
+python train_mil.py --epochs 200 --num_heads 8 --test_plate P6
+
+# All 6 folds
+python train_mil.py --epochs 200 --num_heads 20 --run_all_folds
+```
+
+### Attention Heads Analysis
+
+Each head: V(1280→64) + U(1280→64) + w(64→n_heads) ≈ 165K params
+
+| Heads | Attention Params | Notes |
+|-------|------------------|-------|
+| 20 | ~3.3M | Default |
+| 8 | ~1.3M | Alternative |
+| 4 | ~660K | Lighter |
+
+### Data Split
+
+```
+Test plate: P6
+├── Train: P1, P2, P3, P4 (8,064 images)
+├── Val: P5 (96 images, 1 per class)
+└── Test: P6 (96 images, 1 per class)
+```
 
 ### Output Files
 
@@ -249,12 +269,6 @@ python train_mil.py \
 | `checkpoint_epoch_N.pth` | Checkpoint every 10 epochs |
 | `training_metrics_*.csv` | Epoch-level metrics |
 | `training_results.json` | Final results |
-
-### Multi-Head Attention Details
-
-- **4 heads**: Each head learns different attention patterns
-- **Gated attention**: tanh(V) ⊙ sigmoid(U) - learns what to attend to AND gates irrelevant crops
-- **Weighted sum**: All 9 crops contribute, weighted by learned attention
 
 ## Plate Cross-Validation (plate_fold)
 
