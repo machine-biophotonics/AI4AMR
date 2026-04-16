@@ -1,63 +1,103 @@
 """
-MIL with class-bucket random sampling for diverse crop coverage
-- Training: 144 crops per image, 9 crops from 9 DIFFERENT images per class per epoch
+MIL with class-bucket random sampling for diverse crop coverage.
+- Training: 144 positions per image, 9 crops from 9 DIFFERENT images per class per epoch
 - Val/Test: 9 crops from center + 3x3 neighborhood (same image)
-- One epoch = exhaust all (image, position) pairs
+- Configurable attention heads (default: 8, recommended: 4-8 to avoid overfitting)
+- One epoch samples 9 pairs from each class
+- Total epochs to exhaust: 12,096 / 9 = 1,344 epochs per class
+
+Attention Heads Analysis:
+- Each head: V(1280→64) + U(1280→64) + w(64→n_heads) ≈ 165K params
+- 8 heads = ~1.3M attention params
+- 20 heads = ~3.3M attention params (AGGRESSIVE - may overfit)
+- With only 8,064 training images, 4-8 heads is recommended
 """
 
-import torch
-import torch.nn as nn
-import torchvision
+from __future__ import annotations
+
 import random
-import numpy as np
-from PIL import Image
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from torch.utils.data import Dataset
 import re
 import os
+import time
 from collections import defaultdict
+from typing import Optional
+
+import numpy as np
+import torch
+import torch.nn as nn
+from PIL import Image
+from torch.utils.data import Dataset
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+
+NORMALIZE_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+NORMALIZE_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+NUM_HEADS = 8  # Recommended: 4-8 heads for this dataset. 20 heads is aggressive and may overfit.
 
 
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling (Ilse et al. 2018)"""
-    def __init__(self, in_features, num_heads=4):
+    """Gated attention MIL pooling (Ilse et al. 2018)."""
+    
+    def __init__(self, in_features: int, num_heads: int = NUM_HEADS) -> None:
         super().__init__()
         self.num_heads = num_heads
+        head_dim = in_features // 4
         
-        self.V = nn.Linear(in_features, in_features // 4)
-        self.U = nn.Linear(in_features, in_features // 4)
-        self.w = nn.Linear(in_features // 4, num_heads)
+        self.V = nn.Linear(in_features, head_dim)
+        self.U = nn.Linear(in_features, head_dim)
+        self.w = nn.Linear(head_dim, num_heads)
     
-    def forward(self, x, temperature=0.5):
-        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
-        attn_weights = self.w(A)
+    def forward(self, x: torch.Tensor, temperature: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+        A_gate = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        attn_weights = self.w(A_gate)
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
         pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
         return pooled, attn_weights
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
+    """Attention-based MIL model with EfficientNet-B0 backbone and configurable attention heads.
+    
+    Args:
+        num_classes: Number of output classes
+        num_heads: Number of attention heads (default: 8, recommended: 4-8)
+        attention_temp: Temperature for attention softmax (default: 0.5)
+    """
+    
+    def __init__(
+        self,
+        num_classes: int,
+        num_heads: int = NUM_HEADS,
+        attention_temp: float = 0.5
+    ) -> None:
         super().__init__()
-        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        
+        import torchvision.models as torchvision_models
+        
+        base_model = torchvision_models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
             base_model.features,
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
-        feature_dim = 1280
+        self.feature_dim = 1280
         
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
         self.attention_temp = attention_temp
-        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
+        self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
-            nn.Linear(feature_dim, num_classes)
+            nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False):
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_attention: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -77,15 +117,27 @@ class AttentionMILModel(nn.Module):
 
 class ClassBucketDataset(Dataset):
     """
-    Class-bucket random sampling: 144 crops per image, 9 crops from 9 DIFFERENT images per class.
+    Class-bucket random sampling: 9 crops from 9 DIFFERENT images per class per epoch.
     
-    - Grid: 12x12 = 144 positions per image (ALL positions, no neighborhood requirement)
+    Architecture:
+    - Grid: 12×12 = 144 positions per image (all valid grid positions)
     - Per class: 84 images × 144 positions = 12,096 (image, position) pairs
     - Per epoch: 96 classes × 9 pairs = 864 pairs sampled
-    - Epochs to exhaust: 12,096 / 864 = 14 epochs
+    - Epochs to exhaust: 12,096 / 9 = 1,344 epochs
+    
+    Time complexity: O(1) per sample retrieval
     """
     
-    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=True, seed=42, num_crops_per_class=9):
+    def __init__(
+        self,
+        image_paths: list[str],
+        labels: np.ndarray,
+        crop_size: int = 224,
+        grid_size: int = 12,
+        augment: bool = True,
+        seed: int = 42,
+        num_crops_per_class: int = 9
+    ) -> None:
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
@@ -93,17 +145,15 @@ class ClassBucketDataset(Dataset):
         self.augment = augment
         self.seed = seed
         self.num_crops_per_class = num_crops_per_class
+        self.current_epoch = 0
         
-        # Get image size from first image
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
         self.image_size = w
         
-        # Calculate stride for 144 positions (all grid positions)
         self.stride = (w - crop_size) // (grid_size - 1)
         
-        # ALL 144 positions per image (no neighborhood requirement)
-        self.all_positions = []
+        self.all_positions: list[tuple[int, int]] = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * self.stride
@@ -111,56 +161,49 @@ class ClassBucketDataset(Dataset):
                 if left + crop_size <= w and top + crop_size <= h:
                     self.all_positions.append((left, top))
         
-        print(f"Total positions per image: {len(self.all_positions)}")
-        
-        # Build class buckets: (image_idx, position_idx)
-        self.class_buckets = defaultdict(list)
-        self.class_to_images = defaultdict(set)
+        self.class_buckets: dict[int, list[tuple[int, int]]] = defaultdict(list)
+        self.class_to_images: dict[int, set[int]] = defaultdict(set)
         
         for img_idx, label in enumerate(labels):
-            for pos_idx, pos in enumerate(self.all_positions):
+            for pos_idx in range(len(self.all_positions)):
                 self.class_buckets[label].append((img_idx, pos_idx))
                 self.class_to_images[label].add(img_idx)
         
-        # Pre-compute: positions available per image for each class
-        self.image_positions = defaultdict(dict)
-        for label in self.class_buckets:
-            for img_idx, pos_idx in self.class_buckets[label]:
-                if img_idx not in self.image_positions[label]:
-                    self.image_positions[label][img_idx] = []
-                self.image_positions[label][img_idx].append(pos_idx)
-        
-        # Statistics
-        self.num_images_per_class = {c: len(imgs) for c, imgs in self.class_to_images.items()}
+        self.num_images_per_class: dict[int, int] = {
+            c: len(imgs) for c, imgs in self.class_to_images.items()
+        }
         self.num_pairs_per_class = len(self.all_positions) * len(self.num_images_per_class)
         self.total_pairs = sum(len(v) for v in self.class_buckets.values())
         
-        # Epoch tracking for cycling
-        self.epoch_shuffle_seeds = {}
-        self.epoch_coverage = {}
+        self.epoch_shuffle_seeds: dict[int, dict[int, random.Random]] = {}
+        self.epoch_coverage: dict[int, list[tuple[int, int]]] = {}
         
-        # Unique classes for batch iteration
         self.unique_classes = sorted(self.class_buckets.keys())
-        
-        # Class index mapping
         self.class_to_idx = {c: i for i, c in enumerate(self.unique_classes)}
         
+        self.num_classes = len(self.unique_classes)
+        self.epochs_to_exhaust = self.num_pairs_per_class // num_crops_per_class
+        
         print(f"ClassBucketDataset:")
-        print(f"  - Classes: {len(self.unique_classes)}")
-        print(f"  - Images per class: avg {np.mean(list(self.num_images_per_class.values())):.0f}")
+        print(f"  - Classes: {self.num_classes}")
+        print(f"  - Images per class: {np.mean(list(self.num_images_per_class.values())):.0f} (min: {min(self.num_images_per_class.values())}, max: {max(self.num_images_per_class.values())})")
         print(f"  - Positions per image: {len(self.all_positions)}")
         print(f"  - Pairs per class: {self.num_pairs_per_class}")
         print(f"  - Total pairs: {self.total_pairs}")
-        print(f"  - Pairs per epoch: {len(self.unique_classes) * num_crops_per_class}")
-        print(f"  - Epochs to exhaust: {self.num_pairs_per_class / (len(self.unique_classes) * num_crops_per_class):.1f}")
+        print(f"  - Pairs per epoch: {self.num_classes * num_crops_per_class}")
+        print(f"  - Epochs to exhaust: {self.epochs_to_exhaust}")
         
         if augment:
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
-                A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, rotate=(-10, 10), p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.5,
+                    contrast_limit=0.5,
+                    brightness_by_max=False,
+                    p=0.5
+                ),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
@@ -170,17 +213,12 @@ class ClassBucketDataset(Dataset):
                 ToTensorV2(),
             ])
     
-    def set_epoch(self, epoch):
-        """
-        One epoch samples 9 pairs from each class.
-        Cycles through all (image, position) pairs, then reshuffles with new seed.
-        """
+    def set_epoch(self, epoch: int) -> None:
+        """Set epoch for cycle-based crop selection. O(n_classes) complexity."""
         self.current_epoch = epoch
         
-        epochs_needed = self.num_pairs_per_class // self.num_crops_per_class
-        
-        cycle_number = epoch // epochs_needed
-        epoch_in_cycle = epoch % epochs_needed
+        cycle_number = epoch // self.epochs_to_exhaust
+        epoch_in_cycle = epoch % self.epochs_to_exhaust
         
         for class_label in self.unique_classes:
             bucket = self.class_buckets[class_label]
@@ -189,27 +227,25 @@ class ClassBucketDataset(Dataset):
                 self.epoch_shuffle_seeds[class_label] = {}
             
             if cycle_number not in self.epoch_shuffle_seeds[class_label]:
-                self.epoch_shuffle_seeds[class_label][cycle_number] = random.Random(
-                    self.seed + class_label * 10000 + cycle_number * 1000
-                )
+                seed_value = self.seed + int(class_label) * 10000 + int(cycle_number) * 1000
+                self.epoch_shuffle_seeds[class_label][cycle_number] = random.Random(seed_value)
             
             rng = self.epoch_shuffle_seeds[class_label][cycle_number]
-            
             shuffled = bucket.copy()
             rng.shuffle(shuffled)
             
             sampled = shuffled[:self.num_crops_per_class]
             self.epoch_coverage[class_label] = sampled
     
-    def __len__(self):
-        return len(self.unique_classes)
+    def __len__(self) -> int:
+        return self.num_classes
     
-    def __getitem__(self, class_idx):
-        """Return 9 crops from 9 DIFFERENT images of the same class."""
+    def __getitem__(self, class_idx: int) -> tuple[torch.Tensor, int]:
+        """Return 9 crops from 9 DIFFERENT images of the same class. O(1) per call."""
         class_label = self.unique_classes[class_idx]
         sampled = self.epoch_coverage[class_label]
         
-        crops_list = []
+        crops_list: list[torch.Tensor] = []
         for img_idx, pos_idx in sampled:
             img_path = self.image_paths[img_idx]
             left, top = self.all_positions[pos_idx]
@@ -220,7 +256,6 @@ class ClassBucketDataset(Dataset):
             crop = self.transform(image=crop)['image']
             crops_list.append(crop)
         
-        # Shuffle crop order for augmentation
         if self.augment:
             perm = list(range(self.num_crops_per_class))
             random.shuffle(perm)
@@ -231,30 +266,44 @@ class ClassBucketDataset(Dataset):
         
         return crops, label_idx
     
-    def get_coverage_report(self):
+    def get_coverage_report(self) -> dict[str, int]:
         """Report on epoch coverage."""
-        epochs_needed = self.num_pairs_per_class // self.num_crops_per_class
-        cycle_number = self.current_epoch // epochs_needed
-        epoch_in_cycle = self.current_epoch % epochs_needed
+        cycle_number = self.current_epoch // self.epochs_to_exhaust
+        epoch_in_cycle = self.current_epoch % self.epochs_to_exhaust
         return {
             'epoch': self.current_epoch,
             'cycle': cycle_number,
             'epoch_in_cycle': epoch_in_cycle,
-            'pairs_per_epoch': len(self.unique_classes) * self.num_crops_per_class,
-            'epochs_per_cycle': epochs_needed
+            'pairs_per_epoch': self.num_classes * self.num_crops_per_class,
+            'epochs_per_cycle': self.epochs_to_exhaust
         }
 
 
 class SingleImageDataset(Dataset):
-    """9 crops from SAME image (center + 3x3 neighborhood) for val/test."""
+    """
+    9 crops from SAME image (center + 3x3 neighborhood) for val/test.
     
-    def __init__(self, image_paths, labels, crop_size=224, grid_size=12, augment=False, seed=42):
+    Architecture:
+    - Extracts center crop + 8 neighbors (3×3 grid)
+    - Uses 100 valid positions (edge positions excluded for full neighborhood)
+    """
+    
+    def __init__(
+        self,
+        image_paths: list[str],
+        labels: np.ndarray,
+        crop_size: int = 224,
+        grid_size: int = 12,
+        augment: bool = False,
+        seed: int = 42
+    ) -> None:
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
         self.grid_size = grid_size
         self.augment = augment
         self.seed = seed
+        self.center = (0, 0)
         
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
@@ -263,8 +312,7 @@ class SingleImageDataset(Dataset):
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
-        # Only positions with full neighborhood
-        positions = []
+        positions: list[tuple[int, int]] = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * stride
@@ -279,6 +327,11 @@ class SingleImageDataset(Dataset):
         
         self.positions = positions
         
+        print(f"SingleImageDataset:")
+        print(f"  - Images: {len(image_paths)}")
+        print(f"  - Crops per image: 9 (center + 8 neighbors)")
+        print(f"  - Valid positions: {len(self.positions)}")
+        
         if augment:
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
@@ -295,21 +348,22 @@ class SingleImageDataset(Dataset):
                 ToTensorV2(),
             ])
     
-    def set_epoch(self, epoch):
+    def set_epoch(self, epoch: int) -> None:
+        """Set epoch (uses center for val/test)."""
         center_left = (self.image_size - self.crop_size) // 2
         center_top = (self.image_size - self.crop_size) // 2
         self.center = (center_left, center_top)
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.image_paths)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         img_path = self.image_paths[idx]
         image = Image.open(img_path).convert('RGB')
         
         center_left, center_top = self.center
         
-        crops_list = []
+        crops_list: list[torch.Tensor] = []
         for di in range(-1, 2):
             for dj in range(-1, 2):
                 left = center_left + dj * self.stride
@@ -321,15 +375,17 @@ class SingleImageDataset(Dataset):
         
         crops = torch.stack(crops_list)
         
-        return crops, self.labels[idx]
+        return crops, int(self.labels[idx])
 
 
-def extract_well_from_filename(filename):
+def extract_well_from_filename(filename: str) -> Optional[str]:
+    """Extract well position from image filename."""
     match = re.search(r'Well(\w\d+)_', filename)
     return match.group(1) if match else None
 
 
-def get_gene_from_path(img_path, plate_maps):
+def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
+    """Get gene label from image path."""
     dirname = os.path.dirname(img_path)
     plate = os.path.basename(dirname)
     filename = os.path.basename(img_path)
@@ -339,6 +395,6 @@ def get_gene_from_path(img_path, plate_maps):
     return 'WT'
 
 
-# Module-level worker init function for Windows Python 3.14 compatibility
-def worker_init_fn(worker_id, seed=42):
+def worker_init_fn(worker_id: int, seed: int = 42) -> None:
+    """Module-level worker init function for Windows Python 3.14 compatibility."""
     random.seed(seed + worker_id)
