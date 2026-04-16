@@ -218,6 +218,8 @@ class ClassBucketDataset(Dataset):
         cycle_number = epoch // self.epochs_to_exhaust
         epoch_in_cycle = epoch % self.epochs_to_exhaust
         
+        start_idx = epoch_in_cycle * self.num_crops_per_class
+        
         for class_label in self.unique_classes:
             bucket = self.class_buckets[class_label]
             
@@ -232,7 +234,8 @@ class ClassBucketDataset(Dataset):
             shuffled = bucket.copy()
             rng.shuffle(shuffled)
             
-            sampled = shuffled[:self.num_crops_per_class]
+            end_idx = start_idx + self.num_crops_per_class
+            sampled = shuffled[start_idx:end_idx]
             self.epoch_coverage[class_label] = sampled
     
     def __len__(self) -> int:
