@@ -139,30 +139,68 @@ def aggregate_crop_to_well(df):
     return image_df, well_df
 
 
-def plot_binary_cm(cm_sum, labels, title, output_path):
+def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=False, threshold=0.5):
     n = len(labels)
     import seaborn as sns
     
-    diagonal_acc = np.diag(cm_sum)
-    cm_binary = np.zeros((n, n))
-    for i in range(n):
-        if diagonal_acc[i] > 0.5:
-            cm_binary[i, i] = 1
-        for j in range(n):
-            if i != j and cm_sum[i, j] > 0.5:
-                cm_binary[i, j] = 1
+    if row_majority:
+        # For each row, find if ANY column has majority (not necessarily diagonal)
+        # If the most common prediction is above threshold, mark as 1
+        cm_binary = np.zeros((n, n))
+        for i in range(n):
+            row = cm_sum[i, :]
+            if row.sum() > 0:
+                row_norm = row / row.sum()
+                max_val = row_norm.max()
+                if max_val >= threshold:
+                    max_idx = row_norm.argmax()
+                    cm_binary[i, max_idx] = 1
+    else:
+        # Original: binary based on diagonal only
+        diagonal_acc = np.diag(cm_sum)
+        cm_binary = np.zeros((n, n))
+        for i in range(n):
+            if diagonal_acc[i] >= threshold:
+                cm_binary[i, i] = 1
+            for j in range(n):
+                if i != j and cm_sum[i, j] >= threshold:
+                    cm_binary[i, j] = 1
     
     random_baseline = 1.0 / n
-    n_above_random = np.sum(np.diag(cm_sum) > random_baseline)
-    n_above_50 = np.sum(np.diag(cm_sum) > 0.5)
     
-    fig, ax = plt.subplots(figsize=(max(12, n*0.18), max(12, n*0.18)))
+    # Count rows with majority (>threshold)
+    n_with_majority = 0
+    for i in range(n):
+        row = cm_sum[i, :]
+        if row.sum() > 0:
+            row_norm = row / row.sum()
+            if row_norm.max() >= threshold:
+                n_with_majority += 1
     
-    sns.heatmap(cm_binary, annot=False, cmap='Blues', xticklabels=labels,
-                yticklabels=labels, ax=ax, vmin=0, vmax=1,
-                cbar_kws={'label': '0=Below 50%, 1=Above 50%', 'shrink': 0.8},
+    n_above_random = np.sum(np.diag(cm_sum) >= random_baseline)
+    n_above_threshold = n_with_majority
+    
+    # Use same styling as percentage confusion matrix
+    fig, ax = plt.subplots(figsize=(max(14, n*0.2), max(14, n*0.2)))
+    
+    # Convert to percentage scale (0 or 100) to match other matrices
+    cm_display = cm_binary * 100
+    
+    sns.heatmap(cm_display, annot=False, cmap='Blues', xticklabels=labels,
+                yticklabels=labels, ax=ax, vmin=0, vmax=100,
+                cbar_kws={'label': 'Percentage (%)', 'shrink': 0.8},
                 linewidths=0.3, linecolor='white',
                 square=True)
+    
+    for i, label in enumerate(labels):
+        base = get_base_gene(label)
+        same_gene_indices = [j for j, l in enumerate(labels) if get_base_gene(l) == base]
+        if len(same_gene_indices) > 1:
+            min_j = min(same_gene_indices)
+            max_j = max(same_gene_indices)
+            rect = patches.Rectangle((min_j, min_j), max_j - min_j + 1, max_j - min_j + 1,
+                                      linewidth=3, edgecolor='#FFD700', facecolor='none', zorder=10)
+            ax.add_patch(rect)
     
     for i in range(n):
         rect = patches.Rectangle((i, i), 1, 1, linewidth=2.5, edgecolor='#FF4444',
@@ -171,7 +209,7 @@ def plot_binary_cm(cm_sum, labels, title, output_path):
     
     ax.set_xlabel('Predicted Label', fontsize=10)
     ax.set_ylabel('True Label', fontsize=10)
-    ax.set_title(f'{title}\n(Binary: Black=Correct, White=Wrong) | {n_above_50}/{n} > 50%, {n_above_random}/{n} > Random({random_baseline*100:.1f}%)', 
+    ax.set_title(f'{title}\n(Binary %) | {n_above_threshold}/{n} > {threshold*100:.0f}%, {n_above_random}/{n} > Random({random_baseline*100:.1f}%)', 
                  fontsize=11, fontweight='bold')
     ax.set_xticks(np.arange(n) + 0.5, labels, rotation=90, fontsize=5)
     ax.set_yticks(np.arange(n) + 0.5, labels, rotation=0, fontsize=5)
@@ -298,6 +336,10 @@ def main():
                         help='Specific prediction CSV file to use')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory for confusion matrices')
+    parser.add_argument('--mixed_checkpoints', action='store_true',
+                        help='Use best_model_acc for P1-P5, best_model for P6')
+    parser.add_argument('--row_majority', action='store_true',
+                        help='Binarize row majority predictions')
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -326,7 +368,11 @@ def main():
         elif args.csv_name:
             csv_path = os.path.join(fold_dir, args.csv_name)
         else:
-            csv_path = os.path.join(fold_dir, 'predictions_all_crops.csv')
+            # Mixed checkpoint: best_model_acc for P1-P5, best_model for P6
+            if args.mixed_checkpoints and fold == 'P6':
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model.csv')
+            else:
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops.csv')
             if not os.path.exists(csv_path):
                 csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model_acc.csv')
             if not os.path.exists(csv_path):
@@ -433,7 +479,8 @@ def main():
             title = f'Aggregate ({len(fold_raw_cms)} folds) - {level_name.capitalize()}/{hier.capitalize()} Acc: {100*mean_acc:.1f}%±{100*std_acc:.1f}%'
             
             plot_binary_cm(cm_sum_normalized, all_labels, title,
-                         os.path.join(output_dir, f'binary_cm_{level_name}_{hier}.png'))
+                         os.path.join(output_dir, f'binary_cm_{level_name}_{hier}.png'),
+                         row_majority=args.row_majority)
             
             plot_raw_counts(cm_sum_raw, all_labels, title,
                            os.path.join(output_dir, f'raw_cm_{level_name}_{hier}.png'))
