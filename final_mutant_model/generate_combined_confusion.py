@@ -305,8 +305,21 @@ def plot_percentage_cm(cm_sum, labels, title, output_path, show_annot=True):
     import seaborn as sns
     
     random_baseline = 100.0 / n
+    
+    # Count: highest is on diagonal vs off-diagonal
+    n_max_on_diagonal = 0
+    for i in range(n):
+        row = cm_sum[i, :]
+        if row.sum() > 0:
+            row_norm = row / row.sum()
+            max_idx = row_norm.argmax()
+            if max_idx == i:
+                n_max_on_diagonal += 1
+    
     n_above_random = np.sum(np.diag(cm_sum) * 100 > random_baseline)
-    n_above_50 = np.sum(np.diag(cm_sum) * 100 > 50)
+    
+    # Percentage
+    pct_on_diagonal = 100.0 * n_max_on_diagonal / n if n > 0 else 0
     
     fig, ax = plt.subplots(figsize=(max(14, n*0.2), max(14, n*0.2)))
     
@@ -341,7 +354,7 @@ def plot_percentage_cm(cm_sum, labels, title, output_path, show_annot=True):
     
     ax.set_xlabel('Predicted Label', fontsize=10)
     ax.set_ylabel('True Label', fontsize=10)
-    ax.set_title(f'{title}\n(Percentage %) | {n_above_50}/{n} > 50%, {n_above_random}/{n} > Random({random_baseline:.1f}%)', 
+    ax.set_title(f'{title}\n(Percentage %) | Max on Diagonal: {n_max_on_diagonal}/{n} ({pct_on_diagonal:.1f}%)', 
                  fontsize=11, fontweight='bold')
     ax.set_xticks(np.arange(n) + 0.5, labels, rotation=90, fontsize=5)
     ax.set_yticks(np.arange(n) + 0.5, labels, rotation=0, fontsize=5)
