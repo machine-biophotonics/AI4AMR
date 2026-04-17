@@ -106,38 +106,38 @@ class MultiCropDataset(Dataset):
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
-        # Only positions with full 3x3 neighborhood (skip edges)
+        # Only positions with full 5x5 neighborhood (skip edges)
         positions = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * stride
                 top = i * stride
                 if left + crop_size <= w and top + crop_size <= h:
-                    can_left = left - stride >= 0
-                    can_right = left + stride + crop_size <= w
-                    can_top = top - stride >= 0
-                    can_bottom = top + stride + crop_size <= h
+                    # Need 2 strides of space on each side for 5x5
+                    can_left = left - 2 * stride >= 0
+                    can_right = left + 2 * stride + crop_size <= w
+                    can_top = top - 2 * stride >= 0
+                    can_bottom = top + 2 * stride + crop_size <= h
                     if can_left and can_right and can_top and can_bottom:
                         positions.append((left, top))
         
         self.positions = positions
-        self.num_neighbors = 8
+        self.num_neighbors = 24  # 5x5 = 25 crops
         
         if augment:
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
-                A.Affine(translate_percent={'x': (-0.05, 0.05), 'y': (-0.05, 0.05)}, rotate=(-10, 10), p=0.5),
                 A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
-            ])
+            ], seed=seed)
         else:
             self.transform = A.Compose([
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
-            ])
+            ], seed=seed)
         
         print(f"MIL: {len(positions)} positions, {self.num_neighbors + 1} crops/image, augment={augment}")
     
@@ -184,11 +184,11 @@ class MultiCropDataset(Dataset):
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
         else:
-            # 3x3 grid around center with jitter
+            # 5x5 grid around center with jitter
             jitter_range = self.stride // 4
             crops_list = []
-            for di in range(-1, 2):
-                for dj in range(-1, 2):
+            for di in range(-2, 3):
+                for dj in range(-2, 3):
                     if self.augment:
                         jitter_x = random.randint(-jitter_range, jitter_range)
                         jitter_y = random.randint(-jitter_range, jitter_range)
@@ -205,7 +205,7 @@ class MultiCropDataset(Dataset):
             
             # Shuffle crop order
             if self.augment:
-                perm = list(range(9))
+                perm = list(range(25))
                 random.shuffle(perm)
                 crops_list = [crops_list[i] for i in perm]
             

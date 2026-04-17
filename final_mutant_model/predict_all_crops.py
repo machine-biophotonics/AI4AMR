@@ -72,7 +72,7 @@ def extract_mil_crops(
     crop_size: int,
     grid_size: int
 ) -> list[tuple[torch.Tensor, int, int, int]]:
-    """Extract 100 positions (with 9 crops each) matching training: center + 3x3 neighborhood."""
+    """Extract positions (with 25 crops each) matching training: center + 5x5 neighborhood."""
     img = Image.open(img_path).convert('RGB')
     w, h = img.size
     
@@ -85,18 +85,19 @@ def extract_mil_crops(
             left = j * stride_x
             top = i * stride_y
             if left + crop_size <= w and top + crop_size <= h:
-                can_left = left - stride_x >= 0
-                can_right = left + stride_x + crop_size <= w
-                can_top = top - stride_y >= 0
-                can_bottom = top + stride_y + crop_size <= h
+                # 5x5 needs 2 strides on each side
+                can_left = left - 2 * stride_x >= 0
+                can_right = left + 2 * stride_x + crop_size <= w
+                can_top = top - 2 * stride_y >= 0
+                can_bottom = top + 2 * stride_y + crop_size <= h
                 if can_left and can_right and can_top and can_bottom:
                     valid_positions.append((left, top))
     
     crops: list[tuple[torch.Tensor, int, int, int]] = []
     
     for pos_idx, (center_x, center_y) in enumerate(valid_positions):
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
                 left = center_x + dx * stride_x
                 top = center_y + dy * stride_y
                 
