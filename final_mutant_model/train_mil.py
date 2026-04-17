@@ -8,6 +8,7 @@ Supports --run_all_folds for cross-validation
 
 import argparse
 import sys
+import time
 import matplotlib
 matplotlib.use('Agg')
 import numpy as np
@@ -215,6 +216,7 @@ def train_single_fold(test_plate):
     
     print("Training...")
     for epoch in range(args.epochs):
+        epoch_start = time.time()
         train_dataset.set_epoch(epoch)
         model.train()
         run_loss, correct, total = 0.0, 0, 0
@@ -244,7 +246,7 @@ def train_single_fold(test_plate):
         avg_train_loss = run_loss / len(train_loader)
         
         model.eval()
-        all_preds, all_probs, all_labels = [], [], []
+        val_loss_total = 0.0
         
         with torch.no_grad():
             for images, labels in val_loader:
@@ -255,17 +257,20 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                val_loss = nn.functional.cross_entropy(outputs, labels)
+                val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
         all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
         val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
+        avg_val_loss = val_loss_total / len(val_loader)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, 0, val_acc, val_auc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
         
         if val_auc > best_val_auc:
             best_val_auc = val_auc
