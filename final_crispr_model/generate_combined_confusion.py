@@ -171,7 +171,7 @@ def aggregate_crop_to_well(df):
     return image_df, well_df
 
 
-def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=False, threshold=0.5):
+def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=True, threshold=0.5):
     n = len(labels)
     import seaborn as sns
     
@@ -195,19 +195,23 @@ def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=False, thres
     
     random_baseline = 1.0 / n
     
-    # Count rows with majority (>threshold)
-    n_with_majority = 0
+    # Count: highest is on diagonal vs off-diagonal
+    n_max_on_diagonal = 0
     for i in range(n):
         row = cm_sum[i, :]
         if row.sum() > 0:
             row_norm = row / row.sum()
-            if row_norm.max() >= threshold:
-                n_with_majority += 1
+            max_idx = row_norm.argmax()
+            if max_idx == i:
+                n_max_on_diagonal += 1
+    
+    n_with_majority = n_max_on_diagonal  # Total rows with any prediction
     
     n_above_random = np.sum(np.diag(cm_sum) >= random_baseline)
     
     # Percentage and count for title
     pct_majority = 100.0 * n_with_majority / n if n > 0 else 0
+    pct_on_diagonal = 100.0 * n_max_on_diagonal / n if n > 0 else 0
     n_above_threshold = n_with_majority
     
     # Use same styling as percentage confusion matrix
@@ -239,7 +243,7 @@ def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=False, thres
     
     ax.set_xlabel('Predicted Label', fontsize=10)
     ax.set_ylabel('True Label', fontsize=10)
-    ax.set_title(f'{title}\n(Binary %) | {n_above_threshold}/{n} > {threshold*100:.0f}%, {n_above_random}/{n} > Random({random_baseline*100:.1f}%)', 
+    ax.set_title(f'{title}\n(Binary %) | Max on Diagonal: {n_max_on_diagonal}/{n} ({pct_on_diagonal:.1f}%)', 
                  fontsize=11, fontweight='bold')
     ax.set_xticks(np.arange(n) + 0.5, labels, rotation=90, fontsize=5)
     ax.set_yticks(np.arange(n) + 0.5, labels, rotation=0, fontsize=5)
@@ -368,8 +372,6 @@ def main():
                         help='Output directory for confusion matrices')
     parser.add_argument('--mixed_checkpoints', action='store_true',
                         help='Use best_model_acc for P1-P5, best_model for P6')
-    parser.add_argument('--row_majority', action='store_true',
-                        help='Binarize row majority predictions')
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -509,8 +511,7 @@ def main():
             title = f'Aggregate ({len(fold_raw_cms)} folds) - {level_name.capitalize()}/{hier.capitalize()} Acc: {100*mean_acc:.1f}%±{100*std_acc:.1f}%'
             
             plot_binary_cm(cm_sum_normalized, all_labels, title,
-                         os.path.join(output_dir, f'binary_cm_{level_name}_{hier}.png'),
-                         row_majority=args.row_majority)
+                         os.path.join(output_dir, f'binary_cm_{level_name}_{hier}.png'))
             
             plot_raw_counts(cm_sum_raw, all_labels, title,
                            os.path.join(output_dir, f'raw_cm_{level_name}_{hier}.png'))
