@@ -32,6 +32,26 @@ HIERARCHY = {
     'parC': 'chromosome segregation', 'parE': 'chromosome organization',
 }
 
+# Trial pathway mapping
+TRIAL_PATHWAY = {
+    'folP': 'folic acid biosynthetic process', 'folA': 'folic acid biosynthetic process',
+    'ftsZ': 'cell cycle process',
+    'dnaE': 'DNA-templated DNA replication', 'dnaB': 'DNA-templated DNA replication',
+    'secY': 'intracellular transport', 'secA': 'intracellular transport',
+    'rpoB': 'regulation of DNA-templated transcription elongation',
+    'rpoA': 'regulation of DNA-templated transcription elongation',
+    'parE': 'cellular component organization', 'parC': 'cellular component organization',
+    'gyrB': 'cellular component organization', 'gyrA': 'cellular component organization',
+    'lptC': 'lipid transport', 'lptA': 'lipid transport', 'msbA': 'lipid transport',
+    'rplC': 'positive regulation of gene expression', 'rplA': 'positive regulation of gene expression',
+    'rpsA': 'positive regulation of gene expression', 'rpsL': 'positive regulation of gene expression',
+    'murC': 'glycosaminoglycan biosynthetic process', 'murA': 'glycosaminoglycan biosynthetic process',
+    'ftsI': 'glycosaminoglycan biosynthetic process', 'ftsZ': 'glycosaminoglycan biosynthetic process',
+    'mrdA': 'glycosaminoglycan biosynthetic process', 'mrcA': 'glycosaminoglycan biosynthetic process',
+    'mrcB': 'glycosaminoglycan biosynthetic process', 'lpxC': 'glycosaminoglycan biosynthetic process',
+    'lpxA': 'glycosaminoglycan biosynthetic process',
+}
+
 FAMILY = {
     'ftsZ': 'fts', 'ftsI': 'fts', 'murA': 'mur', 'murC': 'mur',
     'rpsA': 'rps', 'rpsL': 'rps', 'rplA': 'rpl', 'rplC': 'rpl',
@@ -83,6 +103,16 @@ def get_pathway(label):
     return 'Unknown'
 
 
+def get_trial_pathway(label):
+    """Trial pathway mapping - use exact same as generate_trial_pathway_confusion.py"""
+    base = get_base_gene(label)
+    if base.upper().startswith('WT') or base.upper() == 'NC':
+        return 'WT'
+    if base in TRIAL_PATHWAY:
+        return TRIAL_PATHWAY[base]
+    return base
+
+
 def get_family(label):
     base = get_base_gene(label)
     if str(base).upper().startswith('WT') or str(base).upper() == 'NC':
@@ -99,6 +129,8 @@ def map_hierarchy(labels, level):
         return [get_base_gene(l) for l in labels]
     elif level == 'pathway':
         return [get_pathway(l) for l in labels]
+    elif level == 'pathway':
+        return [get_trial_pathway(l) for l in labels]
     elif level == 'family':
         return [get_family(l) for l in labels]
     else:
@@ -144,27 +176,22 @@ def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=False, thres
     import seaborn as sns
     
     if row_majority:
-        # For each row, find if ANY column has majority (not necessarily diagonal)
-        # If the most common prediction is above threshold, mark as 1
-        cm_binary = np.zeros((n, n))
+        # For each row, use the percentage of the MAX column (not binary)
+        cm_display = np.zeros((n, n))
         for i in range(n):
             row = cm_sum[i, :]
             if row.sum() > 0:
                 row_norm = row / row.sum()
                 max_val = row_norm.max()
-                if max_val >= threshold:
-                    max_idx = row_norm.argmax()
-                    cm_binary[i, max_idx] = 1
+                max_idx = row_norm.argmax()
+                cm_display[i, max_idx] = max_val * 100  # Convert to percentage
     else:
         # Original: binary based on diagonal only
-        diagonal_acc = np.diag(cm_sum)
-        cm_binary = np.zeros((n, n))
+        cm_display = cm_sum * 100  # Convert to percentage
         for i in range(n):
-            if diagonal_acc[i] >= threshold:
-                cm_binary[i, i] = 1
             for j in range(n):
                 if i != j and cm_sum[i, j] >= threshold:
-                    cm_binary[i, j] = 1
+                    cm_display[i, j] = cm_sum[i, j] * 100
     
     random_baseline = 1.0 / n
     
@@ -178,6 +205,9 @@ def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=False, thres
                 n_with_majority += 1
     
     n_above_random = np.sum(np.diag(cm_sum) >= random_baseline)
+    
+    # Percentage and count for title
+    pct_majority = 100.0 * n_with_majority / n if n > 0 else 0
     n_above_threshold = n_with_majority
     
     # Use same styling as percentage confusion matrix
