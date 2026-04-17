@@ -128,8 +128,6 @@ def map_hierarchy(labels, level):
     elif level == 'gene':
         return [get_base_gene(l) for l in labels]
     elif level == 'pathway':
-        return [get_pathway(l) for l in labels]
-    elif level == 'pathway':
         return [get_trial_pathway(l) for l in labels]
     elif level == 'family':
         return [get_family(l) for l in labels]
@@ -216,9 +214,6 @@ def plot_binary_cm(cm_sum, labels, title, output_path, row_majority=True, thresh
     
     # Use same styling as percentage confusion matrix
     fig, ax = plt.subplots(figsize=(max(14, n*0.2), max(14, n*0.2)))
-    
-    # Convert to percentage scale (0 or 100) to match other matrices
-    cm_display = cm_binary * 100
     
     sns.heatmap(cm_display, annot=False, cmap='Blues', xticklabels=labels,
                 yticklabels=labels, ax=ax, vmin=0, vmax=100,
