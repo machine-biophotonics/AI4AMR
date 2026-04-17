@@ -190,9 +190,9 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: 9 (center + 8 neighbors)")
+    print(f"Crops per image: 25 (center + 5x5 neighbors)")
     
-    model = AttentionMILModel(num_classes=num_classes)
+    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
