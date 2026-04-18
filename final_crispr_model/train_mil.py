@@ -51,15 +51,13 @@ parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
-parser.add_argument('--warmup_epochs', type=int, default=5, help='Cosine warmup epochs')
-parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor')
-parser.add_argument('--diversity_loss', type=float, default=0.0, help='Diversity loss weight for attention heads')
-parser.add_argument('--token_dropout', type=float, default=0.0, help='Token dropout rate during training')
-parser.add_argument('--num_workers', type=int, default=0, help='Number of workers (0 = main process only)')
 args = parser.parse_args()
 
-# Set num_workers based on args
-NUM_WORKERS = args.num_workers
+# Set num_workers based on OS
+if sys.platform.startswith('win'):
+    NUM_WORKERS = 4  # Try 4 workers on Windows
+else:
+    NUM_WORKERS = 4
 
 SEED = args.seed
 random.seed(SEED)
@@ -113,11 +111,8 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
-    if label_smoothing > 0:
-        ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
-    else:
-        ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
@@ -125,26 +120,6 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
 def attention_entropy_loss(attn_weights):
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
     return entropy
-
-def diversity_loss(attn_weights):
-    """Encourage different heads to attend to different instances"""
-    # attn_weights: (B, N, H) where H = num_heads
-    # We want each head to have different attention patterns
-    # Measure diversity as negative correlation between heads
-    B, N, H = attn_weights.shape
-    avg_attn = attn_weights.mean(dim=1)  # (B, H)
-    # Encourage low correlation between heads
-    corr = torch.corrcoef(avg_attn.T + 1e-8)
-    off_diag = corr - torch.eye(H, device=corr.device) * corr.diag()
-    return off_diag.abs().mean()
-
-def token_dropout(attn_weights, dropout_rate, training=True):
-    """Apply dropout to attention tokens during training"""
-    if not training or dropout_rate <= 0:
-        return attn_weights
-    B, N, H = attn_weights.shape
-    mask = torch.rand(B, N, 1, device=attn_weights.device) > dropout_rate
-    return attn_weights * mask.float()
 
 def worker_init_fn(worker_id, seed=42):
     """Module-level worker init function for multiprocessing compatibility"""
@@ -229,7 +204,7 @@ def train_single_fold(test_plate):
         {'params': attention_params, 'lr': args.lr}
     ], weight_decay=0.01)
     
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.epochs, T_mult=2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
@@ -252,25 +227,15 @@ def train_single_fold(test_plate):
             
             outputs, attn_weights = model(images, return_attention=True)
             
-            # Apply token dropout to attention weights
-            if args.token_dropout > 0:
-                attn_weights = token_dropout(attn_weights, args.token_dropout, model.training)
-            
-            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
             ent_loss = attention_entropy_loss(attn_weights)
-            
-            # Add diversity loss if configured
-            div_loss = torch.tensor(0.0, device=labels.device)
-            if args.diversity_loss > 0 and args.num_heads > 1:
-                div_loss = diversity_loss(attn_weights)
-            
-            loss = main_loss + 0.01 * ent_loss + args.diversity_loss * div_loss
+            loss = main_loss + 0.01 * ent_loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
-            run_loss += main_loss.item()
+            run_loss += loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -281,8 +246,8 @@ def train_single_fold(test_plate):
         avg_train_loss = run_loss / len(train_loader)
         
         model.eval()
-        all_preds, all_probs, all_labels = [], [], []
         val_loss_total = 0.0
+        all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad():
             for images, labels in val_loader:
@@ -293,7 +258,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                val_loss = nn.functional.cross_entropy(outputs, labels)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
@@ -302,7 +267,7 @@ def train_single_fold(test_plate):
         avg_val_loss = val_loss_total / len(val_loader)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
