@@ -65,11 +65,11 @@ class GatedAttentionMIL(nn.Module):
 class AttentionMILModel(nn.Module):
     def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
         super().__init__()
-        # EfficientNet-B0 backbone with GMP (Global Max Pooling)
+        # EfficientNet-B0 backbone with GAP (Global Average Pooling)
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
             base_model.features,
-            nn.AdaptiveMaxPool2d(1),
+            nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
         feature_dim = 1280
