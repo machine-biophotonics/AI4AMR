@@ -297,7 +297,7 @@ def main() -> None:
     parser.add_argument('--fold', type=str, default=None, help='Fold to predict (e.g., P6)')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
-    parser.add_argument('--mil_mode', action='store_true', help='Use MIL mode: 100 positions with 9 crops each')
+    parser.add_argument('--mil_mode', type=lambda x: x.lower() == 'true', default=True, help='Use MIL mode: 100 positions with 9 crops each (default: True)')
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
     parser.add_argument('--max_images', type=int, default=None, help='Maximum number of images to process')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for inference')
@@ -353,11 +353,11 @@ def main() -> None:
                 print(f'  - {f}')
         return
     
-    model = AttentionMILModel(num_classes=num_classes, num_heads=4, attention_temp=0.5)
+    model = AttentionMILModel(num_classes=num_classes, num_heads=4)
     model = model.to(device)
     
     checkpoint: dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     model.eval()
     print(f"Model loaded successfully")
 
