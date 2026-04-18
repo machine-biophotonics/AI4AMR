@@ -48,6 +48,8 @@ parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
 parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
+parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
+parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
@@ -104,13 +106,13 @@ def get_image_paths_for_plate(plate):
             valid_paths.append(path)
     return valid_paths
 
-def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
@@ -197,10 +199,27 @@ def train_single_fold(test_plate):
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
     attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
     
-    optimizer = torch.optim.AdamW([
-        {'params': backbone_params, 'lr': args.lr * 0.1},
-        {'params': attention_params, 'lr': args.lr}
-    ], weight_decay=0.01)
+    # Configurable optimizer
+    if args.optimizer == 'adam':
+        optimizer = torch.optim.Adam([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01)
+    elif args.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01)
+    elif args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01, momentum=0.9)
+    else:
+        optimizer = torch.optim.AdamW([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -243,7 +262,7 @@ def train_single_fold(test_plate):
             
             outputs, attn_weights = model(images, return_attention=True)
             
-            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
             ent_loss = attention_entropy_loss(attn_weights)
             loss = main_loss + 0.01 * ent_loss
             
@@ -274,7 +293,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = focal_loss(outputs, labels)
+                val_loss = focal_loss(outputs, labels, label_smoothing=args.label_smoothing)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
