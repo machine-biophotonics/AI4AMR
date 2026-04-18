@@ -27,11 +27,11 @@ class AttentionPooling(nn.Module):
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads  # 256 / 4 = 64-dim per head
         
-        # Gated attention: V and U project to head_dim per head
-        # Each head gets (in_features → head_dim)
-        self.V = nn.Linear(in_features, self.head_dim)
-        self.U = nn.Linear(in_features, self.head_dim)
-        # w produces single attention score per head
+        # Gated attention: V and U project full features to head_dim per head
+        # After projection, split into heads
+        self.V = nn.Linear(in_features, self.head_dim * num_heads)
+        self.U = nn.Linear(in_features, self.head_dim * num_heads)
+        # w produces single attention score per (instance)
         self.w = nn.Linear(self.head_dim, 1)
         
         # Output projection to combine heads back
@@ -40,22 +40,29 @@ class AttentionPooling(nn.Module):
     def forward(self, x, temperature=0.5):
         batch_size, num_instances, _ = x.shape  # (B, N, 256)
         
-        # Compute gated attention
-        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))  # (B, N, 64)
+        # Project to all heads at once: 256 → 4*64 = 256
+        V_out = self.V(x)  # (B, N, 256)
+        U_out = self.U(x)  # (B, N, 256)
         
-        # Compute attention per head
-        attn_scores = self.w(A).squeeze(-1)  # (B, N) per head, but we need (B, N, H)
+        # Reshape to split into heads: (B, N, H, 64)
+        V_heads = V_out.view(batch_size, num_instances, self.num_heads, self.head_dim)
+        U_heads = U_out.view(batch_size, num_instances, self.num_heads, self.head_dim)
         
-        # Actually, let's do it properly: compute for each head
-        # For true multi-head, we need to split features
-        x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim)  # (B, N, H, 64)
-        x_heads = x_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
+        # Permute to (B, H, N, 64) for attention computation
+        V_heads = V_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
+        U_heads = U_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
         
-        A_heads = torch.tanh(self.V(x_heads)) * torch.sigmoid(self.U(x_heads))  # (B, H, N, 64)
-        attn_weights = self.w(A_heads).squeeze(-1)  # (B, H, N)
+        # Gated attention per head: tanh(V) ⊙ sigmoid(U)
+        A_heads = torch.tanh(V_heads) * torch.sigmoid(U_heads)  # (B, H, N, 64)
         
-        # Apply temperature and softmax
-        attn_weights = torch.softmax(attn_weights / temperature, dim=2)  # (B, H, N)
+        # Compute attention scores per head
+        attn_scores = self.w(A_heads).squeeze(-1)  # (B, H, N)
+        
+        # Apply temperature and softmax over heads (dim=1) - each instance gets attention over heads
+        attn_weights = torch.softmax(attn_scores / temperature, dim=1)  # (B, H, N)
+        
+        # Re-permute x for weighted sum: (B, N, H, 64) → (B, H, N, 64)
+        x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         
         # Weighted sum: (B, H, N) × (B, H, N, 64) → (B, H, 64)
         pooled = torch.einsum('bhn,bhnf->bhf', attn_weights, x_heads)
