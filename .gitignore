@@ -53,6 +53,13 @@ training_log*.txt
 *.ipynb_checkpoints/
 *.ipynb
 
+# Virtual environments
+venv/
+CRISPRi/
+Imaging/
+Plate/
+Reference/
+
 # OS
 .DS_Store
 Thumbs.db

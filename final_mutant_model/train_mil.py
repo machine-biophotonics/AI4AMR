@@ -250,7 +250,7 @@ def train_single_fold(test_plate):
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad():
-            for images, labels in val_loader:
+            for images, labels in tqdm(val_loader, desc='Val', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
                 probs = torch.softmax(outputs, dim=1)

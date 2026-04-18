@@ -17,14 +17,16 @@ import os
 
 class AttentionPooling(nn.Module):
     """Gated attention MIL pooling (Ilse et al. 2018)"""
-    def __init__(self, in_features, num_heads=4):
+    def __init__(self, in_features, num_heads=4, hidden_dim=256):
         super().__init__()
         self.num_heads = num_heads
+        self.hidden_dim = hidden_dim
         
         # Gated attention: V and U learn what to attend to
-        self.V = nn.Linear(in_features, in_features // 4)
-        self.U = nn.Linear(in_features, in_features // 4)
-        self.w = nn.Linear(in_features // 4, num_heads)
+        # Use hidden_dim for intermediate representation
+        self.V = nn.Linear(in_features, hidden_dim)
+        self.U = nn.Linear(in_features, hidden_dim)
+        self.w = nn.Linear(hidden_dim, num_heads)
     
     def forward(self, x, temperature=0.5):
         # Gated attention: tanh(V) * sigmoid(U)
@@ -41,27 +43,34 @@ class AttentionPooling(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, bottleneck_dim=256):
         super().__init__()
         # Use EfficientNet features with proper flattening
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
             base_model.features,
-            nn.AdaptiveAvgPool2d(1),
+            nn.AdaptiveMaxPool2d(1),
             nn.Flatten()
         )
         feature_dim = 1280
+        self.bottleneck_dim = bottleneck_dim
         
-        # Gated attention pooling
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        # Bottleneck projection: 1280 -> 256
+        self.bottleneck = nn.Linear(feature_dim, bottleneck_dim)
+        
+        # Gated attention pooling on 256-dim features
+        self.attention_pool = AttentionPooling(bottleneck_dim, num_heads)
         self.attention_temp = attention_temp
         
-        # Multi-head projection (keep head diversity)
-        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
+        # Multi-head projection: 4 * 256 = 1024 -> bottleneck_dim
+        self.head_proj = nn.Linear(bottleneck_dim * num_heads, bottleneck_dim)
         
+        # Classifier: bottleneck_dim -> 256 -> num_classes
         self.classifier = nn.Sequential(
+            nn.Linear(bottleneck_dim, 256),
+            nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
-            nn.Linear(feature_dim, num_classes)
+            nn.Linear(256, num_classes)
         )
     
     def forward(self, x, return_attention=False):
@@ -70,14 +79,17 @@ class AttentionMILModel(nn.Module):
         # Extract features
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
+        x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
+        
+        # Bottleneck projection: 1280 -> 256
+        x = self.bottleneck(x)  # (B, N, 256)
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
-        # Flatten heads and project
+        # Flatten heads and project: 4 * 256 = 1024 -> 256
         pooled = pooled.reshape(batch_size, -1)
-        pooled = self.head_proj(pooled)
+        pooled = self.head_proj(pooled)  # (B, 256)
         
         output = self.classifier(pooled)
         
