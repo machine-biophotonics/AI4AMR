@@ -31,6 +31,15 @@ import multiprocessing
 
 from mil_model import AttentionMILModel, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 
+# Try to import torchmil for VAEABMIL
+try:
+    from torchmil.models import VAEABMIL
+    from torchmil.nn import VariationalAutoEncoderMIL, AttentionPool
+    TORCHMIL_AVAILABLE = True
+except ImportError:
+    TORCHMIL_AVAILABLE = False
+    print("Warning: torchmil not available, VAEABMIL will not work")
+
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -51,11 +60,12 @@ parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
-parser.add_argument('--warmup_epochs', type=int, default=5, help='Cosine warmup epochs')
-parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor')
-parser.add_argument('--diversity_loss', type=float, default=0.0, help='Diversity loss weight for attention heads')
-parser.add_argument('--token_dropout', type=float, default=0.0, help='Token dropout rate during training')
-parser.add_argument('--num_workers', type=int, default=0, help='Number of workers (0 = main process only)')
+parser.add_argument('--warmup_epochs', type=int, default=0, help='Cosine warmup epochs (0 = no warmup)')
+parser.add_argument('--num_workers', type=int, default=16, help='Number of workers (default: 16)')
+parser.add_argument('--optimizer', type=str, default='adamax', choices=['adam', 'adamax'], help='Optimizer to use')
+parser.add_argument('--use_attention', action='store_true', default=True, help='Use attention pooling (disable for GMP only)')
+parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension in classification head')
+parser.add_argument('--model_type', type=str, default='custom', choices=['custom', 'vaeabmil', 'abmil', 'dsmil'], help='Model architecture to use')
 args = parser.parse_args()
 
 # Set num_workers based on args
@@ -218,18 +228,260 @@ def train_single_fold(test_plate):
     
     print(f"Crops per image: 25 (center + 5x5 neighbors)")
     
-    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
-    model = model.to(device)
+    # Create model based on model_type
+    if args.model_type == 'vaeabmil':
+        if not TORCHMIL_AVAILABLE:
+            raise ValueError("torchmil not installed. Install with: pip install torchmil")
+        
+        from torchmil.nn import VariationalAutoEncoderMIL, AttentionPool
+        
+        # Create EfficientNet backbone
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        backbone = nn.Sequential(
+            base_model.features,
+            nn.AdaptiveMaxPool2d(1),
+            nn.Flatten()
+        )
+        
+        # VAE feature extractor
+        vae_ext = VariationalAutoEncoderMIL(
+            input_shape=(1280,),
+            layer_sizes=[256, 128],
+            activations=['relu', None]
+        )
+        
+        # Attention pooling
+        attn_pool = AttentionPool(in_dim=128, att_dim=128, act='tanh', gated=True)
+        
+        # Multi-class classifier
+        classifier = nn.Sequential(
+            nn.BatchNorm1d(128),
+            nn.Linear(128, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(256, num_classes)
+        )
+        
+        # Full VAEABMIL wrapper for multi-class
+        class VAEABMILMultiClass(nn.Module):
+            def __init__(self, backbone, vae_ext, attn_pool, classifier):
+                super().__init__()
+                self.backbone = backbone
+                self.vae_ext = vae_ext
+                self.attn_pool = attn_pool
+                self.classifier = classifier
+            
+            def forward(self, x, return_attention=False):
+                batch_size, num_crops = x.shape[:2]
+                
+                # Extract features
+                x = x.view(batch_size * num_crops, *x.shape[2:])
+                x = self.backbone(x)
+                x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
+                
+                # VAE encoding: get latent representations
+                z = self.vae_ext(x)  # (B, N, 1, 128)
+                z = z.squeeze(2)  # (B, N, 128)
+                
+                # Attention pooling on latent space
+                pooled, attn = self.attn_pool(z, return_att=True)
+                
+                # Multi-class classification
+                logits = self.classifier(pooled)
+                
+                if return_attention:
+                    return logits, attn
+                return logits
+            
+            def get_optimizer_groups(self, lr_backbone, lr_mil):
+                return [
+                    {'params': self.backbone.parameters(), 'lr': lr_backbone},
+                    {'params': list(self.vae_ext.parameters()) + list(self.attn_pool.parameters()) + list(self.classifier.parameters()), 'lr': lr_mil}
+                ]
+        
+        model = VAEABMILMultiClass(backbone, vae_ext, attn_pool, classifier).to(device)
+        optimizer_groups = model.get_optimizer_groups(args.lr * 0.1, args.lr)
+        
+        if args.optimizer == 'adamax':
+            optimizer = torch.optim.Adamax(optimizer_groups, weight_decay=0.01)
+        else:
+            optimizer = torch.optim.Adam(optimizer_groups, weight_decay=0.01)
+        
+        def train_step(model, images, labels, optimizer):
+            model.train()
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = nn.functional.cross_entropy(outputs, labels)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            return loss, outputs
+        
+        def eval_step(model, images, labels=None):
+            model.eval()
+            with torch.no_grad():
+                outputs = model(images)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+            return outputs, probs, predicted
+        
+        train_func = train_step
+        eval_func = eval_step
+        
+        print(f"Using VAEABMIL (manual) multi-class model with EfficientNet-B0 backbone")
+        
+    elif args.model_type == 'abmil':
+        if not TORCHMIL_AVAILABLE:
+            raise ValueError("torchmil not installed")
+        
+        from torchmil.models import ABMIL
+        from torchmil.nn import AttentionPool
+        
+        # Backbone
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        feature_extractor = nn.Sequential(
+            base_model.features,
+            nn.AdaptiveMaxPool2d(1),
+            nn.Flatten()
+        )
+        
+        attn_pool = AttentionPool(in_dim=1280, att_dim=128, act='tanh', gated=True)
+        mil_model = ABMIL(feat_ext=attn_pool)
+        
+        # Multi-class classifier with 6-layer head (same as custom model)
+        classifier = nn.Sequential(
+            nn.BatchNorm1d(128),
+            nn.Linear(128, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(256, num_classes)
+        )
+        
+        class ABMILWithBackbone(nn.Module):
+            def __init__(self, backbone, mil_model, classifier):
+                super().__init__()
+                self.backbone = backbone
+                self.mil_model = mil_model
+                self.classifier = classifier
+            
+            def forward(self, x, return_attention=False):
+                batch_size, num_crops = x.shape[:2]
+                x = x.view(batch_size * num_crops, *x.shape[2:])
+                x = self.backbone(x)
+                x = x.view(batch_size, num_crops, -1)
+                # ABMIL returns (output, attn) - output is attention-pooled features
+                pooled_features, attn = self.mil_model(x, return_att=True)
+                # Apply classifier
+                output = self.classifier(pooled_features)
+                if return_attention:
+                    return output, attn
+                return output
+            
+            def get_optimizer_groups(self, lr_backbone, lr_mil):
+                return [
+                    {'params': self.backbone.parameters(), 'lr': lr_backbone},
+                    {'params': list(self.mil_model.parameters()) + list(self.classifier.parameters()), 'lr': lr_mil}
+                ]
+        
+        model = ABMILWithBackbone(feature_extractor, mil_model, classifier).to(device)
+        optimizer_groups = model.get_optimizer_groups(args.lr * 0.1, args.lr)
+        
+        if args.optimizer == 'adamax':
+            optimizer = torch.optim.Adamax(optimizer_groups, weight_decay=0.01)
+        else:
+            optimizer = torch.optim.Adam(optimizer_groups, weight_decay=0.01)
+        
+        def train_step(model, images, labels, optimizer):
+            model.train()
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = nn.functional.cross_entropy(outputs, labels)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            return loss, outputs
+        
+        def eval_step(model, images, labels=None):
+            model.eval()
+            with torch.no_grad():
+                outputs = model(images)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+            return outputs, probs, predicted
+        
+        train_func = train_step
+        eval_func = eval_step
+        print(f"Using ABMIL model with EfficientNet-B0 backbone")
+        
+    else:
+        # Custom model (existing)
+        model = AttentionMILModel(
+            num_classes=num_classes, 
+            num_heads=args.num_heads,
+            use_attention=args.use_attention,
+            hidden_dim=args.hidden_dim
+        )
+        model = model.to(device)
+        
+        # Differential learning rates
+        if args.use_attention:
+            backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
+            attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+            param_groups = [
+                {'params': backbone_params, 'lr': args.lr * 0.1},
+                {'params': attention_params, 'lr': args.lr}
+            ]
+        else:
+            backbone_params = [p for n, p in model.named_parameters() if 'classifier' not in n]
+            classifier_params = [p for n, p in model.named_parameters() if 'classifier' in n]
+            param_groups = [
+                {'params': backbone_params, 'lr': args.lr * 0.1},
+                {'params': classifier_params, 'lr': args.lr}
+            ]
+        
+        # Adamax or Adam optimizer
+        if args.optimizer == 'adamax':
+            optimizer = torch.optim.Adamax(param_groups, weight_decay=0.01)
+        else:
+            optimizer = torch.optim.Adam(param_groups, weight_decay=0.01)
+        
+        def train_step(model, images, labels, optimizer):
+            model.train()
+            optimizer.zero_grad()
+            outputs, _ = model(images, return_attention=True)
+            loss = focal_loss(outputs, labels)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            return loss, outputs
+        
+        def eval_step(model, images, labels=None):
+            model.eval()
+            with torch.no_grad():
+                outputs, _ = model(images, return_attention=True)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+            return outputs, probs, predicted
+        
+        train_func = train_step
+        eval_func = eval_step
+        print(f"Using custom model: optimizer={args.optimizer.upper()}, attention={args.use_attention}")
     
-    backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
-    attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+    # Cosine warmup then cosine annealing
+    # Warmup: start at 0.1x LR, linearly ramp to full LR over warmup_epochs
+    # Then cosine decay from full LR to near-zero
+    def warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs):
+        def lr_lambda(epoch):
+            if epoch < warmup_epochs:
+                # Linear warmup: start at 0.1 (10% of LR), ramp to 1.0 at end of warmup
+                return 0.1 + 0.9 * (epoch / max(1, warmup_epochs))
+            else:
+                # Cosine decay from 1.0 to 0
+                progress = (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs - 1)
+                return 0.5 * (1.0 + np.cos(np.pi * progress))
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    optimizer = torch.optim.AdamW([
-        {'params': backbone_params, 'lr': args.lr * 0.1},
-        {'params': attention_params, 'lr': args.lr}
-    ], weight_decay=0.01)
-    
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.epochs, T_mult=2)
+    scheduler = warmup_cosine_scheduler(optimizer, args.warmup_epochs, args.epochs)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
@@ -243,34 +495,15 @@ def train_single_fold(test_plate):
     for epoch in range(args.epochs):
         epoch_start = time.time()
         train_dataset.set_epoch(epoch)
-        model.train()
+        
         run_loss, correct, total = 0.0, 0, 0
         
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()
             
-            outputs, attn_weights = model(images, return_attention=True)
+            loss, outputs = train_func(model, images, labels, optimizer)
             
-            # Apply token dropout to attention weights
-            if args.token_dropout > 0:
-                attn_weights = token_dropout(attn_weights, args.token_dropout, model.training)
-            
-            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-            ent_loss = attention_entropy_loss(attn_weights)
-            
-            # Add diversity loss if configured
-            div_loss = torch.tensor(0.0, device=labels.device)
-            if args.diversity_loss > 0 and args.num_heads > 1:
-                div_loss = diversity_loss(attn_weights)
-            
-            loss = main_loss + 0.01 * ent_loss + args.diversity_loss * div_loss
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            
-            run_loss += main_loss.item()
+            run_loss += loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -280,21 +513,17 @@ def train_single_fold(test_plate):
         train_acc = 100. * correct / total
         avg_train_loss = run_loss / len(train_loader)
         
-        model.eval()
+        # Validation
         all_preds, all_probs, all_labels = [], [], []
         val_loss_total = 0.0
         
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs, _ = model(images, return_attention=True)
-                probs = torch.softmax(outputs, dim=1)
-                _, predicted = outputs.max(1)
-                all_preds.extend(predicted.cpu().numpy())
-                all_probs.extend(probs.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                val_loss_total += val_loss.item()
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs, probs, predicted = eval_func(model, images, labels)
+            all_preds.extend(predicted.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            val_loss_total += focal_loss(outputs, labels).item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
         all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
@@ -324,9 +553,7 @@ def train_single_fold(test_plate):
     with torch.no_grad():
         for images, labels in test_loader:
             images = images.to(device)
-            outputs, _ = model(images, return_attention=True)
-            probs = torch.softmax(outputs, dim=1)
-            _, predicted = outputs.max(1)
+            outputs, probs, predicted = eval_func(model, images)
             all_preds.extend(predicted.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(labels.numpy())
