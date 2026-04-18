@@ -58,8 +58,8 @@ class AttentionPooling(nn.Module):
         # Compute attention scores per head
         attn_scores = self.w(A_heads).squeeze(-1)  # (B, H, N)
         
-        # Apply temperature and softmax over heads (dim=1) - each instance gets attention over heads
-        attn_weights = torch.softmax(attn_scores / temperature, dim=1)  # (B, H, N)
+        # Apply temperature and softmax over crops (dim=2) - each head normalizes across 25 crops
+        attn_weights = torch.softmax(attn_scores / temperature, dim=2)  # (B, H, N)
         
         # Re-permute x for weighted sum: (B, N, H, 64) → (B, H, N, 64)
         x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
@@ -73,7 +73,7 @@ class AttentionPooling(nn.Module):
         # Output projection
         pooled = self.out_proj(pooled)
         
-        # Average attention weights for visualization (B, N)
+        # Average attention weights across heads for visualization (B, N)
         attn_weights_avg = attn_weights.mean(dim=1)
         
         return pooled, attn_weights_avg
