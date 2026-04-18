@@ -370,6 +370,8 @@ def plot_percentage_cm(cm_sum, labels, title, output_path, show_annot=True):
 def main():
     parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for final_crispr_model')
     parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
+    parser.add_argument('--single_fold', type=str, default=None,
+                        help='Generate for a single fold (e.g., P1) - creates fold-specific output directory')
     parser.add_argument('--guide', action='store_true', help='Generate only guide-level')
     parser.add_argument('--family', action='store_true', help='Generate only family-level')
     parser.add_argument('--csv_name', type=str, default=None, 
@@ -383,12 +385,18 @@ def main():
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    folds = args.folds.split(',')
-
-    if args.output_dir:
+    
+    # Handle single fold case
+    if args.single_fold:
+        folds = [args.single_fold]
+        output_dir = os.path.join(SCRIPT_DIR, 'aggregate', f'fold_{args.single_fold}')
+    elif args.output_dir:
+        folds = args.folds.split(',')
         output_dir = args.output_dir
     else:
+        folds = args.folds.split(',')
         output_dir = os.path.join(SCRIPT_DIR, 'aggregate', 'combined')
+    
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Aggregating across folds: {folds}")
