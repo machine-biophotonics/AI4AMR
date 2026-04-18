@@ -258,7 +258,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = nn.functional.cross_entropy(outputs, labels)
+                val_loss = focal_loss(outputs, labels)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
@@ -267,7 +267,7 @@ def train_single_fold(test_plate):
         avg_val_loss = val_loss_total / len(val_loader)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
