@@ -148,17 +148,23 @@ def train_single_fold(test_plate):
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
             train_paths.append(path)
-            train_labels.append(gene_to_idx[get_gene_from_path(path)])
+            well = extract_well_from_filename(os.path.basename(path))
+            gene_label = plate_maps.get(plate, {}).get(well, 'unknown')
+            train_labels.append(gene_to_idx.get(gene_label, 0))
     
     for plate in val_plates:
         for path in get_image_paths_for_plate(plate):
             val_paths.append(path)
-            val_labels.append(gene_to_idx[get_gene_from_path(path)])
+            well = extract_well_from_filename(os.path.basename(path))
+            gene_label = plate_maps.get(plate, {}).get(well, 'unknown')
+            val_labels.append(gene_to_idx.get(gene_label, 0))
     
     for plate in [test_plate]:
         for path in get_image_paths_for_plate(plate):
             test_paths.append(path)
-            test_labels.append(gene_to_idx[get_gene_from_path(path)])
+            well = extract_well_from_filename(os.path.basename(path))
+            gene_label = plate_maps.get(plate, {}).get(well, 'unknown')
+            test_labels.append(gene_to_idx.get(gene_label, 0))
     
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
