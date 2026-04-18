@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-MIL training with cycle-based crop extraction
-Training: 5 crops (center + 4 neighbors - cross pattern)
-Validation/Test: 5 crops
+MIL training with cycle-based crop extraction + neighbors
+Training: 9 crops (center + 3x3 neighborhood)
+Validation/Test: single center crop
 Supports --run_all_folds for cross-validation
 """
 
@@ -148,23 +148,17 @@ def train_single_fold(test_plate):
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
             train_paths.append(path)
-            well = extract_well_from_filename(os.path.basename(path))
-            gene_label = plate_maps.get(plate, {}).get(well, 'unknown')
-            train_labels.append(gene_to_idx.get(gene_label, 0))
+            train_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
     
     for plate in val_plates:
         for path in get_image_paths_for_plate(plate):
             val_paths.append(path)
-            well = extract_well_from_filename(os.path.basename(path))
-            gene_label = plate_maps.get(plate, {}).get(well, 'unknown')
-            val_labels.append(gene_to_idx.get(gene_label, 0))
+            val_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
     
     for plate in [test_plate]:
         for path in get_image_paths_for_plate(plate):
             test_paths.append(path)
-            well = extract_well_from_filename(os.path.basename(path))
-            gene_label = plate_maps.get(plate, {}).get(well, 'unknown')
-            test_labels.append(gene_to_idx.get(gene_label, 0))
+            test_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
     
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
@@ -197,7 +191,7 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: 25 (5x5 neighborhood)")
+    print(f"Crops per image: 25 (center + 5x5 neighbors)")
     
     model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
     model = model.to(device)

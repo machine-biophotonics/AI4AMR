@@ -1,8 +1,10 @@
 """
-MIL with 5x5 neighborhood (25 crops)
-- Gated Attention MIL pooling with configurable heads
-- Direct 1280-dim features to attention (no bottleneck)
-- Simple classifier: Linear → ReLU → Dropout → Linear
+MIL with cycle-based crop extraction + 5x5 neighborhood (25 crops)
+- Training: 25 crops (center + 5x5 grid with jitter)
+- Validation/Test: 25 crops (center + 5x5 grid, no jitter)
+- True multi-head attention: 4 heads × 64-dim = 256-dim
+- Bottleneck: 1280 → 256
+- Classifier per paper: BatchNorm → Linear → ReLU → Dropout → Linear
 """
 
 import torch
@@ -18,45 +20,49 @@ import re
 import os
 
 
-class GatedAttentionMIL(nn.Module):
-    """Gated attention MIL pooling (Ilse et al. 2018)"""
+class AttentionPooling(nn.Module):
+    """Gated attention MIL pooling with multi-head attention"""
     def __init__(self, in_features, num_heads=4):
         super().__init__()
         self.num_heads = num_heads
-        self.head_dim = in_features // num_heads
+        self.in_features = in_features
+        self.head_dim = in_features // num_heads  # e.g., 1280/4 = 320-dim per head
         
-        # Gated attention
+        # Gated attention: V and U project to all heads at once
         self.V = nn.Linear(in_features, in_features)
         self.U = nn.Linear(in_features, in_features)
         
-        # Per-head attention score
+        # Per-head score layer: projects head_dim to 1
         self.w = nn.Linear(self.head_dim, 1)
     
     def forward(self, x, temperature=0.5):
         batch_size, num_instances, _ = x.shape  # (B, N, 1280)
         
         # Gated attention: tanh(V) ⊙ sigmoid(U)
-        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))  # (B, N, 1280)
         
-        # Reshape to heads: (B, N, H, 320)
-        A_heads = A.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # Reshape to split into heads: (B, N, H, 320)
+        A_heads = A.view(batch_size, num_instances, self.num_heads, self.head_dim)
         
-        # Per-head score: (B, H, N, 320) → (B, H, N)
+        # Permute to (B, H, N, 320) for attention computation
+        A_heads = A_heads.permute(0, 2, 1, 3)  # (B, H, N, 320)
+        
+        # Compute attention scores per head: (B, H, N, 320) → (B, H, N)
         attn_scores = self.w(A_heads).squeeze(-1)
         
-        # Softmax over instances: (B, H, N)
-        attn_weights = torch.softmax(attn_scores / temperature, dim=2)
+        # Apply temperature and softmax over crops (dim=2) - each head normalizes across 25 crops
+        attn_weights = torch.softmax(attn_scores / temperature, dim=2)  # (B, H, N)
         
-        # Reshape features for weighted sum
+        # Reshape original features for weighted sum: (B, N, H, 320)
         x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         
         # Weighted sum: (B, H, N) × (B, H, N, 320) → (B, H, 320)
         pooled = torch.einsum('bhn,bhnf->bhf', attn_weights, x_heads)
         
-        # Concatenate heads: (B, 1280)
+        # Concatenate heads: (B, H*320) = (B, 1280)
         pooled = pooled.reshape(batch_size, -1)
         
-        # Average attention for visualization
+        # Average attention weights across heads for visualization (B, N)
         attn_weights_avg = attn_weights.mean(dim=1)
         
         return pooled, attn_weights_avg
@@ -65,7 +71,7 @@ class GatedAttentionMIL(nn.Module):
 class AttentionMILModel(nn.Module):
     def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
         super().__init__()
-        # EfficientNet-B0 backbone with GAP (Global Average Pooling)
+        # Use EfficientNet features with proper flattening (GAP)
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
             base_model.features,
@@ -75,11 +81,11 @@ class AttentionMILModel(nn.Module):
         feature_dim = 1280
         self.num_heads = num_heads
         
-        # Gated attention pooling
-        self.attention = GatedAttentionMIL(feature_dim, num_heads)
+        # Gated attention pooling on 1280-dim features (no bottleneck)
+        self.attention_pool = AttentionPooling(feature_dim, num_heads)
         self.attention_temp = attention_temp
         
-        # Simple classifier
+        # Simple classifier: Dropout -> Linear -> num_classes
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
             nn.Linear(feature_dim, num_classes)
@@ -88,13 +94,13 @@ class AttentionMILModel(nn.Module):
     def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
-        # Extract features: (B, N, 3, 224, 224) → (B, N, 1280)
+        # Extract features
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
+        x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
         
-        # Attention pooling: (B, N, 1280) → (B, 1280)
-        pooled, attn_weights = self.attention(x, temperature=self.attention_temp)
+        # Attention pooling: 1280-dim features directly
+        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
         output = self.classifier(pooled)
         
@@ -104,7 +110,7 @@ class AttentionMILModel(nn.Module):
 
 
 class MultiCropDataset(Dataset):
-    """Cycle-based crop extraction with 5x5 neighborhood (25 crops)"""
+    """Cycle-based crop extraction with 9 neighbors for MIL"""
     
     def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0):
         self.image_paths = image_paths
@@ -114,167 +120,133 @@ class MultiCropDataset(Dataset):
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
+        self.single_crop = False  # Default to multi-crop
         
-        # 5x5 neighborhood offsets
-        self.offsets = []
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                self.offsets.append((dx, dy))
+        sample_img = Image.open(image_paths[0]).convert('RGB')
+        w, h = sample_img.size
+        self.image_size = w
         
-        self.mean = np.array([0.485, 0.456, 0.406])
-        self.std = np.array([0.229, 0.224, 0.225])
+        stride = (w - crop_size) // (grid_size - 1)
+        self.stride = stride
+        
+        # Only positions with full 5x5 neighborhood (skip edges)
+        positions = []
+        for i in range(grid_size):
+            for j in range(grid_size):
+                left = j * stride
+                top = i * stride
+                if left + crop_size <= w and top + crop_size <= h:
+                    # Need 2 strides of space on each side for 5x5
+                    can_left = left - 2 * stride >= 0
+                    can_right = left + 2 * stride + crop_size <= w
+                    can_top = top - 2 * stride >= 0
+                    can_bottom = top + 2 * stride + crop_size <= h
+                    if can_left and can_right and can_top and can_bottom:
+                        positions.append((left, top))
+        
+        self.positions = positions
+        self.num_neighbors = 24  # 5x5 = 25 crops
+        
+        if augment:
+            self.transform = A.Compose([
+                A.RandomRotate90(p=0.5),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2(),
+            ], seed=seed)
+        else:
+            self.transform = A.Compose([
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2(),
+            ], seed=seed)
+        
+        print(f"MIL: {len(positions)} positions, {self.num_neighbors + 1} crops/image, augment={augment}")
+    
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+        num_pos = len(self.positions)
+        num_images = len(self.image_paths)
+        
+        if not self.augment:
+            # Val/test: use TRUE image center
+            center_left = (self.image_size - self.crop_size) // 2
+            center_top = (self.image_size - self.crop_size) // 2
+            self.epoch_centers = {i: (center_left, center_top) for i in range(num_images)}
+            self.single_crop = False
+            return
+        
+        # Train: cycle-based
+        cycle = epoch // num_pos
+        pos_in_cycle = epoch % num_pos
+        rng = random.Random(self.seed + cycle)
+        shuffled = self.positions.copy()
+        rng.shuffle(shuffled)
+        
+        self.epoch_centers = {}
+        for idx in range(num_images):
+            assigned_idx = (idx + pos_in_cycle) % num_pos
+            self.epoch_centers[idx] = shuffled[assigned_idx]
+        
+        self.single_crop = False
     
     def __len__(self):
         return len(self.image_paths)
     
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        label = self.labels[idx]
-        
         image = Image.open(img_path).convert('RGB')
-        w, h = image.size
         
-        # Grid position from epoch-based cycle
-        total_positions = self.grid_size * self.grid_size
-        position_idx = (idx + self.epoch * len(self)) % total_positions
-        grid_x, grid_y = position_idx % self.grid_size, position_idx // self.grid_size
+        center_left, center_top = self.epoch_centers[idx]
         
-        cell_w = w / self.grid_size
-        cell_h = h / self.grid_size
-        center_x = int((grid_x + 0.5) * cell_w)
-        center_y = int((grid_y + 0.5) * cell_h)
-        
-        crops = []
-        for dx, dy in self.offsets:
-            crop_x = center_x + dx * int(cell_w)
-            crop_y = center_y + dy * int(cell_h)
-            
-            crop_x = max(0, min(crop_x, w - self.crop_size))
-            crop_y = max(0, min(crop_y, h - self.crop_size))
-            
-            crop = image.crop((crop_x, crop_y, crop_x + self.crop_size, crop_y + self.crop_size))
+        if self.single_crop:
+            # Single crop mode
+            crop = image.crop((center_left, center_top, center_left + self.crop_size, center_top + self.crop_size))
             crop = np.array(crop)
+            crop = self.transform(image=crop)['image']
+            crops = crop.unsqueeze(0)
+        else:
+            # 5x5 grid around center with jitter
+            jitter_range = self.stride // 4
+            crops_list = []
+            for di in range(-2, 3):
+                for dj in range(-2, 3):
+                    if self.augment:
+                        jitter_x = random.randint(-jitter_range, jitter_range)
+                        jitter_y = random.randint(-jitter_range, jitter_range)
+                    else:
+                        jitter_x = jitter_y = 0
+                    left = center_left + dj * self.stride + jitter_x
+                    top = center_top + di * self.stride + jitter_y
+                    left = max(0, min(left, self.image_size - self.crop_size))
+                    top = max(0, min(top, self.image_size - self.crop_size))
+                    crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
+                    crop = np.array(crop)
+                    crop = self.transform(image=crop)['image']
+                    crops_list.append(crop)
             
+            # Shuffle crop order
             if self.augment:
-                crop = self._augment(crop)
+                perm = list(range(25))
+                random.shuffle(perm)
+                crops_list = [crops_list[i] for i in perm]
             
-            crop = crop.astype(np.float32) / 255.0
-            crop = (crop - self.mean) / self.std
-            crop = crop.transpose(2, 0, 1)
-            crops.append(crop)
+            crops = torch.stack(crops_list)
         
-        crops = np.stack(crops, axis=0)
-        return torch.tensor(crops, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
-    
-    def _augment(self, image):
-        if random.random() > 0.5:
-            image = np.fliplr(image).copy()
-        
-        k = random.randint(0, 3)
-        if k > 0:
-            image = np.rot90(image, k).copy()
-        
-        if random.random() > 0.5:
-            factor = random.uniform(0.8, 1.2)
-            image = np.clip(image * factor, 0, 255).astype(np.uint8)
-        
-        return image
-
-
-def get_gene_from_path(path):
-    """Extract gene name from path - looks for folder with underscores that's not a well ID"""
-    parts = path.split(os.sep)
-    # Find the gene name - should be a folder with '_' that's NOT 'Well' pattern
-    for part in parts:
-        if '_' in part and 'Well' not in part and 'tif' not in part and 'Channel' not in part:
-            return part
-    return 'unknown'
+        return crops, self.labels[idx]
 
 
 def extract_well_from_filename(filename):
-    match = re.search(r'Well([A-H]\d+)', filename)
-    if match:
-        return match.group(1)
-    return 'unknown'
+    match = re.search(r'Well(\w\d+)_', filename)
+    return match.group(1) if match else None
 
 
-def get_data_splits(data_root, test_plate, val_plate='P6'):
-    import json
-    
-    label_path = os.path.join(os.path.dirname(__file__), 'plate_well_id_path.json')
-    if os.path.exists(label_path):
-        with open(label_path, 'r') as f:
-            plate_well_map = json.load(f)
-        gene_to_idx = {gene: idx for idx, gene in enumerate(sorted(set(plate_well_map.values())))}
-    else:
-        gene_to_idx = {}
-        for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
-            plate_path = os.path.join(data_root, plate)
-            if os.path.exists(plate_path):
-                for gene in os.listdir(plate_path):
-                    if gene not in gene_to_idx:
-                        gene_to_idx[gene] = len(gene_to_idx)
-    
-    train_paths, train_labels = [], []
-    val_paths, val_labels = [], []
-    test_paths, test_labels = [], []
-    
-    plates = {
-        'train': [p for p in ['P1', 'P2', 'P3', 'P4', 'P5'] if p not in [test_plate, val_plate]],
-        'val': [val_plate],
-        'test': [test_plate]
-    }
-    
-    for plate in plates['train']:
-        plate_path = os.path.join(data_root, plate)
-        if not os.path.exists(plate_path):
-            continue
-        for gene in os.listdir(plate_path):
-            gene_path = os.path.join(plate_path, gene)
-            if not os.path.isdir(gene_path):
-                continue
-            label = gene_to_idx.get(gene, 0)
-            for root, _, files in os.walk(gene_path):
-                for f in files:
-                    if f.endswith('.tif'):
-                        train_paths.append(os.path.join(root, f))
-                        train_labels.append(label)
-    
-    for plate in plates['val']:
-        plate_path = os.path.join(data_root, plate)
-        if not os.path.exists(plate_path):
-            continue
-        for gene in os.listdir(plate_path):
-            gene_path = os.path.join(plate_path, gene)
-            if not os.path.isdir(gene_path):
-                continue
-            label = gene_to_idx.get(gene, 0)
-            for root, _, files in os.walk(gene_path):
-                for f in files:
-                    if f.endswith('.tif'):
-                        val_paths.append(os.path.join(root, f))
-                        val_labels.append(label)
-    
-    for plate in plates['test']:
-        plate_path = os.path.join(data_root, plate)
-        if not os.path.exists(plate_path):
-            continue
-        for gene in os.listdir(plate_path):
-            gene_path = os.path.join(plate_path, gene)
-            if not os.path.isdir(gene_path):
-                continue
-            label = gene_to_idx.get(gene, 0)
-            for root, _, files in os.walk(gene_path):
-                for f in files:
-                    if f.endswith('.tif'):
-                        test_paths.append(os.path.join(root, f))
-                        test_labels.append(label)
-    
-    return train_paths, train_labels, val_paths, val_labels, test_paths, test_labels, gene_to_idx
-
-
-def focal_loss(preds, targets, alpha=0.25, gamma=2.0):
-    ce_loss = nn.functional.cross_entropy(preds, targets, reduction='none')
-    pt = torch.exp(-ce_loss)
-    focal_loss = alpha * (1 - pt) ** gamma * ce_loss
-    return focal_loss.mean()
+def get_gene_from_path(img_path, plate_maps):
+    dirname = os.path.dirname(img_path)
+    plate = os.path.basename(dirname)
+    filename = os.path.basename(img_path)
+    well = extract_well_from_filename(filename)
+    if plate in plate_maps and well in plate_maps[plate]:
+        return plate_maps[plate][well]
+    return 'WT'
