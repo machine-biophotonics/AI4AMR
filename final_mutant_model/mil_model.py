@@ -65,12 +65,13 @@ class AttentionMILModel(nn.Module):
         # Multi-head projection: 4 * 256 = 1024 -> bottleneck_dim
         self.head_proj = nn.Linear(bottleneck_dim * num_heads, bottleneck_dim)
         
-        # Classifier: bottleneck_dim -> 256 -> num_classes
+        # Classifier: bottleneck_dim -> num_classes (per paper: GMP -> BatchNorm -> Linear -> ReLU -> L2 -> Dropout -> Linear)
         self.classifier = nn.Sequential(
-            nn.Linear(bottleneck_dim, 256),
+            nn.BatchNorm1d(bottleneck_dim),
+            nn.Linear(bottleneck_dim, bottleneck_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
-            nn.Linear(256, num_classes)
+            nn.Linear(bottleneck_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False):
