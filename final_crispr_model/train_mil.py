@@ -213,6 +213,14 @@ def train_single_fold(test_plate):
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
     
     best_val_auc = 0.0
+    best_val_acc = 0.0
+    best_val_loss = float('inf')
+    
+    best_metrics = {
+        'auc': {'epoch': 0, 'value': 0.0},
+        'acc': {'epoch': 0, 'value': 0.0},
+        'loss': {'epoch': 0, 'value': float('inf')}
+    }
     
     print("Training...")
     for epoch in range(args.epochs):
@@ -273,9 +281,52 @@ def train_single_fold(test_plate):
             writer = csv.writer(f)
             writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
         
+        # Save best model by AUC
+        if val_auc > best_metrics['auc']['value']:
+            best_metrics['auc']['value'] = val_auc
+            best_metrics['auc']['epoch'] = epoch
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        # Save best model by Accuracy
+        if val_acc > best_metrics['acc']['value']:
+            best_metrics['acc']['value'] = val_acc
+            best_metrics['acc']['epoch'] = epoch
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        # Save best model by Loss (lowest)
+        if avg_val_loss < best_metrics['loss']['value']:
+            best_metrics['loss']['value'] = avg_val_loss
+            best_metrics['loss']['epoch'] = epoch
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
+        
+        # Also save as default best_model.pth (best AUC for backward compatibility)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
         
         if (epoch + 1) % 10 == 0:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
