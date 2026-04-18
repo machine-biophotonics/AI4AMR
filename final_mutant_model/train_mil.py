@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-MIL training with cycle-based crop extraction + neighbors
-Training: 9 crops (center + 3x3 neighborhood)
-Validation/Test: single center crop
+MIL training with cycle-based crop extraction
+Training: 5 crops (center + 4 neighbors - cross pattern)
+Validation/Test: 5 crops
 Supports --run_all_folds for cross-validation
 """
 
@@ -191,7 +191,7 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: 25 (center + 5x5 neighbors)")
+    print(f"Crops per image: 5 (center + 4 neighbors)")
     
     model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
     model = model.to(device)
