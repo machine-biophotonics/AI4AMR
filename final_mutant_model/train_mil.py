@@ -15,9 +15,9 @@ BagMix: Mixes samples with SAME label (label-consistent) - creates more diverse 
 --lr                (float)  Learning rate (default: 1e-4)
 --num_heads         (int)    Number of attention heads (default: 4)
 --bagmix            (float)   BagMix probability 0-1 (default: 0.0, disabled)
---label_smoothing   (float)   Label smoothing factor (default: 0.0, disabled)
+--label_smoothing   (float)  Label smoothing factor (default: 0.1, enabled)
 --optimizer         (str)    Optimizer: adam/adamw/sgd (default: adam)
---entropy_weight    (float)  Entropy loss weight (default: 0.01)
+--entropy_weight    (float)  Entropy loss weight (default: 0.0, disabled)
 --seed              (int)    Random seed (default: 42)
 --test_plate        (str)    Test plate: P1-P6 (default: P6)
 --data_root         (str)    Path to folder containing P1-P6 plate folders
@@ -95,7 +95,7 @@ parser.add_argument('--num_heads', type=int, default=4, help='Number of attentio
 parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
 parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
-parser.add_argument('--entropy_weight', type=float, default=0.01, help='Entropy maximization weight (negative to minimize, positive to maximize)')
+parser.add_argument('--entropy_weight', type=float, default=0.0, help='Entropy weight (0=disabled, previously used for attention entropy)')
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
@@ -321,8 +321,7 @@ def train_single_fold(test_plate):
             outputs, attn_weights = model(images, return_attention=True)
             
             main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-            ent_loss = -attention_entropy_loss(attn_weights)  # Maximize entropy (encourage uniform attention)
-            loss = main_loss + args.entropy_weight * ent_loss
+            loss = main_loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -351,7 +350,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = focal_loss(outputs, labels, label_smoothing=args.label_smoothing)
+                val_loss = focal_loss(outputs, labels, alpha=0.25, gamma=2.0, label_smoothing=args.label_smoothing)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
