@@ -1,11 +1,56 @@
 #!/usr/bin/env python3
 """
-MIL training with cycle-based crop extraction + neighbors
-Training: 9 crops (center + 3x3 neighborhood)
-Validation/Test: single center crop
-Supports --run_all_folds for cross-validation
-"""
+MIL training with cycle-based crop extraction + 5x5 neighborhood (25 crops)
 
+Training: 25 crops (center + 5x5 grid with jitter)
+Validation/Test: 25 crops (center + 5x5 grid, no jitter)
+Supports --run_all_folds for cross-validation
+
+BagMix: Randomly mixes 50% of samples in each batch at crop level
+
+=== Available Arguments ===
+
+--epochs            (int)    Training epochs (default: 200)
+--batch_size        (int)    Batch size (default: 16)
+--lr                (float)  Learning rate (default: 1e-4)
+--num_heads         (int)    Number of attention heads (default: 4)
+--bagmix            (float)   BagMix probability 0-1 (default: 0.0, disabled)
+--label_smoothing   (float)   Label smoothing factor (default: 0.0, disabled)
+--optimizer         (str)    Optimizer: adam/adamw/sgd (default: adam)
+--entropy_weight    (float)  Entropy loss weight (default: 0.01)
+--seed              (int)    Random seed (default: 42)
+--test_plate        (str)    Test plate: P1-P6 (default: P6)
+--data_root         (str)    Path to folder containing P1-P6 plate folders
+--run_all_folds     (flag)   Run all 6 folds
+--pooling           (str)    MIL pooling: attention/max/mean/gmp/certainty (default: attention)
+--crop_neighborhood (int)    Crop neighborhood: 3 (3x3=9 crops) or 5 (5x5=25 crops) (default: 5)
+
+=== Example Commands ===
+
+# Train single fold with attention (default)
+python train_mil.py --test_plate P6 --epochs 200
+
+# Train with max pooling (FocusMIL style)
+python train_mil.py --test_plate P6 --pooling max --epochs 200
+
+# Train with 3x3 neighborhood (9 crops)
+python train_mil.py --test_plate P6 --crop_neighborhood 3 --epochs 200
+
+# Run all 6 folds
+python train_mil.py --run_all_folds --epochs 200
+
+# Run all folds with max pooling
+python train_mil.py --run_all_folds --pooling max --epochs 200
+
+# Enable BagMix augmentation (50% probability)
+python train_mil.py --test_plate P6 --bagmix 0.5 --epochs 200
+
+# Use AdamW optimizer with label smoothing
+python train_mil.py --test_plate P6 --optimizer adamw --label_smoothing 0.1 --epochs 200
+
+# Custom learning rate and batch size
+python train_mil.py --test_plate P6 --lr 5e-4 --batch_size 32 --epochs 150
+"""
 import argparse
 import sys
 import time
