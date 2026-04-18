@@ -182,11 +182,13 @@ class MultiCropDataset(Dataset):
 
 
 def get_gene_from_path(path):
+    """Extract gene name from path - looks for folder with underscores that's not a well ID"""
     parts = path.split(os.sep)
+    # Find the gene name - should be a folder with '_' that's NOT 'Well' pattern
     for part in parts:
-        if '_' in part and 'Well' not in part:
+        if '_' in part and 'Well' not in part and 'tif' not in part and 'Channel' not in part:
             return part
-    return parts[-1].split('_')[0] if parts else 'unknown'
+    return 'unknown'
 
 
 def extract_well_from_filename(filename):
