@@ -46,7 +46,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--num_heads', type=int, default=4)
+parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
+parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
@@ -223,6 +224,17 @@ def train_single_fold(test_plate):
         
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
+            
+            # BagMix augmentation
+            if args.bagmix > 0 and random.random() < args.bagmix:
+                batch_size = images.size(0)
+                num_crops = images.size(1)
+                # Randomly shuffle within batch
+                shuffle_idx = torch.randperm(batch_size)
+                # Mix half from another sample
+                mix_idx = shuffle_idx[:batch_size // 2]
+                images[mix_idx] = (images[mix_idx] + images[shuffle_idx[:batch_size // 2]]) / 2
+            
             optimizer.zero_grad()
             
             outputs, attn_weights = model(images, return_attention=True)
