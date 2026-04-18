@@ -1,5 +1,10 @@
 """
-MIL with cycle-based crop extraction + improvements
+MIL with cycle-based crop extraction + 5x5 neighborhood (25 crops)
+- Training: 25 crops (center + 5x5 grid with jitter)
+- Validation/Test: 25 crops (center + 5x5 grid, no jitter)
+- True multi-head attention: 4 heads × 64-dim = 256-dim
+- Bottleneck: 1280 → 256
+- Classifier per paper: BatchNorm → Linear → ReLU → Dropout → Linear
 """
 
 import torch
@@ -16,52 +21,91 @@ import os
 
 
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling (Ilse et al. 2018)"""
-    def __init__(self, in_features, num_heads=4):
+    """Gated attention MIL pooling with true multi-head attention (Ilse et al. 2018)"""
+    def __init__(self, in_features, num_heads=4, hidden_dim=256):
         super().__init__()
         self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads  # 256 / 4 = 64-dim per head
         
-        # Gated attention: V and U learn what to attend to
-        self.V = nn.Linear(in_features, in_features // 4)
-        self.U = nn.Linear(in_features, in_features // 4)
-        self.w = nn.Linear(in_features // 4, num_heads)
+        # Gated attention: V and U project full features to head_dim per head
+        # After projection, split into heads
+        self.V = nn.Linear(in_features, self.head_dim * num_heads)
+        self.U = nn.Linear(in_features, self.head_dim * num_heads)
+        # w produces single attention score per (instance)
+        self.w = nn.Linear(self.head_dim, 1)
+        
+        # Output projection to combine heads back
+        self.out_proj = nn.Linear(self.head_dim * num_heads, in_features)
     
     def forward(self, x, temperature=0.5):
-        # Gated attention: tanh(V) * sigmoid(U)
-        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
-        attn_weights = self.w(A)  # (B, N, H)
+        batch_size, num_instances, _ = x.shape  # (B, N, 256)
         
-        # Temperature scaling to prevent attention collapse
-        attn_weights = torch.softmax(attn_weights / temperature, dim=1)
+        # Project to all heads at once: 256 → 4*64 = 256
+        V_out = self.V(x)  # (B, N, 256)
+        U_out = self.U(x)  # (B, N, 256)
         
-        # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
-        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
+        # Reshape to split into heads: (B, N, H, 64)
+        V_heads = V_out.view(batch_size, num_instances, self.num_heads, self.head_dim)
+        U_heads = U_out.view(batch_size, num_instances, self.num_heads, self.head_dim)
         
-        return pooled, attn_weights
+        # Permute to (B, H, N, 64) for attention computation
+        V_heads = V_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
+        U_heads = U_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
+        
+        # Gated attention per head: tanh(V) ⊙ sigmoid(U)
+        A_heads = torch.tanh(V_heads) * torch.sigmoid(U_heads)  # (B, H, N, 64)
+        
+        # Compute attention scores per head
+        attn_scores = self.w(A_heads).squeeze(-1)  # (B, H, N)
+        
+        # Apply temperature and softmax over crops (dim=2) - each head normalizes across 25 crops
+        attn_weights = torch.softmax(attn_scores / temperature, dim=2)  # (B, H, N)
+        
+        # Re-permute x for weighted sum: (B, N, H, 64) → (B, H, N, 64)
+        x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        
+        # Weighted sum: (B, H, N) × (B, H, N, 64) → (B, H, 64)
+        pooled = torch.einsum('bhn,bhnf->bhf', attn_weights, x_heads)
+        
+        # Concatenate heads: (B, H*64) = (B, 256)
+        pooled = pooled.reshape(batch_size, -1)
+        
+        # Output projection
+        pooled = self.out_proj(pooled)
+        
+        # Average attention weights across heads for visualization (B, N)
+        attn_weights_avg = attn_weights.mean(dim=1)
+        
+        return pooled, attn_weights_avg
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, bottleneck_dim=256):
         super().__init__()
         # Use EfficientNet features with proper flattening
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
             base_model.features,
-            nn.AdaptiveAvgPool2d(1),
+            nn.AdaptiveMaxPool2d(1),
             nn.Flatten()
         )
         feature_dim = 1280
+        self.bottleneck_dim = bottleneck_dim
         
-        # Gated attention pooling
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        # Bottleneck projection: 1280 -> 256
+        self.bottleneck = nn.Linear(feature_dim, bottleneck_dim)
+        
+        # Gated attention pooling on 256-dim features
+        self.attention_pool = AttentionPooling(bottleneck_dim, num_heads)
         self.attention_temp = attention_temp
         
-        # Multi-head projection (keep head diversity)
-        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
-        
+        # Classifier: bottleneck_dim -> num_classes (per paper: GMP -> BatchNorm -> Linear -> ReLU -> L2 -> Dropout -> Linear)
         self.classifier = nn.Sequential(
+            nn.BatchNorm1d(bottleneck_dim),
+            nn.Linear(bottleneck_dim, bottleneck_dim),
+            nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
-            nn.Linear(feature_dim, num_classes)
+            nn.Linear(bottleneck_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False):
@@ -70,14 +114,16 @@ class AttentionMILModel(nn.Module):
         # Extract features
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
+        x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
+        
+        # Bottleneck projection: 1280 -> 256
+        x = self.bottleneck(x)  # (B, N, 256)
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
-        # Flatten heads and project
-        pooled = pooled.reshape(batch_size, -1)
-        pooled = self.head_proj(pooled)
+        # Attention pooling returns already projected 256-dim output
+        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
         output = self.classifier(pooled)
         

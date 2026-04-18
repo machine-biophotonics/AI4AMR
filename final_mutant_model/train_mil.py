@@ -228,7 +228,6 @@ def train_single_fold(test_plate):
             # BagMix augmentation
             if args.bagmix > 0 and random.random() < args.bagmix:
                 batch_size = images.size(0)
-                num_crops = images.size(1)
                 shuffle_idx = torch.randperm(batch_size)
                 mix_idx = shuffle_idx[:batch_size // 2]
                 images[mix_idx] = (images[mix_idx] + images[shuffle_idx[:batch_size // 2]]) / 2
@@ -257,9 +256,10 @@ def train_single_fold(test_plate):
         
         model.eval()
         val_loss_total = 0.0
+        all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad():
-            for images, labels in val_loader:
+            for images, labels in tqdm(val_loader, desc='Val', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
                 probs = torch.softmax(outputs, dim=1)
@@ -267,7 +267,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = nn.functional.cross_entropy(outputs, labels)
+                val_loss = focal_loss(outputs, labels)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
@@ -276,7 +276,7 @@ def train_single_fold(test_plate):
         avg_val_loss = val_loss_total / len(val_loader)
         
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
