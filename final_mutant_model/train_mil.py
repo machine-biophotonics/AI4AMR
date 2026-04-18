@@ -191,7 +191,7 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: 5 (center + 4 neighbors)")
+    print(f"Crops per image: 25 (5x5 neighborhood)")
     
     model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
     model = model.to(device)
