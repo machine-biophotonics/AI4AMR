@@ -21,11 +21,14 @@ import os
 
 
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling with true multi-head attention (Ilse et al. 2018)"""
+    """Gated attention MIL pooling with true multi-head attention and learnable temperature"""
     def __init__(self, in_features, num_heads=4, hidden_dim=256):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads  # 256 / 4 = 64-dim per head
+        
+        # Learnable temperature (initialized at 0.5)
+        self.temperature = nn.Parameter(torch.tensor(0.5))
         
         # Gated attention: V and U project full features to head_dim per head
         # After projection, split into heads
@@ -37,8 +40,11 @@ class AttentionPooling(nn.Module):
         # Output projection to combine heads back
         self.out_proj = nn.Linear(self.head_dim * num_heads, in_features)
     
-    def forward(self, x, temperature=0.5):
+    def forward(self, x):
         batch_size, num_instances, _ = x.shape  # (B, N, 256)
+        
+        # Use learnable temperature
+        temp = self.temperature.clamp(0.1, 5.0)  # Clamp to prevent collapse
         
         # Project to all heads at once: 256 → 4*64 = 256
         V_out = self.V(x)  # (B, N, 256)
@@ -59,7 +65,7 @@ class AttentionPooling(nn.Module):
         attn_scores = self.w(A_heads).squeeze(-1)  # (B, H, N)
         
         # Apply temperature and softmax over crops (dim=2) - each head normalizes across 25 crops
-        attn_weights = torch.softmax(attn_scores / temperature, dim=2)  # (B, H, N)
+        attn_weights = torch.softmax(attn_scores / temp, dim=2)  # (B, H, N)
         
         # Re-permute x for weighted sum: (B, N, H, 64) → (B, H, N, 64)
         x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
@@ -119,11 +125,8 @@ class AttentionMILModel(nn.Module):
         # Bottleneck projection: 1280 -> 256
         x = self.bottleneck(x)  # (B, N, 256)
         
-        # Attention pooling with temperature
-        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
-        
-        # Attention pooling returns already projected 256-dim output
-        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+        # Attention pooling
+        pooled, attn_weights = self.attention_pool(x)
         
         output = self.classifier(pooled)
         
