@@ -1,0 +1,132 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "description": "CRISPRi Reference Plate Imaging - AI4AMR Project Configuration",
+  
+  "provider": {
+    "lmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LM Studio (Local)",
+      "options": {
+        "baseURL": "http://localhost:1234/v1"
+      },
+      "models": {
+        "qwen3.5:9b": {
+          "name": "Qwen3.5 9B (Local)"
+        },
+        "qwen3:14b": {
+          "name": "Qwen3 14B"
+        }
+      }
+    },
+    "openai": {
+      "npm": "@ai-sdk/openai",
+      "models": {
+        "o4-mini": {"name": "OpenAI o4-mini"},
+        "gpt-4.1": {"name": "GPT-4.1"}
+      }
+    },
+    "anthropic": {
+      "npm": "@ai-sdk/anthropic",
+      "models": {
+        "claude-sonnet-4-20250514": {"name": "Claude Sonnet 4"}
+      }
+    },
+    "google": {
+      "npm": "@ai-sdk/google",
+      "models": {
+        "gemini-2.5-pro-preview-05-20": {"name": "Gemini 2.5 Pro"}
+      }
+    }
+  },
+
+  "model": "qwen3.5:9b",
+
+  "permission": {
+    "bash": "allow",
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "question": "allow",
+    "todoread": "allow",
+    "todowrite": "allow",
+    "skill": "allow",
+    "patch": "allow",
+    "lsp": "allow",
+    "codesearch": "allow",
+    "task": "allow"
+  },
+
+  "experimental": {
+    "lsp": true,
+    "workspace": true
+  },
+
+  "mcp": {
+    "web-search": {
+      "type": "local",
+      "command": ["npx", "-y", "@oevortex/ddg_search@latest"]
+    },
+    "filesystem": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem@latest", "./project_files"]
+    },
+    "memory": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-memory@latest"]
+    },
+    "github": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+      "environment": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{env:GITHUB_TOKEN}"
+      }
+    }
+  },
+
+  "tools": {
+    "bash": {
+      "timeout": 120000,
+      "description": "Execute shell commands"
+    },
+    "read": {
+      "max_lines": 2000,
+      "description": "Read file contents"
+    },
+    "glob": {
+      "description": "Find files by pattern"
+    },
+    "grep": {
+      "description": "Search file contents"
+    },
+    "websearch": {
+      "num_results": 10,
+      "description": "Search the web for information"
+    },
+    "webfetch": {
+      "description": "Fetch web content"
+    },
+    "codesearch": {
+      "tokensNum": 10000,
+      "description": "Search code for patterns and get context"
+    },
+    "task": {
+      "description": "Launch subagents for complex tasks"
+    }
+  },
+
+  "agents": {
+    "build": {
+      "name": "build",
+      "description": "Full-access development agent"
+    },
+    "plan": {
+      "name": "plan", 
+      "description": "Read-only analysis agent"
+    }
+  }
+}
