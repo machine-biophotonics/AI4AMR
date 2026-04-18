@@ -54,11 +54,8 @@ parser.add_argument('--data_root', type=str, default=None, help='Path to folder 
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
 args = parser.parse_args()
 
-# Set num_workers based on OS
-if sys.platform.startswith('win'):
-    NUM_WORKERS = 4  # Try 4 workers on Windows
-else:
-    NUM_WORKERS = 4
+# Set num_workers for data loading
+NUM_WORKERS = 16
 
 SEED = args.seed
 random.seed(SEED)
@@ -225,12 +222,22 @@ def train_single_fold(test_plate):
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            # BagMix augmentation
+            # BagMix augmentation (standard implementation)
+            # Mix input images from different samples in the batch
             if args.bagmix > 0 and random.random() < args.bagmix:
                 batch_size = images.size(0)
+                num_crops = images.size(1)
+                # Shuffle indices
                 shuffle_idx = torch.randperm(batch_size)
-                mix_idx = shuffle_idx[:batch_size // 2]
-                images[mix_idx] = (images[mix_idx] + images[shuffle_idx[:batch_size // 2]]) / 2
+                # Mixing ratio (standard: 0.5)
+                mix_ratio = 0.5
+                # For each sample, mix with a randomly chosen other sample
+                for i in range(batch_size):
+                    if random.random() < mix_ratio:
+                        j = shuffle_idx[i]
+                        # Mix images at input level
+                        images[i] = (images[i] + images[j]) / 2
+                        # Keep original label (standard practice in MIL)
             
             optimizer.zero_grad()
             
