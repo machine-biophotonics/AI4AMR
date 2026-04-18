@@ -6,7 +6,7 @@ Training: 25 crops (center + 5x5 grid with jitter)
 Validation/Test: 25 crops (center + 5x5 grid, no jitter)
 Supports --run_all_folds for cross-validation
 
-BagMix: Randomly mixes 50% of samples in each batch at crop level
+BagMix: Mixes samples with SAME label (label-consistent) - creates more diverse training examples per class
 
 === Available Arguments ===
 
@@ -295,22 +295,26 @@ def train_single_fold(test_plate):
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            # BagMix augmentation (standard implementation)
-            # Mix input images from different samples in the batch
+            # BagMix augmentation (label-consistent implementation)
+            # Only mix samples with the SAME label to maintain label semantics
             if args.bagmix > 0 and random.random() < args.bagmix:
                 batch_size = images.size(0)
-                num_crops = images.size(1)
-                # Shuffle indices
-                shuffle_idx = torch.randperm(batch_size)
-                # Mixing ratio (standard: 0.5)
-                mix_ratio = 0.5
-                # For each sample, mix with a randomly chosen other sample
+                # Group samples by their labels
+                label_to_indices = {}
                 for i in range(batch_size):
-                    if random.random() < mix_ratio:
-                        j = shuffle_idx[i]
-                        # Mix images at input level
-                        images[i] = (images[i] + images[j]) / 2
-                        # Keep original label (standard practice in MIL)
+                    label = labels[i].item()
+                    if label not in label_to_indices:
+                        label_to_indices[label] = []
+                    label_to_indices[label].append(i)
+                
+                # Mix within same label group
+                for label, indices in label_to_indices.items():
+                    if len(indices) > 1:  # Need at least 2 samples of same class
+                        for i in indices:
+                            # Pick a random partner from same class (not itself)
+                            partner = random.choice([x for x in indices if x != i])
+                            # Mix all crops of sample i with sample partner
+                            images[i] = (images[i] + images[partner]) / 2
             
             optimizer.zero_grad()
             
