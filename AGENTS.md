@@ -28,19 +28,126 @@ Place plate folders (P1-P6) in the project root directory.
 | Model | Backbone | Pooling | Crops | Description |
 |-------|----------|---------|-------|-------------|
 | `final_crispr_model` | EfficientNet-B0 | Attention (3x3) | 9 | 3x3 neighborhood MIL |
-| `final_mutant_model` | EfficientNet-B0 | Gated Multi-head Attention | 25 | 5x5 neighborhood MIL |
+| `final_mutant_model` | EfficientNet-B0 | Gated Multi-head Attention | 25 | 5x5 neighborhood MIL with BagMix/PseMix |
 | `final_max_model` | EfficientNet-B0 | Configurable (max/mean/gmp/certainty/attention) | 3x3 or 5x5 | Versatile MIL with multiple pooling strategies |
 
 ---
 
-## Final Max Model (Recommended)
+## Final Mutant Model (Recommended with Data Augmentation)
+
+MIL model with gated multi-head attention pooling and 5x5 neighborhood (25 crops). Supports **BagMix** and **PseMix** data augmentation.
+
+### Architecture
+- **Backbone**: EfficientNet-B0 (ImageNet pretrained)
+- **Pooling**: Gated Multi-head Attention (4 heads)
+- **Crop Neighborhood**: 5×5 (25 crops)
+- **Feature Dimension**: 1280-dim
+
+### BagMix Data Augmentation
+
+Simple bag-level augmentation modes:
+
+```bash
+# Mixup crops (recommended)
+python3 train_mil.py --test_plate P6 --bag_mix mixup_crop --bag_mix_alpha 1.0 --bag_mix_prob 0.5
+
+# Subset sampling
+python3 train_mil.py --test_plate P6 --bag_mix subset --bag_mix_subset_size 12
+
+# Dropout
+python3 train_mil.py --test_plate P6 --bag_mix dropout --bag_mix_dropout 0.2
+
+# Bootstrap
+python3 train_mil.py --test_plate P6 --bag_mix bootstrap
+```
+
+### PseMix Data Augmentation (IEEE TMI 2024)
+
+Pseudo-bag mixup from paper: "Pseudo-Bag Mixup Augmentation for MIL-Based WSI Classification"
+
+```bash
+# PseMix with k-means clustering (recommended)
+python3 train_mil.py --test_plate P6 --use_psemix \
+  --psemix_mode psebmix_kmeans \
+  --psemix_n_pseb 8 \
+  --psemix_n_pheno 4 \
+  --psemix_alpha 1.0 \
+  --psemix_prob 0.5
+
+# PseMix random
+python3 train_mil.py --test_plate P6 --use_psemix \
+  --psemix_mode psebmix_random \
+  --psemix_n_pseb 8 \
+  --psemix_alpha 1.0
+```
+
+### Training Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--epochs` | 200 | Training epochs |
+| `--batch_size` | 16 | Batch size |
+| `--lr` | 1e-4 | Learning rate |
+| `--num_heads` | 4 | Attention heads |
+| `--test_plate` | P6 | Test plate |
+| `--run_all_folds` | - | Run all 6 folds |
+
+### BagMix Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--bag_mix` | none | Mode: subset, mixup, dropout, shuffle, cutmix, mixup_crop, bootstrap, cluster |
+| `--bag_mix_alpha` | 1.0 | Beta distribution parameter |
+| `--bag_mix_prob` | 0.5 | Probability of applying augmentation |
+| `--bag_mix_subset_size` | - | Size for subset mode |
+| `--bag_mix_dropout` | 0.0 | Dropout ratio |
+
+### PseMix Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--use_psemix` | - | Enable PseMix |
+| `--psemix_mode` | psebmix | Mode: psebmix, psebmix_kmeans, psebmix_random |
+| `--psemix_n_pseb` | 8 | Number of pseudo-bags per bag |
+| `--psemix_n_pheno` | 8 | Number of phenotype clusters |
+| `--psemix_alpha` | 1.0 | Beta distribution parameter |
+| `--psemix_prob` | 0.5 | Probability of mixing |
+
+### Training
+
+```bash
+cd final_mutant_model
+
+# Train single fold with PseMix (recommended)
+python3 train_mil.py --test_plate P6 --use_psemix --psemix_mode psebmix_kmeans --psemix_n_pseb 8 --psemix_n_pheno 4
+
+# Train single fold with simple BagMix
+python3 train_mil.py --test_plate P6 --bag_mix mixup_crop --bag_mix_alpha 1.0
+
+# Train single fold (no augmentation)
+python3 train_mil.py --test_plate P6
+
+# Run all 6 folds
+python3 train_mil.py --run_all_folds
+```
+
+### Prediction
+
+```bash
+cd final_mutant_model
+python3 predict_all_crops.py --fold P1 --checkpoint best_model.pth
+```
+
+---
+
+## Final Max Model (Recommended for Pooling Experiments)
 
 The most flexible model with multiple pooling strategies and configurable crop neighborhoods.
 
 ### Architecture
 - **Backbone**: EfficientNet-B0 (ImageNet pretrained)
 - **Pooling**: Configurable - attention, max, mean, gmp, certainty
-- **Crop Neighborhood**: Configurable 3x3 (9 crops) or 5x5 (25 crops)
+- **Crop Neighborhood**: Configurable 3×3 (9 crops) or 5×5 (25 crops)
 - **Feature Dimension**: 1280-dim (attention: 256-dim)
 
 ### Pooling Strategies
@@ -70,12 +177,6 @@ python3 train_mil.py --test_plate P1 --pooling attention --crop_neighborhood 3
 # 3x3 with max pooling
 python3 train_mil.py --test_plate P6 --pooling max --crop_neighborhood 3
 
-# GMP pooling
-python3 train_mil.py --test_plate P6 --pooling gmp --crop_neighborhood 5 --epochs 200
-
-# Certainty pooling
-python3 train_mil.py --test_plate P6 --pooling certainty --crop_neighborhood 3 --lr 1e-4
-
 # Run all 6 folds
 python3 train_mil.py --run_all_folds --pooling attention --crop_neighborhood 5
 ```
@@ -93,46 +194,10 @@ python3 train_mil.py --run_all_folds --pooling attention --crop_neighborhood 5
 | `--num_heads` | int | 4 | Attention heads |
 | `--run_all_folds` | flag | - | Run all 6 folds |
 
-### Checkpoint Types
-
-Each training run saves 4 best models:
-- `best_model.pth` - Best by validation AUC
-- `best_model_auc.pth` - Best by validation AUC
-- `best_model_acc.pth` - Best by validation accuracy
-- `best_model_loss.pth` - Best by lowest validation loss
-
 ### Prediction
 
 ```bash
-# Generate predictions with MIL mode (default)
-python3 predict_all_crops.py --fold P1 --checkpoint best_model.pth
-
-# Non-MIL mode (single crops)
-python3 predict_all_crops.py --fold P1 --checkpoint best_model.pth --mil_mode false
-```
-
----
-
-## Final Mutant Model
-
-MIL model with gated multi-head attention pooling and 5x5 neighborhood (25 crops).
-
-### Training
-
-```bash
-cd final_mutant_model
-
-# Train single fold
-python3 train_mil.py --test_plate P6
-
-# Run all 6 folds
-python3 train_mil.py --run_all_folds
-```
-
-### Prediction
-
-```bash
-cd final_mutant_model
+cd final_max_model
 python3 predict_all_crops.py --fold P1 --checkpoint best_model.pth
 ```
 
@@ -140,7 +205,7 @@ python3 predict_all_crops.py --fold P1 --checkpoint best_model.pth
 
 ## Final CRISPR Model
 
-3x3 neighborhood (9 crops) MIL model with attention pooling.
+3×3 neighborhood (9 crops) MIL model with attention pooling.
 
 ### Training
 
@@ -159,36 +224,24 @@ python3 train_mil.py --run_all_folds
 ```bash
 cd final_crispr_model
 
-# Generate for single fold (creates aggregate/fold_P1/)
+# Generate for single fold
 python3 generate_combined_confusion.py --single_fold P1
 
 # Generate for all folds
 python3 generate_combined_confusion.py --folds P1,P2,P3,P4,P5,P6
-
-# Generate for specific folds
-python3 generate_combined_confusion.py --folds P1,P2,P3
 ```
 
 ---
 
-## Optional Flags
+## Checkpoint Types
 
-| Flag | Description |
-|------|-------------|
-| `--center_loss` | Enable center loss |
-| `--center_loss_weight` | Center loss weight (default: 0.001) |
-| `--adaptive` | Use Adaptive SAM (ASAM) instead of SAM |
+Each training run saves 4 best models:
+- `best_model.pth` - Best by validation AUC
+- `best_model_auc.pth` - Best by validation AUC
+- `best_model_acc.pth` - Best by validation accuracy
+- `best_model_loss.pth` - Best by lowest validation loss
 
-## Model Outputs
-
-Each training run produces:
-- `best_model.pth` - Best model checkpoint (AUC)
-- `best_model_auc.pth` - Best by AUC
-- `best_model_acc.pth` - Best by accuracy
-- `best_model_loss.pth` - Best by loss
-- `checkpoint_epoch_*.pth` - Checkpoint every 10 epochs
-- `training_metrics_*.csv` - Epoch-level metrics
-- `training_results.json` - Full metrics
+---
 
 ## Project Structure
 
@@ -200,10 +253,11 @@ Each training run produces:
 │   ├── predict_all_crops.py        # Prediction script
 │   └── fold_P{1-6}/                # Results per fold
 │
-├── final_mutant_model/             # 5x5 neighborhood MIL
-│   ├── train_mil.py
-│   ├── mil_model.py
-│   ├── predict_all_crops.py
+├── final_mutant_model/             # 5x5 neighborhood MIL with BagMix/PseMix
+│   ├── train_mil.py               # Training script
+│   ├── mil_model.py                # Model definition
+│   ├── bag_mix.py                  # BagMix & PseMix implementation
+│   ├── predict_all_crops.py        # Prediction script
 │   └── fold_P{1-6}/
 │
 ├── final_crispr_model/             # 3x3 neighborhood MIL
@@ -216,59 +270,4 @@ Each training run produces:
 ├── guide_effnet/                  # Guide generalization
 ├── dinov3-finetune/               # DINOv3 ViT-L fine-tuning
 └── plate_fold/                    # Cross-validation experiments
-```
-
-## Visualization Scripts
-
-```bash
-# Crop positions visualization
-cd final_crispr_model
-python visualize_mil_crops.py --image_path /path/to/image.tif --output_dir ./crop_visualizations
-
-# Augmented crops visualization
-python visualize_augmented_crops.py --image_path /path/to/image.tif --output_dir ./crop_visualizations
-```
-
-### Output Files
-
-- `crop_positions_visualization.png` - Full image with position grid
-- `crop_group_example.png` - 9 crops in 3x3 grid
-- `crop_01.png` to `crop_09.png` - Individual crop images
-- `crop_group_augmented.png` - Original + augmented versions
-## SSH Connection
-
-To connect to the remote machine for development:
-
-### Using Paramiko (Python)
-```python
-import paramiko
-client = paramiko.SSHClient()
-client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect('10.84.8.45', username='student', password='student')
-stdin, stdout, stderr = client.exec_command('your command here')
-print(stdout.read().decode())
-client.close()
-```
-
-### Via Terminal (after setup)
-```bash
-ssh student@10.84.8.45
-```
-
-### Connection Details
-- Host: 10.84.8.45
-- Username: student
-- Password: student
-
-### Project Location
-/media/student/Data_SSD_1-TB/2025_12_19 CRISPRi Reference Plate Imaging/
-
-### Key Directories
-- final_max_model/ - Max-pooling MIL model
-- final_mutant_model/ - Mutant model
-- final_crispr_model/ - CRISPR model
-
-### Quick SSH Test
-```bash
-ssh student@10.84.8.45 "ls -la /media/student/Data_SSD_1-TB/2025_12_19\ CRISPRi\ Reference\ Plate\ Imaging/"
 ```
