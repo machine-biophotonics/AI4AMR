@@ -235,3 +235,40 @@ python visualize_augmented_crops.py --image_path /path/to/image.tif --output_dir
 - `crop_group_example.png` - 9 crops in 3x3 grid
 - `crop_01.png` to `crop_09.png` - Individual crop images
 - `crop_group_augmented.png` - Original + augmented versions
+## SSH Connection
+
+To connect to the remote machine for development:
+
+### Using Paramiko (Python)
+```python
+import paramiko
+client = paramiko.SSHClient()
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.connect('10.84.8.45', username='student', password='student')
+stdin, stdout, stderr = client.exec_command('your command here')
+print(stdout.read().decode())
+client.close()
+```
+
+### Via Terminal (after setup)
+```bash
+ssh student@10.84.8.45
+```
+
+### Connection Details
+- Host: 10.84.8.45
+- Username: student
+- Password: student
+
+### Project Location
+/media/student/Data_SSD_1-TB/2025_12_19 CRISPRi Reference Plate Imaging/
+
+### Key Directories
+- final_max_model/ - Max-pooling MIL model
+- final_mutant_model/ - Mutant model
+- final_crispr_model/ - CRISPR model
+
+### Quick SSH Test
+```bash
+ssh student@10.84.8.45 "ls -la /media/student/Data_SSD_1-TB/2025_12_19\ CRISPRi\ Reference\ Plate\ Imaging/"
+```

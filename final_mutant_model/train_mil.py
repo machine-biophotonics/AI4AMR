@@ -17,7 +17,6 @@ BagMix: Mixes samples with SAME label (label-consistent) - creates more diverse 
 --bagmix            (float)   BagMix probability 0-1 (default: 0.0, disabled)
 --label_smoothing   (float)  Label smoothing factor (default: 0.1, enabled)
 --optimizer         (str)    Optimizer: adam/adamw/sgd (default: adam)
---entropy_weight    (float)  Entropy loss weight (default: 0.0, disabled)
 --seed              (int)    Random seed (default: 42)
 --test_plate        (str)    Test plate: P1-P6 (default: P6)
 --data_root         (str)    Path to folder containing P1-P6 plate folders
@@ -95,7 +94,6 @@ parser.add_argument('--num_heads', type=int, default=4, help='Number of attentio
 parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
 parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
-parser.add_argument('--entropy_weight', type=float, default=0.0, help='Entropy weight (0=disabled, previously used for attention entropy)')
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
@@ -162,10 +160,6 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
-
-def attention_entropy_loss(attn_weights):
-    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
-    return entropy
 
 def worker_init_fn(worker_id, seed=42):
     """Module-level worker init function for multiprocessing compatibility"""
