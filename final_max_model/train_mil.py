@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """
-MIL training with cycle-based crop extraction + 5x5 neighbors
-Training: 25 crops (center + 5x5 neighborhood)
-Validation/Test: 25 crops (center + 5x5 grid, no jitter)
+MIL training with cycle-based crop extraction + neighbors
+Training: 9 crops (center + 3x3 neighborhood)
+Validation/Test: single center crop
 Supports --run_all_folds for cross-validation
-
-Pooling options (--pooling):
-  - attention: Gated multi-head attention (default, same as final_mutant_model)
-  - max: Max-pooling (FocusMIL style)
-  - mean: Mean-pooling (simple average)
-  - gmp: Generalized Mean Pooling (arXiv:2008.10548)
-  - certainty: Certainty Pooling (arXiv:2008.10548)
 """
 
 import argparse
@@ -53,28 +46,20 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
-parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
-parser.add_argument('--bagmix_mode', type=str, default='label_consistent', 
-                    choices=['label_consistent', 'random', 'class_dist'],
-                    help='BagMix mode: label_consistent (same label), random (any label - buggy), class_dist (mix based on class percentage)')
-parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
-parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
-parser.add_argument('--entropy_weight', type=float, default=0.01, help='Entropy maximization weight (negative to minimize, positive to maximize)')
+parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
-parser.add_argument('--pooling', type=str, default='attention',
-                    choices=['attention', 'max', 'mean', 'gmp', 'certainty'],
-                    help='MIL pooling strategy: attention (gated multi-head), max, mean, gmp, certainty')
-parser.add_argument('--crop_neighborhood', type=int, default=5,
-                    choices=[3, 5],
-                    help='Crop neighborhood size: 3 for 3x3 (9 crops), 5 for 5x5 (25 crops)')
+parser.add_argument('--crop_neighborhood', type=int, default=5, choices=[3, 5], help='Crop neighborhood size: 3 for 3x3 (9 crops), 5 for 5x5 (25 crops)')
+parser.add_argument('--pooling', type=str, default='attention', choices=['attention', 'max', 'mean', 'gmp', 'certainty'], help='Pooling strategy')
 args = parser.parse_args()
 
-# Set num_workers for data loading
-NUM_WORKERS = 16
+# Set num_workers based on OS
+if sys.platform.startswith('win'):
+    NUM_WORKERS = 4  # Try 4 workers on Windows
+else:
+    NUM_WORKERS = 4
 
 SEED = args.seed
 random.seed(SEED)
@@ -123,13 +108,13 @@ def get_image_paths_for_plate(plate):
             valid_paths.append(path)
     return valid_paths
 
-def focal_loss(logits, targets, alpha=0.25, gamma=2.0, label_smoothing=0.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
@@ -188,9 +173,9 @@ def train_single_fold(test_plate):
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, augment=True, seed=SEED, crop_neighborhood=args.crop_neighborhood)
-    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, augment=False, seed=SEED, crop_neighborhood=args.crop_neighborhood)
-    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, augment=False, seed=SEED, crop_neighborhood=args.crop_neighborhood)
+    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, crop_neighborhood=args.crop_neighborhood, augment=True, seed=SEED)
+    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, crop_neighborhood=args.crop_neighborhood, augment=False, seed=SEED)
+    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, crop_neighborhood=args.crop_neighborhood, augment=False, seed=SEED)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -208,40 +193,20 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: 25 (center + 5x5 neighbors)")
-    print(f"Pooling type: {args.pooling}")
+    num_crops = args.crop_neighborhood * args.crop_neighborhood
+    print(f"Crops per image: {num_crops} (center + {args.crop_neighborhood}x{args.crop_neighborhood} neighbors)")
+    print(f"Pooling: {args.pooling}")
     
-    model = AttentionMILModel(
-        num_classes=num_classes, 
-        num_heads=args.num_heads,
-        pooling_type=args.pooling
-    )
+    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, pooling_type=args.pooling)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'pooling' not in n and 'classifier' not in n]
-    pooler_params = [p for n, p in model.named_parameters() if 'pooling' in n or 'classifier' in n]
+    pooling_params = [p for n, p in model.named_parameters() if 'pooling' in n or 'classifier' in n]
     
-    # Configurable optimizer
-    if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': pooler_params, 'lr': args.lr}
-        ], weight_decay=0.01)
-    elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': pooler_params, 'lr': args.lr}
-        ], weight_decay=0.01)
-    elif args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': pooler_params, 'lr': args.lr}
-        ], weight_decay=0.01, momentum=0.9)
-    else:
-        optimizer = torch.optim.AdamW([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': pooler_params, 'lr': args.lr}
-        ], weight_decay=0.01)
+    optimizer = torch.optim.AdamW([
+        {'params': backbone_params, 'lr': args.lr * 0.1},
+        {'params': pooling_params, 'lr': args.lr}
+    ], weight_decay=0.01)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -249,17 +214,11 @@ def train_single_fold(test_plate):
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
     
     best_val_auc = 0.0
     best_val_acc = 0.0
     best_val_loss = float('inf')
-    
-    best_metrics = {
-        'auc': {'epoch': 0, 'value': 0.0},
-        'acc': {'epoch': 0, 'value': 0.0},
-        'loss': {'epoch': 0, 'value': float('inf')}
-    }
     
     print("Training...")
     for epoch in range(args.epochs):
@@ -270,83 +229,19 @@ def train_single_fold(test_plate):
         
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
-            
-            # BagMix augmentation
-            if args.bagmix > 0 and random.random() < args.bagmix:
-                batch_size = images.size(0)
-                num_classes_model = num_classes
-                
-                if args.bagmix_mode == 'label_consistent':
-                    # Label-consistent: only mix samples with SAME label
-                    label_to_indices = {}
-                    for i in range(batch_size):
-                        label = labels[i].item()
-                        if label not in label_to_indices:
-                            label_to_indices[label] = []
-                        label_to_indices[label].append(i)
-                    
-                    for label, indices in label_to_indices.items():
-                        if len(indices) > 1:
-                            for i in indices:
-                                partner = random.choice([x for x in indices if x != i])
-                                images[i] = (images[i] + images[partner]) / 2
-                
-                elif args.bagmix_mode == 'random':
-                    # Random: mix with ANY sample (buggy - may mix different labels)
-                    shuffle_idx = torch.randperm(batch_size)
-                    for i in range(batch_size):
-                        if random.random() < 0.5:
-                            j = shuffle_idx[i]
-                            images[i] = (images[i] + images[j]) / 2
-                
-                elif args.bagmix_mode == 'class_dist':
-                    # Class distribution based: mix samples and create soft labels
-                    shuffle_idx = torch.randperm(batch_size)
-                    
-                    # Calculate class distribution in batch
-                    class_counts = torch.bincount(labels, minlength=num_classes_model).float()
-                    class_probs = class_counts / batch_size
-                    
-                    # Create soft labels for mixed samples
-                    soft_labels = torch.zeros(batch_size, num_classes_model, device=images.device)
-                    for i in range(batch_size):
-                        if random.random() < 0.5:
-                            j = shuffle_idx[i]
-                            images[i] = (images[i] + images[j]) / 2
-                            soft_labels[i] = 0.5 * torch.nn.functional.one_hot(labels[i], num_classes_model).float()
-                            soft_labels[i] += 0.5 * class_probs
-                        else:
-                            soft_labels[i] = torch.nn.functional.one_hot(labels[i], num_classes_model).float()
-                    
-                    use_soft_labels = True
-                else:
-                    use_soft_labels = False
-            else:
-                use_soft_labels = False
-            
             optimizer.zero_grad()
             
             outputs, attn_weights = model(images, return_attention=True)
             
-            if use_soft_labels and args.bagmix_mode == 'class_dist':
-                log_probs = torch.log_softmax(outputs, dim=1)
-                loss = -(soft_labels * log_probs).sum(dim=1).mean()
-            else:
-                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                loss = main_loss
-            
-            # Only apply entropy loss for attention pooling
-            if args.pooling == 'attention':
-                ent_loss = -attention_entropy_loss(attn_weights)
-                loss = main_loss + args.entropy_weight * ent_loss
-            else:
-                loss = main_loss
+            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+            ent_loss = attention_entropy_loss(attn_weights)
+            loss = main_loss + 0.01 * ent_loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
-            run_loss += loss.item()
+            run_loss += main_loss.item()  # Track focal loss only (comparable to val)
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -361,7 +256,7 @@ def train_single_fold(test_plate):
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad():
-            for images, labels in tqdm(val_loader, desc='Val', leave=False):
+            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
                 probs = torch.softmax(outputs, dim=1)
@@ -369,7 +264,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = focal_loss(outputs, labels, label_smoothing=args.label_smoothing)
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
@@ -377,59 +272,26 @@ def train_single_fold(test_plate):
         val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
         avg_val_loss = val_loss_total / len(val_loader)
         
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        backbone_lr = optimizer.param_groups[0]['lr']
+        classifier_lr = optimizer.param_groups[1]['lr']
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
         
-        # Save best model by AUC
-        if val_auc > best_metrics['auc']['value']:
-            best_metrics['auc']['value'] = val_auc
-            best_metrics['auc']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
-        
-        # Save best model by Accuracy
-        if val_acc > best_metrics['acc']['value']:
-            best_metrics['acc']['value'] = val_acc
-            best_metrics['acc']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
-        
-        # Save best model by Loss (lowest)
-        if avg_val_loss < best_metrics['loss']['value']:
-            best_metrics['loss']['value'] = avg_val_loss
-            best_metrics['loss']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
-        
-        # Also save as default best_model.pth (best AUC for backward compatibility)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
         if (epoch + 1) % 10 == 0:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
@@ -441,7 +303,7 @@ def train_single_fold(test_plate):
     
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
             outputs, _ = model(images, return_attention=True)
             probs = torch.softmax(outputs, dim=1)

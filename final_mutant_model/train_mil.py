@@ -1,56 +1,11 @@
 #!/usr/bin/env python3
 """
-MIL training with cycle-based crop extraction + 5x5 neighborhood (25 crops)
-
-Training: 25 crops (center + 5x5 grid with jitter)
-Validation/Test: 25 crops (center + 5x5 grid, no jitter)
+MIL training with cycle-based crop extraction + neighbors
+Training: 9 crops (center + 3x3 neighborhood)
+Validation/Test: single center crop
 Supports --run_all_folds for cross-validation
-
-BagMix: Mixes samples with SAME label (label-consistent) - creates more diverse training examples per class
-
-=== Available Arguments ===
-
---epochs            (int)    Training epochs (default: 200)
---batch_size        (int)    Batch size (default: 16)
---lr                (float)  Learning rate (default: 1e-4)
---num_heads         (int)    Number of attention heads (default: 4)
---bagmix            (float)  BagMix probability 0-1 (default: 0.0, disabled)
---bagmix_mode       (str)    BagMix mode: label_consistent (same label) or random (any label - buggy)
---label_smoothing   (float)  Label smoothing factor (default: 0.1, enabled)
---optimizer         (str)    Optimizer: adam/adamw/sgd (default: adam)
---seed              (int)    Random seed (default: 42)
---test_plate        (str)    Test plate: P1-P6 (default: P6)
---data_root         (str)    Path to folder containing P1-P6 plate folders
---run_all_folds     (flag)   Run all 6 folds
---pooling           (str)    MIL pooling: attention/max/mean/gmp/certainty (default: attention)
---crop_neighborhood (int)    Crop neighborhood: 3 (3x3=9 crops) or 5 (5x5=25 crops) (default: 5)
-
-=== Example Commands ===
-
-# Train single fold with attention (default)
-python train_mil.py --test_plate P6 --epochs 200
-
-# Train with max pooling (FocusMIL style)
-python train_mil.py --test_plate P6 --pooling max --epochs 200
-
-# Train with 3x3 neighborhood (9 crops)
-python train_mil.py --test_plate P6 --crop_neighborhood 3 --epochs 200
-
-# Run all 6 folds
-python train_mil.py --run_all_folds --epochs 200
-
-# Run all folds with max pooling
-python train_mil.py --run_all_folds --pooling max --epochs 200
-
-# Enable BagMix augmentation (50% probability)
-python train_mil.py --test_plate P6 --bagmix 0.5 --epochs 200
-
-# Use AdamW optimizer with label smoothing
-python train_mil.py --test_plate P6 --optimizer adamw --label_smoothing 0.1 --epochs 200
-
-# Custom learning rate and batch size
-python train_mil.py --test_plate P6 --lr 5e-4 --batch_size 32 --epochs 150
 """
+
 import argparse
 import sys
 import time
@@ -75,6 +30,7 @@ from collections import Counter
 import multiprocessing
 
 from mil_model import AttentionMILModel, MultiCropDataset, get_gene_from_path, extract_well_from_filename
+from bag_mix import create_bag_mixer, add_bagmix_args, add_psemix_args
 
 SEED = 42
 random.seed(SEED)
@@ -91,21 +47,20 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
-parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
-parser.add_argument('--bagmix_mode', type=str, default='label_consistent', 
-                    choices=['label_consistent', 'random', 'class_dist'],
-                    help='BagMix mode: label_consistent (same label), random (any label - buggy), class_dist (mix based on class percentage)')
-parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
-parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
+parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
+parser = add_bagmix_args(parser)
+parser = add_psemix_args(parser)
 args = parser.parse_args()
 
-# Set num_workers for data loading
-NUM_WORKERS = 16
+# Set num_workers based on OS
+if sys.platform.startswith('win'):
+    NUM_WORKERS = 4  # Try 4 workers on Windows
+else:
+    NUM_WORKERS = 4
 
 SEED = args.seed
 random.seed(SEED)
@@ -154,16 +109,20 @@ def get_image_paths_for_plate(plate):
             valid_paths.append(path)
     return valid_paths
 
-def focal_loss(logits, targets, alpha=0.25, gamma=2.0, label_smoothing=0.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
-    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
+
+def attention_entropy_loss(attn_weights):
+    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
+    return entropy
 
 def worker_init_fn(worker_id, seed=42):
     """Module-level worker init function for multiprocessing compatibility"""
@@ -236,6 +195,25 @@ def train_single_fold(test_plate):
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
     print(f"Crops per image: 25 (center + 5x5 neighbors)")
+    if args.use_psemix:
+        print(f"PseMix: {args.psemix_mode}, n_pseb={args.psemix_n_pseb}, n_pheno={args.psemix_n_pheno}")
+        bag_mixer = create_bag_mixer(
+            mode=args.psemix_mode,
+            use_psemix=True,
+            n_pseb=args.psemix_n_pseb,
+            n_pheno=args.psemix_n_pheno,
+            alpha=args.psemix_alpha,
+            prob_mixup=args.psemix_prob
+        )
+    else:
+        print(f"BagMix: {args.bag_mix}")
+        bag_mixer = create_bag_mixer(
+            mode=args.bag_mix,
+            mix_ratio=args.bag_mix_ratio,
+            subset_size=args.bag_mix_subset_size,
+            dropout_ratio=args.bag_mix_dropout,
+            alpha=args.bag_mix_alpha
+        )
     
     model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
     model = model.to(device)
@@ -243,27 +221,10 @@ def train_single_fold(test_plate):
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
     attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
     
-    # Configurable optimizer
-    if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': attention_params, 'lr': args.lr}
-        ], weight_decay=0.01)
-    elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': attention_params, 'lr': args.lr}
-        ], weight_decay=0.01)
-    elif args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': attention_params, 'lr': args.lr}
-        ], weight_decay=0.01, momentum=0.9)
-    else:
-        optimizer = torch.optim.AdamW([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': attention_params, 'lr': args.lr}
-        ], weight_decay=0.01)
+    optimizer = torch.optim.AdamW([
+        {'params': backbone_params, 'lr': args.lr * 0.1},
+        {'params': attention_params, 'lr': args.lr}
+    ], weight_decay=0.01)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -271,17 +232,11 @@ def train_single_fold(test_plate):
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
     
     best_val_auc = 0.0
     best_val_acc = 0.0
     best_val_loss = float('inf')
-    
-    best_metrics = {
-        'auc': {'epoch': 0, 'value': 0.0},
-        'acc': {'epoch': 0, 'value': 0.0},
-        'loss': {'epoch': 0, 'value': float('inf')}
-    }
     
     print("Training...")
     for epoch in range(args.epochs):
@@ -293,82 +248,27 @@ def train_single_fold(test_plate):
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            # BagMix augmentation
-            if args.bagmix > 0 and random.random() < args.bagmix:
-                batch_size = images.size(0)
-                
-                if args.bagmix_mode == 'label_consistent':
-                    # Label-consistent: only mix samples with SAME label
-                    label_to_indices = {}
-                    for i in range(batch_size):
-                        label = labels[i].item()
-                        if label not in label_to_indices:
-                            label_to_indices[label] = []
-                        label_to_indices[label].append(i)
-                    
-                    for label, indices in label_to_indices.items():
-                        if len(indices) > 1:
-                            for i in indices:
-                                partner = random.choice([x for x in indices if x != i])
-                                images[i] = (images[i] + images[partner]) / 2
-                
-                elif args.bagmix_mode == 'random':
-                    # Random: mix with ANY sample (buggy - may mix different labels)
-                    shuffle_idx = torch.randperm(batch_size)
-                    for i in range(batch_size):
-                        if random.random() < 0.5:
-                            j = shuffle_idx[i]
-                            images[i] = (images[i] + images[j]) / 2
-                
-                elif args.bagmix_mode == 'class_dist':
-                    # Class distribution based: mix samples and create soft labels
-                    # based on the actual class percentages in the mixed batch
-                    shuffle_idx = torch.randperm(batch_size)
-                    
-                    # Calculate class distribution in batch
-                    class_counts = torch.bincount(labels, minlength=num_classes).float()
-                    class_probs = class_counts / batch_size  # Percentage of each class
-                    
-                    # Create soft labels for mixed samples
-                    soft_labels = torch.zeros(batch_size, num_classes, device=images.device)
-                    for i in range(batch_size):
-                        if random.random() < 0.5:
-                            j = shuffle_idx[i]
-                            # Mix images
-                            images[i] = (images[i] + images[j]) / 2
-                            
-                            # Soft label: percentage based on class distribution
-                            # 50% of this sample's true label + 50% of batch class distribution
-                            soft_labels[i] = 0.5 * torch.nn.functional.one_hot(labels[i], num_classes).float()
-                            soft_labels[i] += 0.5 * class_probs
-                        else:
-                            # Not mixed - use hard label
-                            soft_labels[i] = torch.nn.functional.one_hot(labels[i], num_classes).float()
-                    
-                    # Use soft labels for loss computation
-                    use_soft_labels = True
-                else:
-                    use_soft_labels = False
-            else:
-                use_soft_labels = False
+            if args.bag_mix != 'none' and random.random() < args.bag_mix_prob:
+                batch_size = images.shape[0]
+                aug_images = []
+                for i in range(batch_size):
+                    aug_crops = bag_mixer(images[i])
+                    aug_images.append(aug_crops)
+                images = torch.stack(aug_images)
             
             optimizer.zero_grad()
             
             outputs, attn_weights = model(images, return_attention=True)
             
-            if use_soft_labels and args.bagmix_mode == 'class_dist':
-                # Soft label cross entropy loss
-                log_probs = torch.log_softmax(outputs, dim=1)
-                loss = -(soft_labels * log_probs).sum(dim=1).mean()
-            else:
-                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                loss = main_loss
+            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+            ent_loss = attention_entropy_loss(attn_weights)
+            loss = main_loss + 0.01 * ent_loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
-            run_loss += loss.item()
+            run_loss += main_loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -383,7 +283,7 @@ def train_single_fold(test_plate):
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad():
-            for images, labels in tqdm(val_loader, desc='Val', leave=False):
+            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
                 probs = torch.softmax(outputs, dim=1)
@@ -391,7 +291,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = focal_loss(outputs, labels, alpha=0.25, gamma=2.0, label_smoothing=args.label_smoothing)
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
@@ -399,59 +299,26 @@ def train_single_fold(test_plate):
         val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
         avg_val_loss = val_loss_total / len(val_loader)
         
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        backbone_lr = optimizer.param_groups[0]['lr']
+        classifier_lr = optimizer.param_groups[1]['lr']
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
         
-        # Save best model by AUC
-        if val_auc > best_metrics['auc']['value']:
-            best_metrics['auc']['value'] = val_auc
-            best_metrics['auc']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
-        
-        # Save best model by Accuracy
-        if val_acc > best_metrics['acc']['value']:
-            best_metrics['acc']['value'] = val_acc
-            best_metrics['acc']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
-        
-        # Save best model by Loss (lowest)
-        if avg_val_loss < best_metrics['loss']['value']:
-            best_metrics['loss']['value'] = avg_val_loss
-            best_metrics['loss']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
-        
-        # Also save as default best_model.pth (best AUC for backward compatibility)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
         if (epoch + 1) % 10 == 0:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
@@ -463,7 +330,7 @@ def train_single_fold(test_plate):
     
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
             outputs, _ = model(images, return_attention=True)
             probs = torch.softmax(outputs, dim=1)

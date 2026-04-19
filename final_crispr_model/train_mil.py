@@ -210,17 +210,11 @@ def train_single_fold(test_plate):
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
     
     best_val_auc = 0.0
     best_val_acc = 0.0
     best_val_loss = float('inf')
-    
-    best_metrics = {
-        'auc': {'epoch': 0, 'value': 0.0},
-        'acc': {'epoch': 0, 'value': 0.0},
-        'loss': {'epoch': 0, 'value': float('inf')}
-    }
     
     print("Training...")
     for epoch in range(args.epochs):
@@ -243,7 +237,7 @@ def train_single_fold(test_plate):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
-            run_loss += loss.item()
+            run_loss += main_loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -258,7 +252,7 @@ def train_single_fold(test_plate):
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad():
-            for images, labels in val_loader:
+            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
                 probs = torch.softmax(outputs, dim=1)
@@ -266,7 +260,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = focal_loss(outputs, labels)
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
@@ -274,59 +268,26 @@ def train_single_fold(test_plate):
         val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
         avg_val_loss = val_loss_total / len(val_loader)
         
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        backbone_lr = optimizer.param_groups[0]['lr']
+        classifier_lr = optimizer.param_groups[1]['lr']
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
         
-        # Save best model by AUC
-        if val_auc > best_metrics['auc']['value']:
-            best_metrics['auc']['value'] = val_auc
-            best_metrics['auc']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
-        
-        # Save best model by Accuracy
-        if val_acc > best_metrics['acc']['value']:
-            best_metrics['acc']['value'] = val_acc
-            best_metrics['acc']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
-        
-        # Save best model by Loss (lowest)
-        if avg_val_loss < best_metrics['loss']['value']:
-            best_metrics['loss']['value'] = avg_val_loss
-            best_metrics['loss']['epoch'] = epoch
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
-        
-        # Also save as default best_model.pth (best AUC for backward compatibility)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            torch.save({
-                'epoch': epoch, 
-                'model_state_dict': model.state_dict(), 
-                'val_auc': val_auc,
-                'val_acc': val_acc,
-                'val_loss': avg_val_loss
-            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
         if (epoch + 1) % 10 == 0:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
@@ -338,7 +299,7 @@ def train_single_fold(test_plate):
     
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
             outputs, _ = model(images, return_attention=True)
             probs = torch.softmax(outputs, dim=1)

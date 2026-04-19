@@ -1,16 +1,9 @@
 """
-MIL with cycle-based crop extraction + 5x5 neighborhood (25 crops)
-- Training: 25 crops (center + 5x5 grid with jitter)
-- Validation/Test: 25 crops (center + 5x5 grid, no jitter)
-- True multi-head attention: 4 heads × 64-dim = 256-dim (default)
-- Also supports: max, mean, gmp, certainty pooling
-- Bottleneck: 1280 → 256
-- Classifier per paper: BatchNorm → Linear → ReLU → Dropout → Linear
+MIL with cycle-based crop extraction + improvements
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision
 import random
 import numpy as np
@@ -22,231 +15,119 @@ import re
 import os
 
 
-class MaxPoolingMIL(nn.Module):
-    """Max-pooling based MIL (FocusMIL style) - AvgPoolCNN style
-    Operates directly on 1280-dim features from backbone"""
-    def __init__(self, in_features=1280, bottleneck_dim=1280):
-        super().__init__()
-        # No bottleneck - pass through directly
-        
-    def forward(self, x):
-        # x shape: (B, N, 1280)
-        pooled, indices = torch.max(x, dim=1)  # (B, 1280)
-        
-        attn_weights = torch.zeros(x.size(0), x.size(1), device=x.device)
-        attn_weights.scatter_(1, indices, 1.0)
-        
-        return pooled, attn_weights
-
-
-class MeanPoolingMIL(nn.Module):
-    """Mean-pooling based MIL - AvgPoolCNN style
-    Directly averages 1280-dim features from backbone (no bottleneck)"""
-    def __init__(self, in_features=1280, bottleneck_dim=1280):
-        super().__init__()
-        # No bottleneck - pass through directly
-        
-    def forward(self, x):
-        # x shape: (B, N, 1280)
-        pooled = torch.mean(x, dim=1)  # (B, 1280)
-        
-        attn_weights = torch.ones(x.size(0), x.size(1), device=x.device) / x.size(1)
-        
-        return pooled, attn_weights
-
-
-class GeneralizedMeanPoolingMIL(nn.Module):
-    """Generalized Mean Pooling (GMP) - arXiv:2008.10548
-    AvgPoolCNN style - operates on 1280-dim features"""
-    def __init__(self, in_features=1280, bottleneck_dim=1280, p=3.0, learnable_p=True):
-        super().__init__()
-        # No bottleneck - operate directly on 1280-dim
-        if learnable_p:
-            self.p = nn.Parameter(torch.tensor(p, dtype=torch.float32))
-        else:
-            self.register_buffer('p', torch.tensor(p, dtype=torch.float32))
-        
-    def forward(self, x):
-        # x shape: (B, N, 1280)
-        p = torch.clamp(self.p, min=1.0, max=10.0)
-        
-        # Generalized mean: (mean(x^p))^(1/p)
-        pooled = torch.pow(torch.mean(torch.pow(x + 1e-8, p), dim=1), 1.0 / p)  # (B, 1280)
-        
-        attn_weights = F.softmax(x.mean(dim=-1), dim=1)
-        
-        return pooled, attn_weights
-
-
-class CertaintyPoolingMIL(nn.Module):
-    """Certainty Pooling - arXiv:2008.10548
-    AvgPoolCNN style - operates on 1280-dim features"""
-    def __init__(self, in_features=1280, bottleneck_dim=1280, num_classes=96):
-        super().__init__()
-        self.certainty_head = nn.Linear(in_features, num_classes)
-        
-    def forward(self, x):
-        # x shape: (B, N, 1280)
-        instance_logits = self.certainty_head(x)  # (B, N, num_classes)
-        instance_probs = F.softmax(instance_logits, dim=-1)
-        
-        max_probs, _ = torch.max(instance_probs, dim=-1)  # (B, N)
-        certainty = max_probs.pow(2)
-        
-        attn_weights = certainty / (certainty.sum(dim=1, keepdim=True) + 1e-8)
-        
-        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # (B, 1280)
-        
-        return pooled, attn_weights
-        
-        instance_logits = self.certainty_head(x)
-        instance_probs = F.softmax(instance_logits, dim=-1)
-        
-        max_probs, _ = torch.max(instance_probs, dim=-1)
-        certainty = max_probs.pow(2)
-        
-        attn_weights = certainty / (certainty.sum(dim=1, keepdim=True) + 1e-8)
-        
-        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
-        
-        return pooled, attn_weights
-
-
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling with true multi-head attention and learnable temperature"""
-    def __init__(self, in_features, num_heads=4, hidden_dim=256):
+    """Gated attention MIL pooling (Ilse et al. 2018)"""
+    def __init__(self, in_features, num_heads=4):
         super().__init__()
         self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads  # 256 / 4 = 64-dim per head
         
-        # Learnable temperature (initialized at 0.5)
-        self.temperature = nn.Parameter(torch.tensor(0.5))
-        
-        # Gated attention: V and U project full features to head_dim per head
-        # After projection, split into heads
-        self.V = nn.Linear(in_features, self.head_dim * num_heads)
-        self.U = nn.Linear(in_features, self.head_dim * num_heads)
-        # w produces single attention score per (instance)
-        self.w = nn.Linear(self.head_dim, 1)
-        
-        # Output projection to combine heads back
-        self.out_proj = nn.Linear(self.head_dim * num_heads, in_features)
+        self.V = nn.Linear(in_features, in_features // 4)
+        self.U = nn.Linear(in_features, in_features // 4)
+        self.w = nn.Linear(in_features // 4, num_heads)
+    
+    def forward(self, x, temperature=0.5):
+        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        attn_weights = self.w(A)
+        attn_weights = torch.softmax(attn_weights / temperature, dim=1)
+        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
+        return pooled, attn_weights
+
+
+class GMPooling(nn.Module):
+    """Generalized Mean Pooling (learnable p)"""
+    def __init__(self, in_features, p=1.0):
+        super().__init__()
+        self.p = nn.Parameter(torch.tensor(p))
     
     def forward(self, x):
-        batch_size, num_instances, _ = x.shape  # (B, N, 256)
-        
-        # Use learnable temperature
-        temp = self.temperature.clamp(0.1, 5.0)  # Clamp to prevent collapse
-        
-        # Project to all heads at once: 256 → 4*64 = 256
-        V_out = self.V(x)  # (B, N, 256)
-        U_out = self.U(x)  # (B, N, 256)
-        
-        # Reshape to split into heads: (B, N, H, 64)
-        V_heads = V_out.view(batch_size, num_instances, self.num_heads, self.head_dim)
-        U_heads = U_out.view(batch_size, num_instances, self.num_heads, self.head_dim)
-        
-        # Permute to (B, H, N, 64) for attention computation
-        V_heads = V_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
-        U_heads = U_heads.permute(0, 2, 1, 3)  # (B, H, N, 64)
-        
-        # Gated attention per head: tanh(V) ⊙ sigmoid(U)
-        A_heads = torch.tanh(V_heads) * torch.sigmoid(U_heads)  # (B, H, N, 64)
-        
-        # Compute attention scores per head
-        attn_scores = self.w(A_heads).squeeze(-1)  # (B, H, N)
-        
-        # Apply temperature and softmax over crops (dim=2) - each head normalizes across 25 crops
-        attn_weights = torch.softmax(attn_scores / temp, dim=2)  # (B, H, N)
-        
-        # Re-permute x for weighted sum: (B, N, H, 64) → (B, H, N, 64)
-        x_heads = x.view(batch_size, num_instances, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        
-        # Weighted sum: (B, H, N) × (B, H, N, 64) → (B, H, 64)
-        pooled = torch.einsum('bhn,bhnf->bhf', attn_weights, x_heads)
-        
-        # Concatenate heads: (B, H*64) = (B, 256)
-        pooled = pooled.reshape(batch_size, -1)
-        
-        # Output projection
-        pooled = self.out_proj(pooled)
-        
-        # Average attention weights across heads for visualization (B, N)
-        attn_weights_avg = attn_weights.mean(dim=1)
-        
-        return pooled, attn_weights_avg
+        p = torch.clamp(self.p, min=0.1, max=10.0)
+        x_abs = x.abs() + 1e-8
+        pooled = (x_abs ** p).mean(dim=1) ** (1.0 / p)
+        pooled = pooled * torch.sign(x.mean(dim=1))
+        attn_weights = torch.ones(x.shape[0], x.shape[1], 1, device=x.device) / x.shape[1]
+        return pooled, attn_weights
+
+
+class CertaintyPooling(nn.Module):
+    """Model certainty-weighted pooling"""
+    def __init__(self, in_features):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(1))
+    
+    def forward(self, x):
+        std = x.std(dim=1, keepdim=True).abs() + 1e-6
+        weights = torch.sigmoid(-self.alpha * std)
+        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+        pooled = (x * weights).sum(dim=1)
+        attn_weights = weights
+        return pooled, attn_weights
+
+
+def get_pooling_module(pooling_type, feature_dim, num_heads=4):
+    """Factory function to create pooling module"""
+    pooling_type = pooling_type.lower()
+    
+    if pooling_type == 'attention':
+        return AttentionPooling(feature_dim, num_heads)
+    elif pooling_type == 'max':
+        return None  # handled in forward
+    elif pooling_type == 'mean':
+        return None  # handled in forward
+    elif pooling_type == 'gmp':
+        return GMPooling(feature_dim)
+    elif pooling_type == 'certainty':
+        return CertaintyPooling(feature_dim)
+    else:
+        raise ValueError(f"Unknown pooling: {pooling_type}. Options: attention, max, mean, gmp, certainty")
 
 
 class AttentionMILModel(nn.Module):
-    """MIL model with configurable pooling strategy.
-    
-    Pooling types:
-        - attention: Gated multi-head attention (default, same as final_mutant_model)
-        - max: Max-pooling (FocusMIL) - 1280-dim
-        - mean: Mean-pooling (average) - 1280-dim (AvgPoolCNN style)
-        - gmp: Generalized Mean Pooling (arXiv:2008.10548) - 1280-dim
-        - certainty: Certainty Pooling (arXiv:2008.10548) - 1280-dim
-    
-    Architecture matches AvgPoolCNN:
-        - Backbone: EfficientNet-B0 → 1280-dim features
-        - Pooling: Configurable (attention uses 256-dim projection, others use 1280-dim)
-        - Classifier: BN → Linear → ReLU → Dropout → Linear
-    """
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, bottleneck_dim=1280, pooling_type='attention'):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, pooling_type='attention'):
         super().__init__()
+        self.pooling_type = pooling_type.lower()
+        
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
             base_model.features,
-            nn.AdaptiveMaxPool2d(1),
+            nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
         feature_dim = 1280
-        self.bottleneck_dim = bottleneck_dim
-        self.pooling_type = pooling_type.lower()
+        self.feature_dim = feature_dim
         
-        if self.pooling_type == 'attention':
-            # Attention uses 256-dim projection (like final_mutant_model)
-            self.bottleneck = nn.Linear(feature_dim, 256)
-            self.pooling = AttentionPooling(256, num_heads)
-            classifier_dim = 256
+        self.pooling_module = get_pooling_module(pooling_type, feature_dim, num_heads)
+        self.attention_temp = attention_temp
+        self.num_heads = num_heads
+        
+        if pooling_type == 'attention':
+            self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
         else:
-            # Other pooling use 1280-dim directly (AvgPoolCNN style)
-            self.bottleneck = nn.Identity()  # No projection
-            if self.pooling_type == 'max':
-                self.pooling = MaxPoolingMIL(feature_dim, feature_dim)
-            elif self.pooling_type == 'mean':
-                self.pooling = MeanPoolingMIL(feature_dim, feature_dim)
-            elif self.pooling_type in ['gmp', 'generalized_mean']:
-                self.pooling = GeneralizedMeanPoolingMIL(feature_dim, feature_dim)
-            elif self.pooling_type == 'certainty':
-                self.pooling = CertaintyPoolingMIL(feature_dim, feature_dim, num_classes)
-            else:
-                raise ValueError(f"Unknown pooling type: {pooling_type}")
-            classifier_dim = feature_dim
+            self.head_proj = nn.Identity()
         
         self.classifier = nn.Sequential(
-            nn.BatchNorm1d(classifier_dim),
-            nn.Linear(classifier_dim, classifier_dim),
-            nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
-            nn.Linear(classifier_dim, num_classes)
+            nn.Linear(feature_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
-        # Extract features with backbone
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
-        
-        # Apply bottleneck (identity for non-attention, linear for attention)
-        x = self.bottleneck(x)
+        x = x.view(batch_size, num_crops, -1)
         
         if self.pooling_type == 'attention':
-            pooled, attn_weights = self.pooling(x)
-        else:
-            pooled, attn_weights = self.pooling(x)
+            pooled, attn_weights = self.pooling_module(x, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+            pooled = self.head_proj(pooled)
+        elif self.pooling_type == 'max':
+            pooled = x.max(dim=1)[0]
+            attn_weights = torch.zeros(batch_size, num_crops, 1, device=x.device)
+        elif self.pooling_type == 'mean':
+            pooled = x.mean(dim=1)
+            attn_weights = torch.ones(batch_size, num_crops, 1, device=x.device) / num_crops
+        elif self.pooling_type in ['gmp', 'certainty']:
+            pooled, attn_weights = self.pooling_module(x)
         
         output = self.classifier(pooled)
         
@@ -256,22 +137,18 @@ class AttentionMILModel(nn.Module):
 
 
 class MultiCropDataset(Dataset):
-    """Cycle-based crop extraction with configurable neighborhood (3x3 or 5x5) for MIL
+    """Cycle-based crop extraction with configurable neighborhood for MIL"""
     
-    Args:
-        crop_neighborhood: 3 for 3x3 (9 crops), 5 for 5x5 (25 crops)
-    """
-    
-    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0, crop_neighborhood=5):
+    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, crop_neighborhood=5, augment=True, seed=42, epoch=0):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
         self.grid_size = grid_size
+        self.crop_neighborhood = crop_neighborhood  # 3 for 3x3, 5 for 5x5
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
-        self.single_crop = False
-        self.crop_neighborhood = crop_neighborhood  # 3 for 3x3, 5 for 5x5
+        self.single_crop = False  # Default to multi-crop
         
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
@@ -280,18 +157,18 @@ class MultiCropDataset(Dataset):
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
-        # Only positions with full neighborhood (skip edges)
-        half_neighbor = (crop_neighborhood - 1) // 2
+        # Only positions with full neighborhood (skip edges based on crop_neighborhood)
+        half_neighborhood = crop_neighborhood // 2
         positions = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * stride
                 top = i * stride
                 if left + crop_size <= w and top + crop_size <= h:
-                    can_left = left - half_neighbor * stride >= 0
-                    can_right = left + half_neighbor * stride + crop_size <= w
-                    can_top = top - half_neighbor * stride >= 0
-                    can_bottom = top + half_neighbor * stride + crop_size <= h
+                    can_left = left - half_neighborhood * stride >= 0
+                    can_right = left + half_neighborhood * stride + crop_size <= w
+                    can_top = top - half_neighborhood * stride >= 0
+                    can_bottom = top + half_neighborhood * stride + crop_size <= h
                     if can_left and can_right and can_top and can_bottom:
                         positions.append((left, top))
         
@@ -352,18 +229,16 @@ class MultiCropDataset(Dataset):
         center_left, center_top = self.epoch_centers[idx]
         
         if self.single_crop:
-            # Single crop mode
             crop = image.crop((center_left, center_top, center_left + self.crop_size, center_top + self.crop_size))
             crop = np.array(crop)
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
         else:
-            # Configurable neighborhood grid around center with jitter
-            half = (self.crop_neighborhood - 1) // 2
+            half_neighborhood = self.crop_neighborhood // 2
             jitter_range = self.stride // 4
             crops_list = []
-            for di in range(-half, half + 1):
-                for dj in range(-half, half + 1):
+            for di in range(-half_neighborhood, half_neighborhood + 1):
+                for dj in range(-half_neighborhood, half_neighborhood + 1):
                     if self.augment:
                         jitter_x = random.randint(-jitter_range, jitter_range)
                         jitter_y = random.randint(-jitter_range, jitter_range)
@@ -378,10 +253,8 @@ class MultiCropDataset(Dataset):
                     crop = self.transform(image=crop)['image']
                     crops_list.append(crop)
             
-            # Shuffle crop order
             if self.augment:
-                n_crops = self.crop_neighborhood * self.crop_neighborhood
-                perm = list(range(n_crops))
+                perm = list(range(self.crop_neighborhood * self.crop_neighborhood))
                 random.shuffle(perm)
                 crops_list = [crops_list[i] for i in perm]
             
