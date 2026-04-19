@@ -55,6 +55,9 @@ parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
 parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
+parser.add_argument('--bagmix_mode', type=str, default='label_consistent', 
+                    choices=['label_consistent', 'random', 'class_dist'],
+                    help='BagMix mode: label_consistent (same label), random (any label - buggy), class_dist (mix based on class percentage)')
 parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
 parser.add_argument('--entropy_weight', type=float, default=0.01, help='Entropy maximization weight (negative to minimize, positive to maximize)')
@@ -268,32 +271,69 @@ def train_single_fold(test_plate):
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            # BagMix augmentation (label-consistent implementation)
-            # Only mix samples with the SAME label to maintain label semantics
+            # BagMix augmentation
             if args.bagmix > 0 and random.random() < args.bagmix:
                 batch_size = images.size(0)
-                # Group samples by their labels
-                label_to_indices = {}
-                for i in range(batch_size):
-                    label = labels[i].item()
-                    if label not in label_to_indices:
-                        label_to_indices[label] = []
-                    label_to_indices[label].append(i)
+                num_classes_model = num_classes
                 
-                # Mix within same label group
-                for label, indices in label_to_indices.items():
-                    if len(indices) > 1:  # Need at least 2 samples of same class
-                        for i in indices:
-                            # Pick a random partner from same class (not itself)
-                            partner = random.choice([x for x in indices if x != i])
-                            # Mix all crops of sample i with sample partner
-                            images[i] = (images[i] + images[partner]) / 2
+                if args.bagmix_mode == 'label_consistent':
+                    # Label-consistent: only mix samples with SAME label
+                    label_to_indices = {}
+                    for i in range(batch_size):
+                        label = labels[i].item()
+                        if label not in label_to_indices:
+                            label_to_indices[label] = []
+                        label_to_indices[label].append(i)
+                    
+                    for label, indices in label_to_indices.items():
+                        if len(indices) > 1:
+                            for i in indices:
+                                partner = random.choice([x for x in indices if x != i])
+                                images[i] = (images[i] + images[partner]) / 2
+                
+                elif args.bagmix_mode == 'random':
+                    # Random: mix with ANY sample (buggy - may mix different labels)
+                    shuffle_idx = torch.randperm(batch_size)
+                    for i in range(batch_size):
+                        if random.random() < 0.5:
+                            j = shuffle_idx[i]
+                            images[i] = (images[i] + images[j]) / 2
+                
+                elif args.bagmix_mode == 'class_dist':
+                    # Class distribution based: mix samples and create soft labels
+                    shuffle_idx = torch.randperm(batch_size)
+                    
+                    # Calculate class distribution in batch
+                    class_counts = torch.bincount(labels, minlength=num_classes_model).float()
+                    class_probs = class_counts / batch_size
+                    
+                    # Create soft labels for mixed samples
+                    soft_labels = torch.zeros(batch_size, num_classes_model, device=images.device)
+                    for i in range(batch_size):
+                        if random.random() < 0.5:
+                            j = shuffle_idx[i]
+                            images[i] = (images[i] + images[j]) / 2
+                            soft_labels[i] = 0.5 * torch.nn.functional.one_hot(labels[i], num_classes_model).float()
+                            soft_labels[i] += 0.5 * class_probs
+                        else:
+                            soft_labels[i] = torch.nn.functional.one_hot(labels[i], num_classes_model).float()
+                    
+                    use_soft_labels = True
+                else:
+                    use_soft_labels = False
+            else:
+                use_soft_labels = False
             
             optimizer.zero_grad()
             
             outputs, attn_weights = model(images, return_attention=True)
             
-            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+            if use_soft_labels and args.bagmix_mode == 'class_dist':
+                log_probs = torch.log_softmax(outputs, dim=1)
+                loss = -(soft_labels * log_probs).sum(dim=1).mean()
+            else:
+                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                loss = main_loss
             
             # Only apply entropy loss for attention pooling
             if args.pooling == 'attention':
