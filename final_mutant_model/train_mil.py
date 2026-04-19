@@ -296,7 +296,6 @@ def train_single_fold(test_plate):
             # BagMix augmentation
             if args.bagmix > 0 and random.random() < args.bagmix:
                 batch_size = images.size(0)
-                num_classes = num_classes  # 96 classes
                 
                 if args.bagmix_mode == 'label_consistent':
                     # Label-consistent: only mix samples with SAME label
