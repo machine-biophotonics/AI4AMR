@@ -402,9 +402,9 @@ def main() -> None:
         all_results.extend(results)
         
         # Track image-level accuracy every 100 images
-        if 'true_label' in results[0] and 'predicted_class' in results[0]:
+        if results and 'ground_truth_label' in results[0] and 'predicted_class' in results[0]:
             total += 1
-            if results[0]['true_label'] == results[0]['predicted_class']:
+            if results[0]['ground_truth_label'] == results[0]['predicted_class']:
                 correct += 1
             
             if total % 100 == 0:
