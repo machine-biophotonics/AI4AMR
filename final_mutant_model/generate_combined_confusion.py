@@ -370,6 +370,7 @@ def plot_percentage_cm(cm_sum, labels, title, output_path, show_annot=True):
 def main():
     parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for final_crispr_model')
     parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
+    parser.add_argument('--single_fold', type=str, default=None, help='Single fold to process (e.g., P1)')
     parser.add_argument('--guide', action='store_true', help='Generate only guide-level')
     parser.add_argument('--family', action='store_true', help='Generate only family-level')
     parser.add_argument('--csv_name', type=str, default=None, 
@@ -383,7 +384,11 @@ def main():
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    folds = args.folds.split(',')
+    
+    if args.single_fold:
+        folds = [args.single_fold]
+    else:
+        folds = args.folds.split(',')
 
     if args.output_dir:
         output_dir = args.output_dir
@@ -404,7 +409,14 @@ def main():
         fold_dir = os.path.join(SCRIPT_DIR, f'fold_{fold}')
         
         if args.prediction_csv:
-            csv_path = os.path.join(fold_dir, args.prediction_csv)
+            # Check if it's an absolute path or relative path
+            if os.path.isabs(args.prediction_csv):
+                csv_path = args.prediction_csv
+            elif '/' in args.prediction_csv:
+                # It's a relative path like fold_P1/file.csv
+                csv_path = os.path.join(SCRIPT_DIR, args.prediction_csv)
+            else:
+                csv_path = os.path.join(fold_dir, args.prediction_csv)
         elif args.csv_name:
             csv_path = os.path.join(fold_dir, args.csv_name)
         else:
@@ -497,6 +509,9 @@ def main():
                 all_labels = sorted(all_labels_set)
 
             n_classes = len(all_labels)
+            if n_classes == 0:
+                print("ERROR: No classes found in data")
+                continue
             random_baseline = 100.0 / n_classes
 
             cm_sum_raw = np.zeros((n_classes, n_classes))
