@@ -155,7 +155,7 @@ def predict_image(
     """Predict all crops for a single image using MIL attention."""
     if mil_mode:
         all_crops = extract_mil_crops(img_path, crop_size, grid_size)
-        n_positions = len(all_crops) // 9
+        n_positions = len(all_crops) // 25  # 5x5 = 25 crops
     else:
         all_crops = extract_all_crops(img_path, crop_size, grid_size)
         n_positions = len(all_crops)
@@ -164,7 +164,7 @@ def predict_image(
     
     if mil_mode:
         for pos_idx in range(n_positions):
-            pos_crops = all_crops[pos_idx * 9:(pos_idx + 1) * 9]
+            pos_crops = all_crops[pos_idx * 25:(pos_idx + 1) * 25]  # 5x5 = 25 crops
             batch_tensors = torch.stack([c[0] for c in pos_crops]).unsqueeze(0).to(device)
             
             with torch.no_grad():
@@ -176,7 +176,7 @@ def predict_image(
             pooled_probs_np = probs[0].cpu().numpy().tolist()
             pooled_attn_np = attn_weights[0].cpu().numpy().tolist()
             
-            center_crop = pos_crops[4]
+            center_crop = pos_crops[12]  # Center of 5x5 (index 12 of 0-24)
             _, pos_id, local_row, local_col = center_crop
             
             well = parse_well_from_filename(img_path)
