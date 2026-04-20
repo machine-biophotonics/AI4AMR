@@ -301,7 +301,9 @@ def main() -> None:
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
     parser.add_argument('--max_images', type=int, default=None, help='Maximum number of images to process')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for inference')
-    parser.add_argument('--checkpoint', type=str, default='best_model_auc.pth', help='Checkpoint filename')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint filename (if not specified, uses checkpoint_type)')
+    parser.add_argument('--checkpoint_type', type=str, default='auc', choices=['auc', 'acc', 'loss'],
+                        help='Which best model to use: auc (best AUC), acc (best accuracy), loss (lowest loss)')
     parser.add_argument('--data_root', type=str, default=None, help='Path to parent folder containing P1-P6')
     
     args = parser.parse_args()
@@ -334,7 +336,19 @@ def main() -> None:
 
     test_plate = args.fold if args.fold else 'P6'
     fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
-    checkpoint_path = os.path.join(fold_dir, args.checkpoint)
+    
+    # Determine checkpoint file based on checkpoint_type or explicit checkpoint
+    if args.checkpoint:
+        checkpoint_file = args.checkpoint
+    else:
+        if args.checkpoint_type == 'auc':
+            checkpoint_file = 'best_model.pth'  # or best_model_auc.pth
+        elif args.checkpoint_type == 'acc':
+            checkpoint_file = 'best_model_acc.pth'
+        else:  # loss
+            checkpoint_file = 'best_model_loss.pth'
+    
+    checkpoint_path = os.path.join(fold_dir, checkpoint_file)
     image_dir = os.path.join(BASE_DIR, test_plate)
     output_dir = fold_dir
 

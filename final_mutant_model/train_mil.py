@@ -52,6 +52,10 @@ parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
+parser.add_argument('--checkpoint_type', type=str, default='auc', choices=['auc', 'acc', 'loss'], 
+                    help='Which checkpoint to use for testing: auc (best AUC), acc (best accuracy), loss (lowest loss)')
+parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint file (e.g., checkpoint_epoch_50.pth)')
+parser.add_argument('--resume_epoch', type=int, default=None, help='Resume from specific epoch number')
 parser = add_bagmix_args(parser)
 parser = add_psemix_args(parser)
 args = parser.parse_args()
@@ -228,6 +232,31 @@ def train_single_fold(test_plate):
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
+    start_epoch = 0
+    if args.resume:
+        resume_path = os.path.join(OUTPUT_DIR, args.resume)
+        if os.path.exists(resume_path):
+            print(f"Resuming from checkpoint: {args.resume}")
+            checkpoint = torch.load(resume_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'epoch' in checkpoint:
+                start_epoch = checkpoint['epoch'] + 1
+                print(f"Resuming from epoch {checkpoint['epoch']}")
+        else:
+            print(f"WARNING: Resume checkpoint not found: {resume_path}")
+    
+    if args.resume_epoch:
+        resume_path = os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{args.resume_epoch}.pth')
+        if os.path.exists(resume_path):
+            print(f"Resuming from epoch {args.resume_epoch}")
+            checkpoint = torch.load(resume_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+        else:
+            print(f"WARNING: Resume checkpoint not found: {resume_path}")
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
@@ -239,7 +268,7 @@ def train_single_fold(test_plate):
     best_val_loss = float('inf')
     
     print("Training...")
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         epoch_start = time.time()
         train_dataset.set_epoch(epoch)
         model.train()
@@ -321,10 +350,25 @@ def train_single_fold(test_plate):
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
         if (epoch + 1) % 10 == 0:
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_auc': best_val_auc,
+                'val_acc': best_val_acc,
+                'val_loss': best_val_loss
+            }, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
     
     print("Testing...")
-    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
+    if args.checkpoint_type == 'auc':
+        checkpoint_file = 'best_model.pth'
+    elif args.checkpoint_type == 'acc':
+        checkpoint_file = 'best_model_acc.pth'
+    else:  # loss
+        checkpoint_file = 'best_model_loss.pth'
+    
+    print(f"Loading checkpoint: {checkpoint_file}")
+    checkpoint = torch.load(os.path.join(OUTPUT_DIR, checkpoint_file), map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
