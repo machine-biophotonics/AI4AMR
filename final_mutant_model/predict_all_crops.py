@@ -301,9 +301,10 @@ def main() -> None:
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
     parser.add_argument('--max_images', type=int, default=None, help='Maximum number of images to process')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for inference')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint filename (if not specified, uses checkpoint_type)')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint filename')
     parser.add_argument('--checkpoint_type', type=str, default='auc', choices=['auc', 'acc', 'loss'],
-                        help='Which best model to use: auc (best AUC), acc (best accuracy), loss (lowest loss)')
+                        help='Which best model to use: auc, acc, or loss')
+    parser.add_argument('--predict_all', action='store_true', help='Predict with all 3 checkpoint types')
     parser.add_argument('--data_root', type=str, default=None, help='Path to parent folder containing P1-P6')
     
     args = parser.parse_args()
@@ -331,33 +332,38 @@ def main() -> None:
     num_classes = args.num_classes if args.num_classes is not None else len(classes)
     print(f"Loaded {num_classes} classes")
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     test_plate = args.fold if args.fold else 'P6'
     fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
     
-    # Determine checkpoint file based on checkpoint_type or explicit checkpoint
-    if args.checkpoint:
-        checkpoint_file = args.checkpoint
+    # Determine which checkpoints to use
+    checkpoint_types = []
+    if args.predict_all or args.checkpoint_type == 'all':
+        checkpoint_types = ['best_model.pth', 'best_model_acc.pth', 'best_model_loss.pth']
+    elif args.checkpoint:
+        checkpoint_types = [args.checkpoint]
     else:
         if args.checkpoint_type == 'auc':
-            checkpoint_file = 'best_model.pth'  # or best_model_auc.pth
+            checkpoint_types = ['best_model.pth']
         elif args.checkpoint_type == 'acc':
-            checkpoint_file = 'best_model_acc.pth'
-        else:  # loss
-            checkpoint_file = 'best_model_loss.pth'
+            checkpoint_types = ['best_model_acc.pth']
+        else:
+            checkpoint_types = ['best_model_loss.pth']
     
-    checkpoint_path = os.path.join(fold_dir, checkpoint_file)
-    image_dir = os.path.join(BASE_DIR, test_plate)
-    output_dir = fold_dir
+    # Process each checkpoint
+    for checkpoint_file in checkpoint_types:
+        checkpoint_path = os.path.join(fold_dir, checkpoint_file)
+        image_dir = os.path.join(BASE_DIR, test_plate)
+        output_dir = fold_dir
 
-    print(f'\n{"="*60}')
-    print(f'Processing fold: test plate={test_plate}')
-    print(f'  checkpoint: {checkpoint_path}')
-    print(f'  image_dir: {image_dir}')
-    print(f'  mil_mode: {mil_mode}')
-    print(f'{"="*60}')
+        print(f'\n{"="*60}')
+        print(f'Processing fold: test plate={test_plate}')
+        print(f'  checkpoint: {checkpoint_path}')
+        print(f'  image_dir: {image_dir}')
+        print(f'  mil_mode: {mil_mode}')
+        print(f'{"="*60}')
     
     if not os.path.exists(checkpoint_path):
         print(f'ERROR: Checkpoint not found: {checkpoint_path}')
@@ -383,22 +389,38 @@ def main() -> None:
     print(f"Processing {len(image_paths)} images...")
     
     all_results: list[dict] = []
+    correct, total = 0, 0
     
-    for img_path in tqdm(image_paths, desc="Predicting"):
+    for idx, img_path in enumerate(tqdm(image_paths, desc="Predicting")):
         img_path_str = str(img_path)
         results = predict_image(
             model, img_path_str, test_plate, args.batch_size,
             crop_size, grid_size, mil_mode, plate_well_id,
             label_to_idx, idx_to_label, device
         )
+        
         all_results.extend(results)
+        
+        # Track image-level accuracy every 100 images
+        if 'true_label' in results[0] and 'predicted_class' in results[0]:
+            total += 1
+            if results[0]['true_label'] == results[0]['predicted_class']:
+                correct += 1
+            
+            if total % 100 == 0:
+                acc = 100.0 * correct / total
+                tqdm.write(f"Running Accuracy: {acc:.2f}% ({correct}/{total})")
     
-    metrics = compute_metrics(all_results, num_classes)
+    metrics = compute_metrics(all_results, num_classes) if all_results else None
     
     print(f"\nPrediction summary:")
     print(f"  - Images processed: {len(image_paths)}")
-    print(f"  - Crops per image: {len(all_results) // len(image_paths) if image_paths else 0}")
-    print(f"  - Total crop predictions: {len(all_results)}")
+    print(f"  - Crops per image: {len(all_results) // len(image_paths) if all_results and image_paths else 0}")
+    print(f"  - Total crop predictions: {len(all_results) if all_results else 0}")
+    
+    if not all_results or len(all_results) == 0:
+        print('ERROR: No valid predictions.')
+        return
     
     df = pd.DataFrame(all_results)
     
@@ -406,7 +428,13 @@ def main() -> None:
         print('ERROR: No valid predictions.')
         return
     
-    checkpoint_name = args.checkpoint.replace('.pth', '')
+    # Generate checkpoint name from checkpoint file or checkpoint_type
+    if args.checkpoint:
+        checkpoint_name = args.checkpoint.replace('.pth', '')
+    else:
+        checkpoint_name = f"best_model_{args.checkpoint_type}.pth"
+        checkpoint_name = checkpoint_name.replace('.pth', '')
+    
     if mil_mode:
         output_csv = os.path.join(output_dir, f'predictions_all_crops_mil_{checkpoint_name}.csv')
     else:
