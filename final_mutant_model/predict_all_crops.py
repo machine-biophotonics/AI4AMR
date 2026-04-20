@@ -332,7 +332,7 @@ def main() -> None:
     num_classes = args.num_classes if args.num_classes is not None else len(classes)
     print(f"Loaded {num_classes} classes")
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     test_plate = args.fold if args.fold else 'P6'
