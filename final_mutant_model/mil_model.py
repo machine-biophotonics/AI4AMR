@@ -41,7 +41,7 @@ class AttentionPooling(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, mammoth=None):
         super().__init__()
         # Use EfficientNet features with proper flattening
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
@@ -52,25 +52,48 @@ class AttentionMILModel(nn.Module):
         )
         feature_dim = 1280
         
+        # MAMMOTH: Mixture of Mini Experts (optional bottleneck)
+        # mammMOTH as drop-in replacement for linear layer (1280 -> 512)
+        self.use_mammoth = mammoth is not None
+        if self.use_mammoth:
+            self.mammoth = mammoth
+            self.attention_in_dim = 512  # mammMOTH output dim (passed as embed_dim=512)
+        else:
+            # Standard linear projection when not using mammMOTH
+            self.patch_embed = nn.Linear(feature_dim, feature_dim)
+            self.attention_in_dim = feature_dim  # 1280
+        
         # Gated attention pooling
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        self.attention_pool = AttentionPooling(self.attention_in_dim, num_heads)
         self.attention_temp = attention_temp
         
         # Multi-head projection (keep head diversity)
-        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
+        self.head_proj = nn.Linear(self.attention_in_dim * num_heads, self.attention_in_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
-            nn.Linear(feature_dim, num_classes)
+            nn.Linear(self.attention_in_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
-        # Extract features
+        # Extract features: (B*N, C, H, W) -> (B*N, 1280)
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
+        x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
+        
+        # Apply MAMMOTH as drop-in replacement for linear layer
+        if self.use_mammoth:
+            # mammMOTH: (B, N, 1280) -> (B, E*S, 512) 
+            x = self.mammoth(x)
+            # Mean pool over slot/expert dimensions to get (B, N, 512)
+            x = x.mean(dim=1)
+            # Expand back to num_crops for attention pooling
+            x = x.unsqueeze(1).expand(-1, num_crops, -1)  # (B, N, 512)
+        else:
+            # Standard linear projection
+            x = self.patch_embed(x)
         
         # Attention pooling with temperature
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)

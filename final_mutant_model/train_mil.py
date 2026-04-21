@@ -31,6 +31,7 @@ import multiprocessing
 
 from mil_model import AttentionMILModel, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 from bag_mix import create_bag_mixer, add_bagmix_args, add_psemix_args
+from mammoth_import import create_mammoth, add_mammoth_args
 
 SEED = 42
 random.seed(SEED)
@@ -58,6 +59,7 @@ parser.add_argument('--resume', type=str, default=None, help='Resume from checkp
 parser.add_argument('--resume_epoch', type=int, default=None, help='Resume from specific epoch number')
 parser = add_bagmix_args(parser)
 parser = add_psemix_args(parser)
+parser = add_mammoth_args(parser)
 args = parser.parse_args()
 
 # Set num_workers based on OS
@@ -215,11 +217,18 @@ def train_single_fold(test_plate):
             mode=args.bag_mix,
             mix_ratio=args.bag_mix_ratio,
             subset_size=args.bag_mix_subset_size,
-            dropout_ratio=args.bag_mix_dropout,
+dropout_ratio=args.bag_mix_dropout,
             alpha=args.bag_mix_alpha
         )
     
-    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
+    # Create MAMMOTH if enabled
+    mammoth = None
+    if getattr(args, 'use_mammoth', False):
+        # mammMOTH as drop-in replacement for linear layer (1280 -> 512)
+        mammoth = create_mammoth(args, input_dim=1280, embed_dim=512)
+        print(f"Using MAMMOTH: {args.mammoth_num_experts} experts, {args.mammoth_num_slots} slots")
+    
+    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, mammoth=mammoth)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
@@ -290,8 +299,7 @@ def train_single_fold(test_plate):
             outputs, attn_weights = model(images, return_attention=True)
             
             main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
-            ent_loss = attention_entropy_loss(attn_weights)
-            loss = main_loss + 0.01 * ent_loss
+            loss = main_loss  # No entropy loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
