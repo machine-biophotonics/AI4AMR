@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""
+MIL training with cycle-based crop extraction + 5x5 neighborhood (25 crops)
+
+Training: 25 crops (center + 5x5 grid with jitter)
+Validation/Test: 25 crops (center + 5x5 grid, no jitter)
+Supports --run_all_folds for cross-validation
+
+BagMix: Mixes samples with SAME label (label-consistent) - creates more diverse training examples per class
+
+=== Available Arguments ===
+
+--epochs            (int)    Training epochs (default: 200)
+--batch_size        (int)    Batch size (default: 16)
+--lr                (float)  Learning rate (default: 1e-4)
+--num_heads         (int)    Number of attention heads (default: 4)
+--bagmix            (float)   BagMix probability 0-1 (default: 0.0, disabled)
+--label_smoothing   (float)  Label smoothing factor (default: 0.1, enabled)
+--optimizer         (str)    Optimizer: adam/adamw/sgd (default: adam)
+--entropy_weight    (float)  Entropy loss weight (default: 0.0, disabled)
+--seed              (int)    Random seed (default: 42)
+--test_plate        (str)    Test plate: P1-P6 (default: P6)
+--data_root         (str)    Path to folder containing P1-P6 plate folders
+--run_all_folds     (flag)   Run all 6 folds
+--pooling           (str)    MIL pooling: attention/max/mean/gmp/certainty (default: attention)
+--crop_neighborhood (int)    Crop neighborhood: 3 (3x3=9 crops) or 5 (5x5=25 crops) (default: 5)
+
+=== Example Commands ===
+
+# Train single fold with attention (default)
+python train_mil.py --test_plate P6 --epochs 200
+
+# Train with max pooling (FocusMIL style)
+python train_mil.py --test_plate P6 --pooling max --epochs 200
+
+# Train with 3x3 neighborhood (9 crops)
+python train_mil.py --test_plate P6 --crop_neighborhood 3 --epochs 200
+
+# Run all 6 folds
+python train_mil.py --run_all_folds --epochs 200
+
+# Run all folds with max pooling
+python train_mil.py --run_all_folds --pooling max --epochs 200
+
+# Enable BagMix augmentation (50% probability)
+python train_mil.py --test_plate P6 --bagmix 0.5 --epochs 200
+
+# Use AdamW optimizer with label smoothing
+python train_mil.py --test_plate P6 --optimizer adamw --label_smoothing 0.1 --epochs 200
+
+# Custom learning rate and batch size
+python train_mil.py --test_plate P6 --lr 5e-4 --batch_size 32 --epochs 150
+"""
+import argparse
+import sys
+import time
+import matplotlib
+matplotlib.use('Agg')
+import numpy as np
+import torch
+from torch import nn
+import torchvision
+from torch.utils.data import DataLoader
+import os
+import glob
+import json
+import re
+from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.preprocessing import label_binarize
+import random
+from tqdm import tqdm
+import csv
+from datetime import datetime
+from collections import Counter
+import multiprocessing
+
+from mil_model import AttentionMILModel, MultiCropDataset, get_gene_from_path, extract_well_from_filename
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device: {device}")
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--epochs', type=int, default=200)
+parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--num_heads', type=int, default=4, help='Number of attention heads')
+parser.add_argument('--bagmix', type=float, default=0.0, help='BagMix probability (0=disabled)')
+parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0=disabled)')
+parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'], help='Optimizer')
+parser.add_argument('--entropy_weight', type=float, default=0.0, help='Entropy weight (0=disabled, previously used for attention entropy)')
+parser.add_argument('--seed', type=int, default=42)
+parser.add_argument('--test_plate', type=str, default='P6')
+parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
+parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
+args = parser.parse_args()
+
+# Set num_workers for data loading
+NUM_WORKERS = 16
+
+SEED = args.seed
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if args.data_root:
+    BASE_DIR = args.data_root
+else:
+    BASE_DIR = os.path.dirname(SCRIPT_DIR)
+
+with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+    plate_data = json.load(f)
+
+plate_maps = {}
+for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
+    plate_maps[plate] = {}
+    for row, wells in plate_data[plate].items():
+        for col, info in wells.items():
+            well = f"{row}{int(col):02d}"
+            plate_maps[plate][well] = info['id']
+
+def extract_gene(label):
+    return label
+
+all_genes = sorted(set(extract_gene(label) for pm in plate_maps.values() for label in pm.values()))
+gene_to_idx = {gene: idx for idx, gene in enumerate(all_genes)}
+num_classes = len(all_genes)
+print(f"Classes: {num_classes}")
+
+all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+
+def get_image_paths_for_plate(plate):
+    plate_dir = os.path.join(BASE_DIR, plate)
+    if not os.path.exists(plate_dir):
+        return []
+    paths = []
+    for pattern in ['*.tif', '*.tiff', '*.png']:
+        paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
+    valid_paths = []
+    for path in paths:
+        well = extract_well_from_filename(os.path.basename(path))
+        if well and well in plate_maps.get(plate, {}):
+            valid_paths.append(path)
+    return valid_paths
+
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+    pt = torch.exp(-ce_loss)
+    return (alpha * (1 - pt) ** gamma * ce_loss).mean()
+
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+    pt = torch.exp(-ce_loss)
+    focal = alpha * (1 - pt) ** gamma * ce_loss
+    return (focal * weights).mean()
+
+def attention_entropy_loss(attn_weights):
+    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
+    return entropy
+
+def worker_init_fn(worker_id, seed=42):
+    """Module-level worker init function for multiprocessing compatibility"""
+    random.seed(seed + worker_id)
+
+
+def train_single_fold(test_plate):
+    OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    print(f"\n{'='*60}")
+    print(f"Training fold: test_plate={test_plate}")
+    print(f"{'='*60}")
+    
+    train_val_plates = [p for p in all_plates if p != test_plate]
+    train_plates = train_val_plates[:4]
+    val_plates = train_val_plates[4:]
+    
+    print(f"Train plates: {train_plates}")
+    print(f"Val plates: {val_plates}")
+    
+    train_paths, train_labels = [], []
+    val_paths, val_labels = [], []
+    test_paths, test_labels = [], []
+    
+    for plate in train_plates:
+        for path in get_image_paths_for_plate(plate):
+            train_paths.append(path)
+            train_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
+    
+    for plate in val_plates:
+        for path in get_image_paths_for_plate(plate):
+            val_paths.append(path)
+            val_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
+    
+    for plate in [test_plate]:
+        for path in get_image_paths_for_plate(plate):
+            test_paths.append(path)
+            test_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
+    
+    train_labels = np.array(train_labels)
+    val_labels = np.array(val_labels)
+    test_labels = np.array(test_labels)
+    
+    print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
+    
+    class_counts = Counter(train_labels)
+    total = len(train_labels)
+    class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
+    class_weights = class_weights / class_weights.sum() * num_classes
+    
+    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, augment=True, seed=SEED)
+    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, augment=False, seed=SEED)
+    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, augment=False, seed=SEED)
+    
+    train_dataset.set_epoch(0)
+    val_dataset.set_epoch(0)
+    test_dataset.set_epoch(0)
+    
+    # Windows Python 3.14: MUST use 0 workers due to multiprocessing pickling changes
+    if sys.platform.startswith('win'):
+        effective_workers = 0
+        print(f"Using {effective_workers} workers (Windows Python 3.14 - multiprocessing spawn required)")
+    else:
+        effective_workers = NUM_WORKERS
+        print(f"Using {effective_workers} workers")
+    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
+    
+    print(f"Crops per image: 25 (center + 5x5 neighbors)")
+    
+    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
+    model = model.to(device)
+    
+    backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
+    attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+    
+    # Configurable optimizer
+    if args.optimizer == 'adam':
+        optimizer = torch.optim.Adam([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01)
+    elif args.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01)
+    elif args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01, momentum=0.9)
+    else:
+        optimizer = torch.optim.AdamW([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=0.01)
+    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
+    
+    best_val_auc = 0.0
+    best_val_acc = 0.0
+    best_val_loss = float('inf')
+    
+    best_metrics = {
+        'auc': {'epoch': 0, 'value': 0.0},
+        'acc': {'epoch': 0, 'value': 0.0},
+        'loss': {'epoch': 0, 'value': float('inf')}
+    }
+    
+    print("Training...")
+    for epoch in range(args.epochs):
+        epoch_start = time.time()
+        train_dataset.set_epoch(epoch)
+        model.train()
+        run_loss, correct, total = 0.0, 0, 0
+        
+        for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+            images, labels = images.to(device), labels.to(device)
+            
+            # BagMix augmentation (label-consistent implementation)
+            # Only mix samples with the SAME label to maintain label semantics
+            if args.bagmix > 0 and random.random() < args.bagmix:
+                batch_size = images.size(0)
+                # Group samples by their labels
+                label_to_indices = {}
+                for i in range(batch_size):
+                    label = labels[i].item()
+                    if label not in label_to_indices:
+                        label_to_indices[label] = []
+                    label_to_indices[label].append(i)
+                
+                # Mix within same label group
+                for label, indices in label_to_indices.items():
+                    if len(indices) > 1:  # Need at least 2 samples of same class
+                        for i in indices:
+                            # Pick a random partner from same class (not itself)
+                            partner = random.choice([x for x in indices if x != i])
+                            # Mix all crops of sample i with sample partner
+                            images[i] = (images[i] + images[partner]) / 2
+            
+            optimizer.zero_grad()
+            
+            outputs, attn_weights = model(images, return_attention=True)
+            
+            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+            loss = main_loss
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            
+            run_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+        
+        scheduler.step()
+        
+        train_acc = 100. * correct / total
+        avg_train_loss = run_loss / len(train_loader)
+        
+        model.eval()
+        val_loss_total = 0.0
+        all_preds, all_probs, all_labels = [], [], []
+        
+        with torch.no_grad():
+            for images, labels in tqdm(val_loader, desc='Val', leave=False):
+                images, labels = images.to(device), labels.to(device)
+                outputs, _ = model(images, return_attention=True)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+                all_preds.extend(predicted.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                val_loss = focal_loss(outputs, labels, alpha=0.25, gamma=2.0, label_smoothing=args.label_smoothing)
+                val_loss_total += val_loss.item()
+        
+        val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+        all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+        val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
+        avg_val_loss = val_loss_total / len(val_loader)
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, LR={current_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, current_lr])
+        
+        # Save best model by AUC
+        if val_auc > best_metrics['auc']['value']:
+            best_metrics['auc']['value'] = val_auc
+            best_metrics['auc']['epoch'] = epoch
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+        
+        # Save best model by Accuracy
+        if val_acc > best_metrics['acc']['value']:
+            best_metrics['acc']['value'] = val_acc
+            best_metrics['acc']['epoch'] = epoch
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        # Save best model by Loss (lowest)
+        if avg_val_loss < best_metrics['loss']['value']:
+            best_metrics['loss']['value'] = avg_val_loss
+            best_metrics['loss']['epoch'] = epoch
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
+        
+        # Also save as default best_model.pth (best AUC for backward compatibility)
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'val_auc': val_auc,
+                'val_acc': val_acc,
+                'val_loss': avg_val_loss
+            }, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+        
+        if (epoch + 1) % 10 == 0:
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
+    
+    print("Testing...")
+    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    
+    all_preds, all_probs, all_labels = [], [], []
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images = images.to(device)
+            outputs, _ = model(images, return_attention=True)
+            probs = torch.softmax(outputs, dim=1)
+            _, predicted = outputs.max(1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+            all_labels.extend(labels.numpy())
+    
+    test_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+    test_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+    test_auc = roc_auc_score(test_labels_bin, np.array(all_probs), average='macro')
+    test_ap = average_precision_score(test_labels_bin, np.array(all_probs), average='macro')
+    
+    print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.4f}")
+    
+    results = {
+        'timestamp': timestamp,
+        'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': test_plate},
+        'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
+    }
+    
+    with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    print(f"Results saved to {OUTPUT_DIR}")
+
+
+if __name__ == '__main__':
+    if args.run_all_folds:
+        for test_plate in all_plates:
+            fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+            
+            # Check for any checkpoint files to skip trained folds
+            checkpoints = [
+                os.path.join(fold_dir, 'best_model.pth'),
+                os.path.join(fold_dir, 'best_model_acc.pth'),
+                os.path.join(fold_dir, 'best_model_auc.pth'),
+                os.path.join(fold_dir, 'best_model_loss.pth'),
+            ]
+            
+            if any(os.path.exists(cp) for cp in checkpoints):
+                print(f"\nSkipping {test_plate}: already trained (checkpoint exists)")
+                continue
+            
+            train_single_fold(test_plate)
+        
+        print("All folds completed!")
+    else:
+        train_single_fold(args.test_plate)
+    
+    print("Done!")

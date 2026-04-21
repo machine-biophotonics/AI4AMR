@@ -50,6 +50,8 @@ parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
+parser.add_argument('--grid_size', type=int, default=12, help='Grid size: >=12 for 5x5, >=14 for 7x7 neighborhood')
+parser.add_argument('--crop_size', type=int, default=224, help='Crop size for each patch')
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
@@ -180,9 +182,15 @@ def train_single_fold(test_plate):
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, augment=True, seed=SEED)
-    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, augment=False, seed=SEED)
-    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, augment=False, seed=SEED)
+    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, 
+                                  crop_size=args.crop_size, grid_size=args.grid_size,
+                                  augment=True, seed=SEED)
+    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps,
+                                  crop_size=args.crop_size, grid_size=args.grid_size,
+                                  augment=False, seed=SEED)
+    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps,
+                                  crop_size=args.crop_size, grid_size=args.grid_size,
+                                  augment=False, seed=SEED)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -200,7 +208,19 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: 25 (center + 5x5 neighbors)")
+    # Calculate crops per image based on grid_size
+    # Note: More rings = fewer valid center positions
+    if args.grid_size >= 16:
+        crops_per_image = 49  # 7x7 neighborhood with 3 rings margin
+        neighborhood = "7x7"
+    elif args.grid_size >= 14:
+        crops_per_image = 49  # 7x7 neighborhood with 3 rings margin
+        neighborhood = "7x7"
+    else:
+        crops_per_image = 25  # 5x5 neighborhood with 2 rings margin
+        neighborhood = "5x5"
+    
+    print(f"Crops per image: {crops_per_image} ({neighborhood} neighborhood)")
     if args.use_psemix:
         print(f"PseMix: {args.psemix_mode}, n_pseb={args.psemix_n_pseb}, n_pheno={args.psemix_n_pheno}")
         bag_mixer = create_bag_mixer(

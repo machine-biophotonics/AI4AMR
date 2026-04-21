@@ -27,15 +27,53 @@ except ImportError:
 
 
 GENE_COLORS = {
-    'mrcA': '#E57373', 'mrcB': '#EF5350', 'mrdA': '#F06292', 'ftsI': '#EC407A',
-    'mreB': '#FF8A65', 'murA': '#FFB74D', 'murC': '#FFA726',
-    'lpxA': '#4DB6AC', 'lpxC': '#26A69A', 'lptA': '#4DD0E1', 'lptC': '#26C6DA', 'msbA': '#80DEEA',
-    'gyrA': '#5C6BC0', 'gyrB': '#3F51B5', 'parC': '#7986CB', 'parE': '#9FA8DA',
-    'dnaE': '#9575CD', 'dnaB': '#B39DDB',
-    'rpoA': '#81C784', 'rpoB': '#66BB6A', 'rpsA': '#FFF176', 'rpsL': '#FFEE58',
-    'rplA': '#FFD54F', 'rplC': '#FFCA28',
-    'folA': '#AED581', 'folP': '#9CCC65', 'secY': '#80CBC4', 'secA': '#4DB6AC',
-    'ftsZ': '#F06292', 'minC': '#F48FB1',
+    # Peptidoglycan synthesis
+    'mrcB': '#E53935',
+    'mrcA': '#EF5350',
+    'mrdA': '#F0625D',
+    'ftsI': '#E57373',
+    'murA': '#FF8A80',
+    'murC': '#FFAB91',
+    'lpxA': '#FFCCBC',
+    'lpxC': '#FF7043',
+
+    # Ribosome proteins
+    'rpsL': '#FDD835',
+    'rpsA': '#FBC02D',
+    'rplA': '#F9A825',
+    'rplC': '#F57F17',
+
+    # LPS transport
+    'msbA': '#00ACC1',
+    'lptA': '#26C6DA',
+    'lptC': '#4DD0E1',
+
+    # DNA topology
+    'gyrA': '#3949AB',
+    'gyrB': '#5C6BC0',
+    'parC': '#7986CB',
+    'parE': '#9FA8DA',
+
+    # Protein translocation
+    'secA': '#00897B',
+    'secY': '#26A69A',
+
+    # DNA replication
+    'dnaB': '#7E57C2',
+    'dnaE': '#9575CD',
+
+    # RNA polymerase
+    'rpoA': '#43A047',
+    'rpoB': '#66BB6A',
+
+    # Cell division
+    'ftsZ': '#D81B60',
+
+    # Folate biosynthesis
+    'folA': '#7CB342',
+    'folP': '#9CCC65',
+
+    # Control
     'WT': '#424242', 'wt': '#424242'
 }
 

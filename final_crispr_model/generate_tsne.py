@@ -20,6 +20,7 @@ from sklearn.manifold import TSNE
 
 from utils import (
     GENE_COLORS,
+    GENE_COLORS_LOWER,
     find_prediction_csv,
     logger
 )
@@ -66,11 +67,18 @@ def aggregate_to_image(df: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description='Generate t-SNE plot')
     parser.add_argument('--fold', type=str, default='P3')
+    parser.add_argument('--folds', type=str, default=None, help='Comma-separated folds, e.g., P1,P2,P3')
     parser.add_argument('--csv', type=str, default=None)
     parser.add_argument('--output', type=str, default='tsne_gene_interactive.html')
     parser.add_argument('--perplexity', type=int, default=30)
     parser.add_argument('--max_iter', type=int, default=1000)
     args = parser.parse_args()
+
+    fold_list = []
+    if args.folds:
+        fold_list = args.folds.split(',')
+    elif args.fold:
+        fold_list = [args.fold]
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -93,7 +101,7 @@ def main() -> None:
 
     image_df['gene'] = image_df['true_label'].apply(get_base_gene).astype(str).str.lower()
 
-    valid_genes = set(GENE_COLORS.keys())
+    valid_genes = set(GENE_COLORS_LOWER.keys())
     image_df.loc[~image_df['gene'].isin(valid_genes), 'gene'] = 'wt'
 
     print(f"Aggregated to {len(image_df)} images")
@@ -121,7 +129,7 @@ def main() -> None:
         x='tsne_x',
         y='tsne_y',
         color='gene',
-        color_discrete_map=GENE_COLORS,
+        color_discrete_map=GENE_COLORS_LOWER,
         hover_data=['image_name', 'true_label', 'pred_label'],
         title=f't-SNE Visualization - Fold {args.fold} ({len(image_df)} images)',
         labels={'tsne_x': 't-SNE 1', 'tsne_y': 't-SNE 2', 'gene': 'Gene'}

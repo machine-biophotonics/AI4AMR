@@ -65,6 +65,9 @@ parser.add_argument('--batch_size', type=int, default=256)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--warmup_epochs', type=int, default=6)
 parser.add_argument('--patience', type=int, default=10)
+parser.add_argument('--case', type=int, default=None, help='Case number: 1, 2, 3, or 4')
+parser.add_argument('--run_subset', type=int, default=0, help='Subset run: 0, 1, 2, or 3')
+parser.add_argument('--run_all', action='store_true', help='Run all 16 experiments')
 args = parser.parse_args()
 
 # Constants
@@ -494,7 +497,6 @@ def main():
     VAL_PLATE = 'P5'
     TEST_PLATE = 'P6'
     
-    # Load validation and test data
     val_paths = get_image_paths_for_plate(VAL_PLATE)
     val_labels = [gene_to_idx[get_gene_from_path(p)] for p in val_paths]
     
@@ -503,60 +505,72 @@ def main():
     
     print(f"Validation: {len(val_paths)}, Test: {len(test_paths)}")
     
-    results = {}
+    case_configs = {
+        1: [['P1'], ['P2'], ['P3'], ['P4']],
+        2: [['P1', 'P2'], ['P2', 'P3'], ['P3', 'P4'], ['P4', 'P1']],
+        3: [['P1', 'P2', 'P3'], ['P2', 'P3', 'P4'], ['P3', 'P4', 'P1'], ['P4', 'P1', 'P2']],
+        4: [['P1', 'P2', 'P3', 'P4'], ['P1', 'P2', 'P3', 'P4'], ['P1', 'P2', 'P3', 'P4'], ['P1', 'P2', 'P3', 'P4']],
+    }
     
-    for n_train in [1, 2, 3, 4]:
-        print(f"\n{'='*60}")
-        print(f"Training with {n_train} plate(s)")
-        print(f"{'='*60}")
+    plate_combo_names = {
+        1: ['P1', 'P2', 'P3', 'P4'],
+        2: ['P1P2', 'P2P3', 'P3P4', 'P4P1'],
+        3: ['P1P2P3', 'P2P3P4', 'P3P4P1', 'P4P1P2'],
+        4: ['P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4'],
+    }
+    
+    def run_experiment(case_num, subset_idx):
+        train_plates = case_configs[case_num][subset_idx]
+        combo_name = plate_combo_names[case_num][subset_idx]
         
-        output_dir = os.path.join(SCRIPT_DIR, f'increase_{n_train}_plates')
+        output_dir = os.path.join(SCRIPT_DIR, f'case_{case_num}_{combo_name}', f'run_{subset_idx}')
         
-        # Skip if already completed
         if os.path.exists(os.path.join(output_dir, 'best_model.pth')):
-            print(f"Skipping {n_train} plates - already completed")
-            results[n_train] = 0
-            continue
+            print(f"Skipping case {case_num} {combo_name} run_{subset_idx} - already completed")
+            return None
         
-        # Randomize plate selection for fairness
-        candidate_plates = [p for p in all_plates if p not in [VAL_PLATE, TEST_PLATE]]
-        rng = random.Random(SEED + n_train)
-        rng.shuffle(candidate_plates)
-        train_plates = candidate_plates[:n_train]
+        os.makedirs(output_dir, exist_ok=True)
         
-        # Use 21 images per class = 2016 total images = exact whole number
-        # 21 images/class * 96 classes = 2016 images total
-        # With 1 plate: all 2016 images, 2 plates: 1008 each, 3 plates: 672 each, 4 plates: 504 each
-        # Note: Some classes will have slightly different count (21 vs 20/21/22) due to integer rounding
-        images_per_plate = 2016 // n_train
+        if case_num == 1:
+            target_total = 2016
+        elif case_num == 2:
+            target_total = 1920
+        elif case_num == 3:
+            target_total = 2016
+        else:
+            target_total = 1920
+        
+        n_plates = len(train_plates)
+        images_per_plate = target_total // n_plates
         
         train_paths = []
         for plate in train_plates:
             paths = get_image_paths_for_plate(plate)
             
-            # Group paths by gene for stratified sampling
             gene_to_paths = {}
             for p in paths:
                 gene = get_gene_from_path(p)
                 gene_to_paths.setdefault(gene, []).append(p)
             
-            # Sample equal number per gene (stratified)
             per_class = images_per_plate // num_classes
-            for gene, gene_paths in gene_to_paths.items():
-                rng = random.Random(SEED + n_train + stable_hash(gene))
-                rng.shuffle(gene_paths)
-                train_paths.extend(gene_paths[:per_class])
-        
-        # Shuffle final train_paths for good mixing
-        random.shuffle(train_paths)
+            
+            for gene in sorted(gene_to_paths.keys()):
+                gene_paths = gene_to_paths[gene]
+                gene_paths.sort()
+                
+                if case_num == 4:
+                    start_idx = subset_idx
+                    for i in range(per_class):
+                        img_idx = (start_idx + i) % len(gene_paths)
+                        train_paths.append(gene_paths[img_idx])
+                else:
+                    train_paths.extend(gene_paths[:per_class])
         
         train_labels = [gene_to_idx[get_gene_from_path(p)] for p in train_paths]
         
-        # Log class distribution for debugging
         class_dist = Counter(train_labels)
-        print(f"Class distribution: min={min(class_dist.values())}, max={max(class_dist.values())}, total={len(train_paths)}")
+        print(f"Case {case_num} {combo_name} run_{subset_idx}: {len(train_paths)} images, min={min(class_dist.values())}, max={max(class_dist.values())}")
         
-        print(f"Training: {len(train_paths)} images")
         test_acc = train_and_evaluate(
             train_paths, train_labels,
             val_paths, val_labels,
@@ -564,42 +578,81 @@ def main():
             output_dir
         )
         
-        results[n_train] = test_acc
+        return test_acc
     
-    # Save results
-    print("\n" + "="*60)
-    print("FINAL RESULTS")
-    print("="*60)
+    def run_all_experiments():
+        all_results = {}
+        
+        for case_num in [1, 2, 3, 4]:
+            print(f"\n{'='*60}")
+            print(f"CASE {case_num}: {len(case_configs[case_num])} runs")
+            print(f"{'='*60}")
+            
+            case_results = []
+            for subset_idx in range(4):
+                print(f"\n--- Running subset {subset_idx} ---")
+                test_acc = run_experiment(case_num, subset_idx)
+                case_results.append(test_acc)
+            
+            case_results = [r for r in case_results if r is not None]
+            if case_results:
+                mean_acc = np.mean(case_results)
+                std_acc = np.std(case_results)
+                all_results[case_num] = {'mean': mean_acc, 'std': std_acc, 'runs': case_results}
+                print(f"\nCase {case_num} Results: {mean_acc:.2f}% ± {std_acc:.2f}%")
+        
+        print("\n" + "="*60)
+        print("FINAL RESULTS WITH STD")
+        print("="*60)
+        
+        rows = []
+        for case_num, data in all_results.items():
+            rows.append({
+                'case': case_num,
+                'n_plates': case_num,
+                'mean_accuracy': data['mean'],
+                'std_accuracy': data['std'],
+                'run_0': data['runs'][0] if len(data['runs']) > 0 else None,
+                'run_1': data['runs'][1] if len(data['runs']) > 1 else None,
+                'run_2': data['runs'][2] if len(data['runs']) > 2 else None,
+                'run_3': data['runs'][3] if len(data['runs']) > 3 else None,
+            })
+        
+        df = pd.DataFrame(rows)
+        df.to_csv(os.path.join(SCRIPT_DIR, 'diversity_results_with_std.csv'), index=False)
+        print(df)
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        cases = list(all_results.keys())
+        means = [all_results[c]['mean'] for c in cases]
+        stds = [all_results[c]['std'] for c in cases]
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+        
+        bars = ax.bar(range(len(cases)), means, yerr=stds, color=colors[:len(cases)], alpha=0.8, capsize=5)
+        
+        ax.set_xlabel('Number of Training Plates', fontsize=12)
+        ax.set_ylabel('Test Accuracy (%)', fontsize=12)
+        ax.set_title('Test Accuracy vs Plate Diversity (Mean ± Std over 4 runs)', fontsize=14)
+        ax.set_xticks(range(len(cases)))
+        ax.set_xticklabels([f'{c}' for c in cases])
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        for i, (bar, mean, std) in enumerate(zip(bars, means, stds)):
+            ax.text(bar.get_x() + bar.get_width()/2., mean + std + 0.5, 
+                   f'{mean:.1f}±{std:.1f}', ha='center', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(SCRIPT_DIR, 'diversity_plot_with_std.png'), dpi=150)
     
-    df = pd.DataFrame({
-        'n_training_plates': list(results.keys()),
-        'test_accuracy': list(results.values())
-    })
-    df.to_csv(os.path.join(SCRIPT_DIR, 'diversity_results.csv'), index=False)
-    print(df)
-    
-    # Plot bar chart
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    n_plates = list(results.keys())
-    accs = list(results.values())
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
-    
-    bars = ax.bar(range(len(n_plates)), accs, color=colors[:len(n_plates)], alpha=0.8)
-    
-    ax.set_xlabel('Number of Training Plates', fontsize=12)
-    ax.set_ylabel('Test Accuracy (%)', fontsize=12)
-    ax.set_title('Test Accuracy vs Plate Diversity', fontsize=14)
-    ax.set_xticks(range(len(n_plates)))
-    ax.set_xticklabels([f'{n}' for n in n_plates])
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    for bar, acc in zip(bars, accs):
-        ax.text(bar.get_x() + bar.get_width()/2., acc + 0.5, 
-               f'{acc:.1f}%', ha='center', fontsize=10)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(SCRIPT_DIR, 'diversity_plot.png'), dpi=150)
+    if args.run_all:
+        run_all_experiments()
+    elif args.case is not None:
+        if args.run_subset not in [0, 1, 2, 3]:
+            raise ValueError("--run_subset must be 0, 1, 2, or 3")
+        run_experiment(args.case, args.run_subset)
+    else:
+        print("Please specify --case (1-4) and --run_subset (0-3), or use --run_all to run all 16 experiments")
 
 
 if __name__ == '__main__':

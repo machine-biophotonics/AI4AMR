@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Predict all 144 crops for each test image in plate_fold_increasing experiment.
-Tests how accuracy varies with number of training plates (1-4).
+Runs predictions for all 16 folds (4 n_plates × 4 runs).
 Fixed test plate: P6
 """
 
@@ -29,10 +29,35 @@ with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
     PLATE_WELL_ID: dict = json.load(f)
 
 
+def get_all_folds() -> list[tuple[str, str]]:
+    """Get all 16 folds: (run_dir, fold_name)"""
+    folds = []
+    
+    # n_plates 1-4, each has 4 runs
+    for n_plates in [1, 2, 3, 4]:
+        base_dir = os.path.join(SCRIPT_DIR, f'increase_{n_plates}_plates')
+        
+        if n_plates == 1:
+            run_names = ['run_P1_run1', 'run_P2_run2', 'run_P3_run3', 'run_P4_run4']
+        elif n_plates == 2:
+            run_names = ['run_P1P2_run1', 'run_P2P3_run2', 'run_P3P4_run3', 'run_P4P1_run4']
+        elif n_plates == 3:
+            run_names = ['run_P1P2P3_run1', 'run_P2P3P4_run2', 'run_P3P4P1_run3', 'run_P4P1P2_run4']
+        else:  # n_plates == 4
+            run_names = [f'run_P1P2P3P4_run{i}' for i in range(1, 5)]
+        
+        for run_name in run_names:
+            run_dir = os.path.join(base_dir, run_name)
+            fold_name = f"n{n_plates}_{run_name.replace('run_', '')}"
+            folds.append((run_dir, fold_name))
+    
+    return folds
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Predict all crops for diversity experiment')
-    parser.add_argument('--n_plates', type=int, nargs='+', default=None, choices=[1, 2, 3, 4],
-                        help='Number of training plates (1, 2, 3, or 4). Can specify multiple, e.g., --n_plates 1 2 3 4')
+    parser.add_argument('--folds', type=str, default=None,
+                        help='Comma-separated list of fold indices (0-15), or "all" for all folds')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
@@ -40,6 +65,8 @@ def main() -> None:
                         help='Maximum number of images to process')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size for inference')
+    parser.add_argument('--checkpoint_name', type=str, default='best_model.pth',
+                        help='Checkpoint filename to load')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -47,13 +74,17 @@ def main() -> None:
     grid_size: int = args.grid_size
     crops_per_image: int = grid_size * grid_size
     
-    n_plates_list: list[int]
-    if args.n_plates is not None:
-        n_plates_list = args.n_plates
-    else:
-        n_plates_list = [1, 2, 3, 4]
+    # Get all 16 folds
+    all_folds = get_all_folds()
     
-    print(f"Config: n_plates={n_plates_list}, crop_size={crop_size}, grid_size={grid_size}, crops_per_image={crops_per_image}")
+    # Parse fold indices if provided
+    if args.folds is not None and args.folds != 'all':
+        fold_indices = [int(x) for x in args.folds.split(',')]
+        folds_to_run = [all_folds[i] for i in fold_indices]
+    else:
+        folds_to_run = all_folds
+    
+    print(f"Config: {len(folds_to_run)} folds, crop_size={crop_size}, grid_size={grid_size}, crops_per_image={crops_per_image}")
     
     classes: dict[int, str] = {}
     with open(os.path.join(SCRIPT_DIR, 'classes.txt'), 'r') as f:
@@ -278,14 +309,14 @@ def main() -> None:
         
         return metrics
 
-    for n_plates in n_plates_list:
-        n_plates_dir: str = os.path.join(SCRIPT_DIR, f'increase_{n_plates}_plates')
-        checkpoint_path: str = os.path.join(n_plates_dir, 'best_model.pth')
+    # Process each fold
+    for fold_idx, (run_dir, fold_name) in enumerate(folds_to_run):
+        checkpoint_path: str = os.path.join(run_dir, args.checkpoint_name)
         image_dir: str = os.path.join(BASE_DIR, TEST_PLATE)
-        output_dir: str = n_plates_dir
+        output_dir: str = run_dir
         
         print(f"\n{'='*60}")
-        print(f"Plate diversity prediction: {n_plates} training plates")
+        print(f"Fold {fold_idx}: {fold_name}")
         print(f"  checkpoint: {checkpoint_path}")
         print(f"  image_dir: {image_dir}")
         print(f"  test_plate: {TEST_PLATE}")
@@ -326,9 +357,10 @@ def main() -> None:
         
         df: pd.DataFrame = pd.DataFrame(all_results)
         
-        output_csv: str = os.path.join(output_dir, f'predictions_{n_plates}_plates.csv')
+        # Save all crop predictions
+        output_csv: str = os.path.join(output_dir, f'crop_predictions_144.csv')
         df.to_csv(output_csv, index=False)
-        print(f"\nSaved predictions to {output_csv}")
+        print(f"\nSaved all 144 crop predictions to {output_csv}")
         
         print(f"\nMetrics (all {crops_per_image} crops):")
         if metrics.get('accuracy') is not None:
@@ -339,7 +371,6 @@ def main() -> None:
             if metrics.get('roc_auc') is not None:
                 print(f"  ROC-AUC: {metrics['roc_auc']:.4f}")
         
-        unique_images = df['image_name'].nunique()
         print(f"\n--- Per-image averaged predictions (majority vote) ---")
         
         image_preds: list[dict] = []
@@ -384,7 +415,7 @@ def main() -> None:
             metrics['avg_prob_accuracy'] = avg_acc
             metrics['num_test_images'] = total
         
-        img_output_csv: str = os.path.join(output_dir, f'image_predictions_{n_plates}_plates.csv')
+        img_output_csv: str = os.path.join(output_dir, f'image_predictions.csv')
         img_df_final.to_csv(img_output_csv, index=False)
         print(f"Saved per-image predictions to {img_output_csv}")
         
@@ -392,8 +423,12 @@ def main() -> None:
         torch.cuda.empty_cache()
         
         print(f"\n{'='*60}")
-        print(f"Done! Predicted on {n_plates} plate(s) model, test plate {TEST_PLATE}")
+        print(f"Done! Fold {fold_idx}: {fold_name}")
         print(f"{'='*60}")
+
+    print(f"\n{'='*60}")
+    print(f"All {len(folds_to_run)} folds completed!")
+    print(f"{'='*60}")
 
 
 if __name__ == '__main__':
