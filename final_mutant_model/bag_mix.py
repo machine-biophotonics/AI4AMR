@@ -41,7 +41,9 @@ class BagMixer:
         subset_size: Optional[int] = None,
         dropout_ratio: float = 0.0,
         alpha: float = 1.0,
-        seed: int = 42
+        seed: int = 42,
+        allow_pad: bool = True,
+        pad_value: float = 0.0
     ):
         self.mode = mode.lower()
         self.mix_ratio = mix_ratio
@@ -49,9 +51,10 @@ class BagMixer:
         self.dropout_ratio = dropout_ratio
         self.alpha = alpha
         self.seed = seed
+        self.allow_pad = allow_pad
+        self.pad_value = pad_value
         
-        valid_modes = ['none', 'subset', 'mixup', 'dropout', 'shuffle', 
-                       'cutmix', 'mixup_crop', 'bootstrap', 'cluster']
+        valid_modes = ['none', 'subset', 'mixup', 'dropout', 'shuffle', 'cutmix', 'mixup_crop', 'bootstrap', 'cluster']
         if self.mode not in valid_modes:
             raise ValueError(f"Invalid mode: {mode}. Choose from {valid_modes}")
     
@@ -188,6 +191,8 @@ class PseMixer:
     2. Mix at pseudo-bag level (not instance level)
     3. Uses soft labels (target mixing)
     4. Requires training-time pseudo-bag indicators
+    
+    Fixed version: operates on features tensors, not raw images.
     """
     
     def __init__(
@@ -199,7 +204,8 @@ class PseMixer:
         prob_mixup: float = 0.5,
         clustering_method: str = 'kmeans',
         fine_tune_iter: int = 0,
-        seed: int = 42
+        seed: int = 42,
+        pad_value: float = 0.0
     ):
         self.mode = mode.lower()
         self.n_pseb = n_pseb
@@ -209,6 +215,7 @@ class PseMixer:
         self.clustering_method = clustering_method
         self.fine_tune_iter = fine_tune_iter
         self.seed = seed
+        self.pad_value = pad_value
         
         self.pseudo_bag_labels = {}  # store pseudo-bag labels per bag
         
@@ -221,7 +228,7 @@ class PseMixer:
         Divide bag instances into pseudo-bags using clustering.
         
         Args:
-            bag_features: Tensor of shape [N, D] (feature dimension)
+            bag_features: Tensor of shape [N, D] (feature dimension) or [N, C, H, W] for images
             
         Returns:
             pseudo_bag_labels: Tensor of shape [N] indicating pseudo-bag assignment
@@ -255,6 +262,26 @@ class PseMixer:
         res = rlab[L]
         return res
     
+    def divide_batch(self, features_batch: torch.Tensor) -> List[torch.Tensor]:
+        """
+        Divide a batch of bag features into pseudo-bag indicators.
+        
+        Args:
+            features_batch: Tensor of shape [B, N, D] - batch of bags with features
+            
+        Returns:
+            pseudo_bag_indices: List of [N] tensors per bag
+        """
+        batch_size, num_crops, feat_dim = features_batch.shape
+        pseudo_bag_indices = []
+        
+        for i in range(batch_size):
+            bag_features = features_batch[i]  # [N, D]
+            ind = self.divide_into_pseudo_bags(bag_features)
+            pseudo_bag_indices.append(ind)
+        
+        return pseudo_bag_indices
+    
     def __call__(
         self, 
         bags: List[torch.Tensor], 
@@ -277,8 +304,9 @@ class PseMixer:
         """
         batch_size = len(bags)
         
-        if self.mode == 'none':
-            return bags, [labels] * batch_size, [labels] * batch_size, [1.0] * batch_size
+        if self.mode == 'none' or self.mode == 'psebmix':
+            if self.alpha <= 0:
+                return bags, [labels[i].item() for i in range(batch_size)], [labels[i].item() for i in range(batch_size)], [1.0] * batch_size
         
         if self.alpha > 0:
             lam = np.random.beta(self.alpha, self.alpha)
@@ -343,6 +371,91 @@ class PseMixer:
         
         return mixed_bags, mixed_labels_a, mixed_labels_b, mix_ratios
     
+    def apply_psemix_to_batch(
+        self,
+        features_batch: torch.Tensor,
+        labels: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Apply PseMix to a batch of features directly.
+        
+        Args:
+            features_batch: Tensor of shape [B, N, D] - batch of bags with features
+            labels: Tensor of shape [B] - class labels
+            
+        Returns:
+            mixed_features: Augmented features [B, max_N, D] (padded to max)
+            labels_a: Original labels repeated
+            labels_b: Mixed labels
+            mix_ratios: Lambda values for soft labels
+        """
+        batch_size = features_batch.shape[0]
+        
+        if self.mode in ['none', 'psebmix'] and self.alpha <= 0:
+            if features_batch.shape[1] == features_batch.shape[1]:
+                return features_batch, labels, labels, torch.ones(batch_size)
+        
+        if self.alpha > 0:
+            lam = np.random.beta(self.alpha, self.alpha)
+        else:
+            lam = 1.0
+        
+        idxs = torch.randperm(batch_size)
+        
+        pseudo_bag_indices = self.divide_batch(features_batch)
+        
+        mixed_bags = []
+        labels_a = []
+        labels_b = []
+        mix_ratios = []
+        max_n = 0
+        
+        for i in range(batch_size):
+            bag_i = features_batch[i]
+            bag_j = features_batch[idxs[i]]
+            
+            lam_discrete = int(lam * (self.n_pseb + 1))
+            lam_discrete = min(lam_discrete, self.n_pseb)
+            n_i = self.n_pseb - lam_discrete
+            
+            ind_i = pseudo_bag_indices[i]
+            ind_j = pseudo_bag_indices[idxs[i]]
+            
+            bag_a = self._fetch_pseudo_bags(bag_i, ind_i, self.n_pseb, lam_discrete)
+            bag_b = self._fetch_pseudo_bags(bag_j, ind_j, self.n_pseb, n_i)
+            
+            if bag_a is None or bag_a.shape[0] == 0:
+                bag_ab = bag_b
+            elif bag_b is None or bag_b.shape[0] == 0:
+                bag_ab = bag_a
+            else:
+                if random.random() <= self.prob_mixup:
+                    bag_ab = torch.cat([bag_a, bag_b], dim=0)
+                else:
+                    bag_ab = bag_a
+            
+            max_n = max(max_n, bag_ab.shape[0])
+            mixed_bags.append(bag_ab)
+            labels_a.append(labels[i].item())
+            labels_b.append(labels[idxs[i]].item())
+            mix_ratios.append(lam_discrete / self.n_pseb if self.n_pseb > 0 else 1.0)
+        
+        padded_bags = []
+        max_n = max(b.shape[0] for b in mixed_bags)
+        for bag in mixed_bags:
+            if bag.shape[0] < max_n:
+                pad_size = max_n - bag.shape[0]
+                pad = torch.full((pad_size, bag.shape[1]), self.pad_value, device=bag.device, dtype=bag.dtype)
+                bag = torch.cat([bag, pad], dim=0)
+            padded_bags.append(bag)
+        
+        mixed_features = torch.stack(padded_bags)
+        labels_a = torch.tensor(labels_a, device=features_batch.device)
+        labels_b = torch.tensor(labels_b, device=features_batch.device)
+        mix_ratios = torch.tensor(mix_ratios, device=features_batch.device)
+        
+        return mixed_features, labels_a, labels_b, mix_ratios
+    
     def _fetch_pseudo_bags(
         self, 
         bag: torch.Tensor, 
@@ -353,6 +466,8 @@ class PseMixer:
         """Fetch instances belonging to selected pseudo-bags"""
         if n_parts == 0:
             return None
+        if n_parts >= n:
+            return bag
         
         ind_fetched = torch.randperm(n)[:n_parts].to(bag.device)
         mask = torch.zeros(n, dtype=torch.bool, device=bag.device)

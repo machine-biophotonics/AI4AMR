@@ -47,4 +47,5 @@ def create_mammoth(args: argparse.Namespace, input_dim: int, embed_dim: int) -> 
         dropout=getattr(args, 'mammoth_dropout', 0.1),
         share_lora_weights=getattr(args, 'mammoth_share_weights', True),
         auto_rank=getattr(args, 'mammoth_auto_rank', True),
+        keep_slots=False,  # Output shape: (batch, seq, dim) instead of (batch, seq, num_experts * num_slots * head_dim)
     )

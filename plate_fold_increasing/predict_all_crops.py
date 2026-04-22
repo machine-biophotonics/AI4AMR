@@ -29,35 +29,81 @@ with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
     PLATE_WELL_ID: dict = json.load(f)
 
 
-def get_all_folds() -> list[tuple[str, str]]:
-    """Get all 16 folds: (run_dir, fold_name)"""
-    folds = []
+def get_folds_to_run(args) -> list[tuple[str, str]]:
+    """Get folds to run based on arguments"""
+    # Create experiment name
+    exp_name = f"val{args.val_plate}{args.test_plate}"
     
-    # n_plates 1-4, each has 4 runs
-    for n_plates in [1, 2, 3, 4]:
-        base_dir = os.path.join(SCRIPT_DIR, f'increase_{n_plates}_plates')
-        
-        if n_plates == 1:
-            run_names = ['run_P1_run1', 'run_P2_run2', 'run_P3_run3', 'run_P4_run4']
-        elif n_plates == 2:
-            run_names = ['run_P1P2_run1', 'run_P2P3_run2', 'run_P3P4_run3', 'run_P4P1_run4']
-        elif n_plates == 3:
-            run_names = ['run_P1P2P3_run1', 'run_P2P3P4_run2', 'run_P3P4P1_run3', 'run_P4P1P2_run4']
-        else:  # n_plates == 4
-            run_names = [f'run_P1P2P3P4_run{i}' for i in range(1, 5)]
-        
-        for run_name in run_names:
-            run_dir = os.path.join(base_dir, run_name)
-            fold_name = f"n{n_plates}_{run_name.replace('run_', '')}"
-            folds.append((run_dir, fold_name))
+    # Case directories mapping (base names without experiment suffix)
+    case_run_mapping = {
+        1: ['run_0', 'run_1', 'run_2', 'run_3'],
+        2: ['run_0', 'run_1', 'run_2', 'run_3'],
+        3: ['run_0', 'run_1', 'run_2', 'run_3'],
+        4: ['run_0', 'run_1', 'run_2', 'run_3'],
+    }
+    
+    case_combo_names = {
+        1: ['P1', 'P2', 'P3', 'P4'],
+        2: ['P1P2', 'P2P3', 'P3P4', 'P4P1'],
+        3: ['P1P2P3', 'P2P3P4', 'P3P4P1', 'P4P1P2'],
+        4: ['P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4'],
+    }
+    
+    if args.all_experiments:
+        # Run all 6 val/test experiments, all cases, all runs
+        folds = []
+        val_test_combos = [
+            ('P1', 'P2', 'val1_test2'),
+            ('P2', 'P3', 'val2_test3'),
+            ('P3', 'P4', 'val3_test4'),
+            ('P4', 'P5', 'val4_test5'),
+            ('P5', 'P6', 'val5_test6'),
+            ('P6', 'P1', 'val6_test1'),
+        ]
+        for val_p, test_p, exp_n in val_test_combos:
+            for case_num in [1, 2, 3, 4]:
+                combo_name = case_combo_names[case_num]
+                for run_idx in range(4):
+                    case_dir = f'case_{case_num}_{combo_name[run_idx]}_{exp_n}'
+                    run_subdir = f'run_{run_idx}'
+                    folds.append((os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir))
+    elif args.all:
+        # Run all cases and all runs for given val/test
+        folds = []
+        for case_num in [1, 2, 3, 4]:
+            combo_name = case_combo_names[case_num]
+            for run_idx in range(4):
+                case_dir = f'case_{case_num}_{combo_name[run_idx]}_{exp_name}'
+                run_subdir = f'run_{run_idx}'
+                folds.append((os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir))
+    elif args.case is not None:
+        # Run specific case
+        case_num = args.case
+        combo_name = case_combo_names[case_num]
+        if args.run is not None:
+            # Run specific run
+            case_dir = f'case_{case_num}_{combo_name[args.run]}_{exp_name}'
+            run_subdir = f'run_{args.run}'
+            folds = [(os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir)]
+        else:
+            # Run all runs for this case
+            folds = []
+            for run_idx in range(4):
+                case_dir = f'case_{case_num}_{combo_name[run_idx]}_{exp_name}'
+                run_subdir = f'run_{run_idx}'
+                folds.append((os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir))
+    else:
+        print("Use: --case N --run N, or --case N, or --all, or --all_experiments")
+        exit(1)
     
     return folds
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Predict all crops for diversity experiment')
-    parser.add_argument('--folds', type=str, default=None,
-                        help='Comma-separated list of fold indices (0-15), or "all" for all folds')
+    parser.add_argument('--case', type=int, choices=[1,2,3,4], help='Case number (1-4)')
+    parser.add_argument('--run', type=int, choices=[0,1,2,3], help='Run number (0-3), or all runs if not specified')
+    parser.add_argument('--all', action='store_true', help='Run all cases and all runs')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
@@ -67,6 +113,9 @@ def main() -> None:
                         help='Batch size for inference')
     parser.add_argument('--checkpoint_name', type=str, default='best_model.pth',
                         help='Checkpoint filename to load')
+    parser.add_argument('--val_plate', type=str, default='P5', help='Validation plate (for ground truth)')
+    parser.add_argument('--test_plate', type=str, default='P6', help='Test plate for predictions')
+    parser.add_argument('--all_experiments', action='store_true', help='Run all 6 val/test experiments')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -74,15 +123,8 @@ def main() -> None:
     grid_size: int = args.grid_size
     crops_per_image: int = grid_size * grid_size
     
-    # Get all 16 folds
-    all_folds = get_all_folds()
-    
-    # Parse fold indices if provided
-    if args.folds is not None and args.folds != 'all':
-        fold_indices = [int(x) for x in args.folds.split(',')]
-        folds_to_run = [all_folds[i] for i in fold_indices]
-    else:
-        folds_to_run = all_folds
+    # Get folds to run based on arguments
+    folds_to_run = get_folds_to_run(args)
     
     print(f"Config: {len(folds_to_run)} folds, crop_size={crop_size}, grid_size={grid_size}, crops_per_image={crops_per_image}")
     
@@ -106,7 +148,7 @@ def main() -> None:
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    TEST_PLATE = 'P6'
+    TEST_PLATE = args.test_plate
 
     class EfficientNetClassifier(nn.Module):
         def __init__(self, num_classes: int) -> None:
@@ -317,13 +359,19 @@ def main() -> None:
         
         print(f"\n{'='*60}")
         print(f"Fold {fold_idx}: {fold_name}")
-        print(f"  checkpoint: {checkpoint_path}")
+        print(f"  Using checkpoint: {args.checkpoint_name} (highest val_acc)")
         print(f"  image_dir: {image_dir}")
         print(f"  test_plate: {TEST_PLATE}")
         print(f"{'='*60}")
         
         if not os.path.exists(checkpoint_path):
             print(f"ERROR: Checkpoint not found: {checkpoint_path}")
+            continue
+        
+        # Check if predictions already exist - skip if so
+        existing_preds = os.path.join(output_dir, 'crop_predictions_144.csv')
+        if os.path.exists(existing_preds):
+            print(f"SKIP: Predictions already exist: {existing_preds}")
             continue
         
         model: EfficientNetClassifier = EfficientNetClassifier(num_classes=num_classes)
@@ -370,54 +418,6 @@ def main() -> None:
             print(f"  F1: {metrics['f1']:.4f}")
             if metrics.get('roc_auc') is not None:
                 print(f"  ROC-AUC: {metrics['roc_auc']:.4f}")
-        
-        print(f"\n--- Per-image averaged predictions (majority vote) ---")
-        
-        image_preds: list[dict] = []
-        for img_name in df['image_name'].unique():
-            img_df = df[df['image_name'] == img_name]
-            pred_counts = img_df['predicted_class_idx'].value_counts()
-            majority_pred = int(pred_counts.index[0])
-            well = img_df['well'].iloc[0] if 'well' in img_df.columns else None
-            gt_label = img_df['ground_truth_label'].iloc[0] if 'ground_truth_label' in img_df.columns else None
-            gt_idx = int(img_df['ground_truth_idx'].iloc[0]) if 'ground_truth_idx' in img_df.columns else -1
-            
-            avg_probs = np.mean(np.array(img_df['probs'].tolist()), axis=0)
-            avg_pred = int(np.argmax(avg_probs))
-            
-            image_preds.append({
-                'image_name': img_name,
-                'well': well,
-                'ground_truth_label': gt_label,
-                'ground_truth_idx': gt_idx,
-                'majority_vote_pred': majority_pred,
-                'avg_prob_pred': avg_pred,
-                'correct_majority': int(majority_pred == gt_idx) if gt_idx >= 0 else None,
-                'correct_avg_prob': int(avg_pred == gt_idx) if gt_idx >= 0 else None,
-            })
-        
-        img_df_final = pd.DataFrame(image_preds)
-        img_df_final = img_df_final[img_df_final['ground_truth_label'].notna()]
-        
-        if len(img_df_final) > 0:
-            maj_correct = int((img_df_final['majority_vote_pred'] == img_df_final['ground_truth_idx']).sum())
-            avg_correct = int((img_df_final['avg_prob_pred'] == img_df_final['ground_truth_idx']).sum())
-            total = len(img_df_final)
-            
-            maj_acc = maj_correct / total
-            avg_acc = avg_correct / total
-            
-            print(f"Images with ground truth: {total}")
-            print(f"Majority vote accuracy: {maj_acc:.4f} ({maj_correct}/{total})")
-            print(f"Average probability accuracy: {avg_acc:.4f} ({avg_correct}/{total})")
-            
-            metrics['majority_vote_accuracy'] = maj_acc
-            metrics['avg_prob_accuracy'] = avg_acc
-            metrics['num_test_images'] = total
-        
-        img_output_csv: str = os.path.join(output_dir, f'image_predictions.csv')
-        img_df_final.to_csv(img_output_csv, index=False)
-        print(f"Saved per-image predictions to {img_output_csv}")
         
         del model
         torch.cuda.empty_cache()

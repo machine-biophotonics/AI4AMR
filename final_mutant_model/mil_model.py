@@ -14,6 +14,8 @@ from torch.utils.data import Dataset
 import re
 import os
 
+DEBUG = os.environ.get('DEBUG_PSEMIX', '0') == '1'
+
 
 class AttentionPooling(nn.Module):
     """Gated attention MIL pooling (Ilse et al. 2018)"""
@@ -67,38 +69,127 @@ class AttentionMILModel(nn.Module):
         self.attention_pool = AttentionPooling(self.attention_in_dim, num_heads)
         self.attention_temp = attention_temp
         
-        # Multi-head projection (keep head diversity)
-        self.head_proj = nn.Linear(self.attention_in_dim * num_heads, self.attention_in_dim)
+        # Multi-head projection - output dim matches attention_in_dim for classifier input
+        pooled_dim = self.attention_in_dim * num_heads
+        self.head_proj = nn.Linear(pooled_dim, pooled_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
-            nn.Linear(self.attention_in_dim, num_classes)
+            nn.Linear(pooled_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False):
+    def extract_features(self, x):
+        """Extract features from input images using the backbone."""
         batch_size, num_crops = x.shape[:2]
         
-        # Extract features: (B*N, C, H, W) -> (B*N, 1280)
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
         
-        # Apply MAMMOTH as drop-in replacement for linear layer
-        if self.use_mammoth:
-            # mammMOTH: (B, N, 1280) -> (B, E*S, 512) 
-            x = self.mammoth(x)
-            # Mean pool over slot/expert dimensions to get (B, N, 512)
-            x = x.mean(dim=1)
-            # Expand back to num_crops for attention pooling
-            x = x.unsqueeze(1).expand(-1, num_crops, -1)  # (B, N, 512)
-        else:
-            # Standard linear projection
+        if not self.use_mammoth:
             x = self.patch_embed(x)
         
-        # Attention pooling with temperature
+        return x
+
+
+class AttentionMILModel(nn.Module):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, mammoth=None):
+        super().__init__()
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        self.backbone = nn.Sequential(
+            base_model.features,
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        feature_dim = 1280
+        
+        self.use_mammoth = mammoth is not None
+        if self.use_mammoth:
+            self.mammoth = mammoth
+            self.attention_in_dim = 512
+        else:
+            self.patch_embed = nn.Linear(feature_dim, feature_dim)
+            self.attention_in_dim = feature_dim
+        
+        self.attention_pool = AttentionPooling(self.attention_in_dim, num_heads)
+        self.attention_temp = attention_temp
+        
+        pooled_dim = self.attention_in_dim * num_heads
+        self.head_proj = nn.Linear(pooled_dim, pooled_dim)
+        
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=0.2),
+            nn.Linear(pooled_dim, num_classes)
+        )
+    
+    def extract_features(self, x):
+        batch_size, num_crops = x.shape[:2]
+        x = x.view(batch_size * num_crops, *x.shape[2:])
+        x = self.backbone(x)
+        x = x.view(batch_size, num_crops, -1)
+        if not self.use_mammoth:
+            x = self.patch_embed(x)
+        return x
+    
+    def forward_with_features(self, features: torch.Tensor, return_attention: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        batch_size, num_crops, feat_dim = features.shape
+        x = features
+        
+        if DEBUG:
+            print(f"[DEBUG forward_with_features] IN: features={features.shape}, mammoth={self.use_mammoth}")
+        
+        if self.use_mammoth:
+            x = self.mammoth(x)
+            if DEBUG:
+                print(f"[DEBUG forward_with_features] after mammoth: {x.shape}")
+            x = x.mean(dim=1)
+            if DEBUG:
+                print(f"[DEBUG forward_with_features] after mean: {x.shape}")
+            x = x.unsqueeze(1).expand(-1, num_crops, -1)
+            if DEBUG:
+                print(f"[DEBUG forward_with_features] after expand: {x.shape}")
+        
+        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+        if DEBUG:
+            print(f"[DEBUG forward_with_features] pooled: {pooled.shape}")
+        
+        pooled = pooled.reshape(batch_size, -1)
+        if DEBUG:
+            print(f"[DEBUG forward_with_features] pooled flat: {pooled.shape}")
+        
+        pooled = self.head_proj(pooled)
+        if DEBUG:
+            print(f"[DEBUG forward_with_features] after proj: {pooled.shape}")
+        
+        logits = self.classifier(pooled)
+        if DEBUG:
+            print(f"[DEBUG forward_with_features] logits: {logits.shape}, pool_in: {pooled.shape}")
+            print(f"[DEBUG forward_with_features] classifier: {self.classifier}")
+        
+        assert logits.dim() == 2 and logits.shape[0] == batch_size, \
+            f"Expected logits shape ({batch_size}, num_classes), got {logits.shape}, pooled: {pooled.shape}"
+        
+        if logits.dim() != 2:
+            raise ValueError(f"logits is not 2D! shape={logits.shape}")
+        
+        if return_attention:
+            return logits, attn_weights
+        return logits
+    
+    def forward(self, x, return_attention=False):
+        batch_size, num_crops = x.shape[:2]
+        
+        features = self.extract_features(x)
+        
+        if self.use_mammoth:
+            x = self.mammoth(features)
+            x = x.mean(dim=1)
+            x = x.unsqueeze(1).expand(-1, num_crops, -1)
+        else:
+            x = features
+        
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
-        # Flatten heads and project
         pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
         
@@ -110,13 +201,14 @@ class AttentionMILModel(nn.Module):
 
 
 class MultiCropDataset(Dataset):
-    """Cycle-based crop extraction with 9 neighbors for MIL"""
+    """Cycle-based crop extraction with configurable neighborhood for MIL"""
     
-    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0):
+    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0, neighborhood=5):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
         self.grid_size = grid_size
+        self.neighborhood = neighborhood
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
@@ -129,32 +221,23 @@ class MultiCropDataset(Dataset):
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
-        # Only positions with full neighborhood (skip edges)
-        # grid_size >= 12: 5x5 (skip 2 rings), grid_size >= 14: 7x7 (skip 3 rings)
-        ring_margin = 2 if grid_size < 14 else 3
+        # Only positions with full neighborhood (margin = neighborhood radius)
+        radius = neighborhood // 2  # 3→1, 5→2, 7→3, 9→4
         positions = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * stride
                 top = i * stride
                 if left + crop_size <= w and top + crop_size <= h:
-                    # Need N strides of space for N x N neighborhood
-                    can_left = left - ring_margin * stride >= 0
-                    can_right = left + ring_margin * stride + crop_size <= w
-                    can_top = top - ring_margin * stride >= 0
-                    can_bottom = top + ring_margin * stride + crop_size <= h
+                    can_left = left - radius * stride >= 0
+                    can_right = left + radius * stride + crop_size <= w
+                    can_top = top - radius * stride >= 0
+                    can_bottom = top + radius * stride + crop_size <= h
                     if can_left and can_right and can_top and can_bottom:
                         positions.append((left, top))
         
-        # Determine neighborhood size: 5x5 (25) or 7x7 (49)
-        # grid_size >= 12: 5x5 (25 crops), skip 2 edge rings
-        # grid_size >= 14: 7x7 (49 crops), skip 3 edge rings
-        if grid_size >= 14:
-            self.num_neighbors = 48  # 7x7 = 49 crops, skip 3 rings
-        else:
-            self.num_neighbors = 24  # 5x5 = 25 crops, skip 2 rings
-        
         self.positions = positions
+        self.num_neighbors = neighborhood * neighborhood - 1  # Total - center crop
         
         if augment:
             self.transform = A.Compose([
@@ -171,7 +254,7 @@ class MultiCropDataset(Dataset):
                 ToTensorV2(),
             ], seed=seed)
         
-        neighborhood_name = "7x7" if self.grid_size >= 14 else "5x5"
+        neighborhood_name = f"{self.neighborhood}x{self.neighborhood}"
         print(f"MIL: {len(positions)} positions, {neighborhood_name} neighborhood ({self.num_neighbors + 1} crops/image), augment={augment}")
     
     def set_epoch(self, epoch):
@@ -217,13 +300,8 @@ class MultiCropDataset(Dataset):
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
         else:
-            # Determine neighborhood size (5x5 or 7x7)
-            if self.grid_size >= 14:
-                # 7x7 neighborhood (skip 3 edge rings)
-                radius = 3
-            else:
-                # 5x5 neighborhood (skip 2 edge rings)
-                radius = 2
+            # Use neighborhood parameter (3, 5, 7, 9)
+            radius = self.neighborhood // 2
             
             jitter_range = self.stride // 4
             crops_list = []

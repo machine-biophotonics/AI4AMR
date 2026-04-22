@@ -67,7 +67,10 @@ parser.add_argument('--warmup_epochs', type=int, default=6)
 parser.add_argument('--patience', type=int, default=10)
 parser.add_argument('--case', type=int, default=None, help='Case number: 1, 2, 3, or 4')
 parser.add_argument('--run_subset', type=int, default=0, help='Subset run: 0, 1, 2, or 3')
-parser.add_argument('--run_all', action='store_true', help='Run all 16 experiments')
+parser.add_argument('--run_all', action='store_true', help='Run all 4 runs for a case')
+parser.add_argument('--val_plate', type=str, default='P5', help='Validation plate (P1-P6)')
+parser.add_argument('--test_plate', type=str, default='P6', help='Test plate (P1-P6)')
+parser.add_argument('--all_experiments', action='store_true', help='Run all 6 val/test experiments')
 args = parser.parse_args()
 
 # Constants
@@ -417,13 +420,6 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
             'best_val_acc': best_val_acc,
         }, os.path.join(output_dir, 'last_model.pth'))
         
-        if epoch % 5 == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }, os.path.join(output_dir, f'checkpoint_e{epoch}.pth'))
-        
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save({
@@ -437,35 +433,13 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
                 'best_val_acc': best_val_acc,
             }, os.path.join(output_dir, 'best_model.pth'))
         
-        if balanced_acc > best_val_balanced_acc + 0.001:
-            best_val_balanced_acc = balanced_acc
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'best_val_acc': best_val_acc,
-                'best_val_balanced_acc': best_val_balanced_acc,
-            }, os.path.join(output_dir, 'best_model_balanced.pth'))
-        
-        if val_auc > best_val_auc + 0.001:
-            best_val_auc = val_auc
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'best_val_acc': best_val_acc,
-                'best_val_balanced_acc': best_val_balanced_acc,
-                'best_val_auc': best_val_auc,
-            }, os.path.join(output_dir, 'best_model_auc.pth'))
-        
-        if avg_val_loss < best_val_loss - 0.001:
-            best_val_loss = avg_val_loss
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'best_val_acc': best_val_acc,
-                'best_val_balanced_acc': best_val_balanced_acc,
-                'best_val_auc': best_val_auc,
-                'best_val_loss': best_val_loss,
-            }, os.path.join(output_dir, 'best_model_loss.pth'))
+            }, os.path.join(output_dir, 'best_model.pth'))
     
     checkpoint = torch.load(os.path.join(output_dir, 'best_model.pth'), map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -491,168 +465,151 @@ def train_and_evaluate(train_paths, train_labels, val_paths, val_labels, test_pa
     return test_acc
 
 
-def main():
-    all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+def run_experiment(case_num, run_idx, val_plate, test_plate, all_train_plates):
+    """Run experiment with case_num and run_idx"""
+    exp_name = f"val{val_plate}test{test_plate}"
     
-    VAL_PLATE = 'P5'
-    TEST_PLATE = 'P6'
+    if case_num == 1:
+        combo_name = all_train_plates[run_idx]
+    elif case_num == 2:
+        idx = run_idx
+        combo_name = f"{all_train_plates[idx]}{all_train_plates[(idx+1)%4]}"
+    elif case_num == 3:
+        idx = run_idx
+        combo_name = f"{all_train_plates[idx]}{all_train_plates[(idx+1)%4]}{all_train_plates[(idx+2)%4]}"
+    else:
+        combo_name = ''.join(all_train_plates)
     
-    val_paths = get_image_paths_for_plate(VAL_PLATE)
+    output_dir = os.path.join(SCRIPT_DIR, exp_name, f'case_{case_num}_{combo_name}', f'run_{run_idx}')
+    
+    if os.path.exists(os.path.join(output_dir, 'best_model.pth')):
+        print(f"Skipping {combo_name} {exp_name} run_{run_idx} - already completed")
+        return None
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    val_paths = get_image_paths_for_plate(val_plate)
     val_labels = [gene_to_idx[get_gene_from_path(p)] for p in val_paths]
     
-    test_paths = get_image_paths_for_plate(TEST_PLATE)
+    test_paths = get_image_paths_for_plate(test_plate)
     test_labels = [gene_to_idx[get_gene_from_path(p)] for p in test_paths]
     
-    print(f"Validation: {len(val_paths)}, Test: {len(test_paths)}")
+    if case_num == 1:
+        target_total = 2016
+        train_plates_list = [all_train_plates[run_idx]]
+    elif case_num == 2:
+        target_total = 1920
+        idx = run_idx
+        train_plates_list = [all_train_plates[idx], all_train_plates[(idx+1)%4]]
+    elif case_num == 3:
+        target_total = 2016
+        idx = run_idx
+        train_plates_list = [all_train_plates[idx], all_train_plates[(idx+1)%4], all_train_plates[(idx+2)%4]]
+    else:
+        target_total = 1920
+        train_plates_list = all_train_plates
     
-    case_configs = {
-        1: [['P1'], ['P2'], ['P3'], ['P4']],
-        2: [['P1', 'P2'], ['P2', 'P3'], ['P3', 'P4'], ['P4', 'P1']],
-        3: [['P1', 'P2', 'P3'], ['P2', 'P3', 'P4'], ['P3', 'P4', 'P1'], ['P4', 'P1', 'P2']],
-        4: [['P1', 'P2', 'P3', 'P4'], ['P1', 'P2', 'P3', 'P4'], ['P1', 'P2', 'P3', 'P4'], ['P1', 'P2', 'P3', 'P4']],
-    }
+    n_plates = len(train_plates_list)
+    images_per_plate = target_total // n_plates
     
-    plate_combo_names = {
-        1: ['P1', 'P2', 'P3', 'P4'],
-        2: ['P1P2', 'P2P3', 'P3P4', 'P4P1'],
-        3: ['P1P2P3', 'P2P3P4', 'P3P4P1', 'P4P1P2'],
-        4: ['P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4'],
-    }
+    train_paths = []
+    for plate in train_plates_list:
+        paths = get_image_paths_for_plate(plate)
+        
+        gene_to_paths = {}
+        for p in paths:
+            gene = get_gene_from_path(p)
+            gene_to_paths.setdefault(gene, []).append(p)
+        
+        per_class = images_per_plate // num_classes
+        
+        for gene in sorted(gene_to_paths.keys()):
+            gene_paths = gene_to_paths[gene]
+            gene_paths.sort()
+            start_idx = run_idx if case_num == 4 else 0
+            for i in range(per_class):
+                img_idx = (start_idx + i) % len(gene_paths)
+                train_paths.append(gene_paths[img_idx])
     
-    def run_experiment(case_num, subset_idx):
-        train_plates = case_configs[case_num][subset_idx]
-        combo_name = plate_combo_names[case_num][subset_idx]
-        
-        output_dir = os.path.join(SCRIPT_DIR, f'case_{case_num}_{combo_name}', f'run_{subset_idx}')
-        
-        if os.path.exists(os.path.join(output_dir, 'best_model.pth')):
-            print(f"Skipping case {case_num} {combo_name} run_{subset_idx} - already completed")
-            return None
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        if case_num == 1:
-            target_total = 2016
-        elif case_num == 2:
-            target_total = 1920
-        elif case_num == 3:
-            target_total = 2016
-        else:
-            target_total = 1920
-        
-        n_plates = len(train_plates)
-        images_per_plate = target_total // n_plates
-        
-        train_paths = []
-        for plate in train_plates:
-            paths = get_image_paths_for_plate(plate)
-            
-            gene_to_paths = {}
-            for p in paths:
-                gene = get_gene_from_path(p)
-                gene_to_paths.setdefault(gene, []).append(p)
-            
-            per_class = images_per_plate // num_classes
-            
-            for gene in sorted(gene_to_paths.keys()):
-                gene_paths = gene_to_paths[gene]
-                gene_paths.sort()
-                
-                if case_num == 4:
-                    start_idx = subset_idx
-                    for i in range(per_class):
-                        img_idx = (start_idx + i) % len(gene_paths)
-                        train_paths.append(gene_paths[img_idx])
-                else:
-                    train_paths.extend(gene_paths[:per_class])
-        
-        train_labels = [gene_to_idx[get_gene_from_path(p)] for p in train_paths]
-        
-        class_dist = Counter(train_labels)
-        print(f"Case {case_num} {combo_name} run_{subset_idx}: {len(train_paths)} images, min={min(class_dist.values())}, max={max(class_dist.values())}")
-        
-        test_acc = train_and_evaluate(
-            train_paths, train_labels,
-            val_paths, val_labels,
-            test_paths, test_labels,
-            output_dir
-        )
-        
-        return test_acc
+    train_labels = [gene_to_idx[get_gene_from_path(p)] for p in train_paths]
     
-    def run_all_experiments():
-        all_results = {}
+    class_dist = Counter(train_labels)
+    print(f"Case {case_num} {combo_name} {exp_name} run_{run_idx}: {len(train_paths)} images, min={min(class_dist.values())}, max={max(class_dist.values())}")
+    
+    test_acc = train_and_evaluate(
+        train_paths, train_labels,
+        val_paths, val_labels,
+        test_paths, test_labels,
+        output_dir
+    )
+    
+    return test_acc
+
+
+def run_all_val_test_experiments():
+    """Run all 6 val/test experiment combinations"""
+    val_test_combos = [
+        ('P1', 'P2'),
+        ('P2', 'P3'),
+        ('P3', 'P4'),
+        ('P4', 'P5'),
+        ('P5', 'P6'),
+        ('P6', 'P1'),
+    ]
+    
+    for val_plate, test_plate in val_test_combos:
+        print(f"\n{'='*60}")
+        print(f"Running experiment: val{val_plate} -> test{test_plate}")
+        print(f"{'='*60}")
+        
+        all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+        train_plates = [p for p in all_plates if p != val_plate and p != test_plate]
+        print(f"Training plates: {''.join(train_plates)}")
         
         for case_num in [1, 2, 3, 4]:
-            print(f"\n{'='*60}")
-            print(f"CASE {case_num}: {len(case_configs[case_num])} runs")
-            print(f"{'='*60}")
+            if case_num == 4:
+                num_runs = 4
+            else:
+                num_runs = 4
             
-            case_results = []
-            for subset_idx in range(4):
-                print(f"\n--- Running subset {subset_idx} ---")
-                test_acc = run_experiment(case_num, subset_idx)
-                case_results.append(test_acc)
-            
-            case_results = [r for r in case_results if r is not None]
-            if case_results:
-                mean_acc = np.mean(case_results)
-                std_acc = np.std(case_results)
-                all_results[case_num] = {'mean': mean_acc, 'std': std_acc, 'runs': case_results}
-                print(f"\nCase {case_num} Results: {mean_acc:.2f}% ± {std_acc:.2f}%")
-        
-        print("\n" + "="*60)
-        print("FINAL RESULTS WITH STD")
-        print("="*60)
-        
-        rows = []
-        for case_num, data in all_results.items():
-            rows.append({
-                'case': case_num,
-                'n_plates': case_num,
-                'mean_accuracy': data['mean'],
-                'std_accuracy': data['std'],
-                'run_0': data['runs'][0] if len(data['runs']) > 0 else None,
-                'run_1': data['runs'][1] if len(data['runs']) > 1 else None,
-                'run_2': data['runs'][2] if len(data['runs']) > 2 else None,
-                'run_3': data['runs'][3] if len(data['runs']) > 3 else None,
-            })
-        
-        df = pd.DataFrame(rows)
-        df.to_csv(os.path.join(SCRIPT_DIR, 'diversity_results_with_std.csv'), index=False)
-        print(df)
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        cases = list(all_results.keys())
-        means = [all_results[c]['mean'] for c in cases]
-        stds = [all_results[c]['std'] for c in cases]
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
-        
-        bars = ax.bar(range(len(cases)), means, yerr=stds, color=colors[:len(cases)], alpha=0.8, capsize=5)
-        
-        ax.set_xlabel('Number of Training Plates', fontsize=12)
-        ax.set_ylabel('Test Accuracy (%)', fontsize=12)
-        ax.set_title('Test Accuracy vs Plate Diversity (Mean ± Std over 4 runs)', fontsize=14)
-        ax.set_xticks(range(len(cases)))
-        ax.set_xticklabels([f'{c}' for c in cases])
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        for i, (bar, mean, std) in enumerate(zip(bars, means, stds)):
-            ax.text(bar.get_x() + bar.get_width()/2., mean + std + 0.5, 
-                   f'{mean:.1f}±{std:.1f}', ha='center', fontsize=9)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(SCRIPT_DIR, 'diversity_plot_with_std.png'), dpi=150)
+            for run_idx in range(num_runs):
+                exp_name = f"val{val_plate}test{test_plate}"
+                
+                if case_num == 1:
+                    combo_name = train_plates[run_idx]
+                elif case_num == 2:
+                    combo_name = f"{train_plates[run_idx]}{train_plates[(run_idx+1)%4]}"
+                elif case_num == 3:
+                    combo_name = f"{train_plates[run_idx]}{train_plates[(run_idx+1)%4]}{train_plates[(run_idx+2)%4]}"
+                else:
+                    combo_name = ''.join(train_plates)
+                
+                check_dir = os.path.join(SCRIPT_DIR, exp_name, f'case_{case_num}_{combo_name}', f'run_{run_idx}')
+                model_file = os.path.join(check_dir, 'best_model.pth')
+                
+                if os.path.exists(model_file):
+                    print(f"SKIP: case_{case_num}_{combo_name} run_{run_idx} - already completed")
+                    continue
+                
+                print(f"Running case_{case_num}_{combo_name} run_{run_idx}...")
+                try:
+                    run_experiment(case_num, run_idx, val_plate, test_plate, train_plates)
+                except Exception as e:
+                    print(f"ERROR: case_{case_num}_{combo_name} run_{run_idx}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
     
-    if args.run_all:
-        run_all_experiments()
-    elif args.case is not None:
-        if args.run_subset not in [0, 1, 2, 3]:
-            raise ValueError("--run_subset must be 0, 1, 2, or 3")
-        run_experiment(args.case, args.run_subset)
+    print("\n" + "="*60)
+    print("All experiments completed!")
+    print("="*60)
+
+
+def main():
+    if args.all_experiments:
+        run_all_val_test_experiments()
     else:
-        print("Please specify --case (1-4) and --run_subset (0-3), or use --run_all to run all 16 experiments")
+        print("Please use --all_experiments to run all 6 val/test experiments")
 
 
 if __name__ == '__main__':

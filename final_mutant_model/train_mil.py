@@ -50,8 +50,9 @@ parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
-parser.add_argument('--grid_size', type=int, default=12, help='Grid size: >=12 for 5x5, >=14 for 7x7 neighborhood')
+parser.add_argument('--grid_size', type=int, default=12, help='Grid size for sampling positions (fixed)')
 parser.add_argument('--crop_size', type=int, default=224, help='Crop size for each patch')
+parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9], help='Neighborhood size: 3 (3x3), 5 (5x5), 7 (7x7), 9 (9x9)')
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
@@ -122,11 +123,54 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
+DEBUG = os.environ.get('DEBUG_PSEMIX', '0') == '1'
+
 def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
+
+def soft_label_loss(logits: torch.Tensor, labels_a: torch.Tensor, labels_b: torch.Tensor, 
+                 mix_ratios: torch.Tensor, weights: torch.Tensor, alpha: float = 0.25, gamma: float = 2.0) -> torch.Tensor:
+    """
+    Soft label loss for PseMix.
+    loss = lambda * focal_loss(pred, label_a) + (1 - lambda) * focal_loss(pred, label_b)
+    """
+    if DEBUG:
+        print(f"[DEBUG soft_label_loss] logits: {logits.shape}, labels_a: {labels_a.shape if hasattr(labels_a, 'shape') else type(labels_a)}")
+    
+    if isinstance(labels_a, torch.Tensor):
+        labels_a = labels_a.clone().view(-1).long().to(logits.device)
+    if isinstance(labels_b, torch.Tensor):
+        labels_b = labels_b.clone().view(-1).long().to(logits.device)
+    if isinstance(mix_ratios, torch.Tensor):
+        mix_ratios = mix_ratios.clone().view(-1).float().to(logits.device)
+    
+    if DEBUG:
+        print(f"[DEBUG soft_label_loss] after prep - labels_a: {labels_a}, labels_b: {labels_b}")
+    
+    ce_loss_a = nn.functional.cross_entropy(logits, labels_a, reduction='none')
+    ce_loss_b = nn.functional.cross_entropy(logits, labels_b, reduction='none')
+    
+    pt_a = torch.exp(-ce_loss_a)
+    pt_b = torch.exp(-ce_loss_b)
+    focal_a = alpha * (1 - pt_a) ** gamma * ce_loss_a
+    focal_b = alpha * (1 - pt_b) ** gamma * ce_loss_b
+    
+    weights_a = weights[labels_a]
+    weights_b = weights[labels_b]
+    
+    loss_a = (focal_a * weights_a).sum() / (weights_a.sum() + 1e-8)
+    loss_b = (focal_b * weights_b).sum() / (weights_b.sum() + 1e-8)
+    
+    lam = mix_ratios.mean().clamp(0, 1)
+    loss = lam * loss_a + (1 - lam) * loss_b
+    
+    if DEBUG:
+        print(f"[DEBUG soft_label_loss] loss: {loss.item():.4f}")
+    
+    return loss
 
 def attention_entropy_loss(attn_weights):
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
@@ -184,12 +228,15 @@ def train_single_fold(test_plate):
     
     train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, 
                                   crop_size=args.crop_size, grid_size=args.grid_size,
+                                  neighborhood=args.neighborhood,
                                   augment=True, seed=SEED)
     val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps,
                                   crop_size=args.crop_size, grid_size=args.grid_size,
+                                  neighborhood=args.neighborhood,
                                   augment=False, seed=SEED)
     test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps,
                                   crop_size=args.crop_size, grid_size=args.grid_size,
+                                  neighborhood=args.neighborhood,
                                   augment=False, seed=SEED)
     
     train_dataset.set_epoch(0)
@@ -208,19 +255,11 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    # Calculate crops per image based on grid_size
-    # Note: More rings = fewer valid center positions
-    if args.grid_size >= 16:
-        crops_per_image = 49  # 7x7 neighborhood with 3 rings margin
-        neighborhood = "7x7"
-    elif args.grid_size >= 14:
-        crops_per_image = 49  # 7x7 neighborhood with 3 rings margin
-        neighborhood = "7x7"
-    else:
-        crops_per_image = 25  # 5x5 neighborhood with 2 rings margin
-        neighborhood = "5x5"
+    # Calculate crops per image based on neighborhood
+    crops_per_image = args.neighborhood * args.neighborhood
+    neighborhood_label = f"{args.neighborhood}x{args.neighborhood}"
     
-    print(f"Crops per image: {crops_per_image} ({neighborhood} neighborhood)")
+    print(f"Crops per image: {crops_per_image} ({neighborhood_label} neighborhood)")
     if args.use_psemix:
         print(f"PseMix: {args.psemix_mode}, n_pseb={args.psemix_n_pseb}, n_pheno={args.psemix_n_pheno}")
         bag_mixer = create_bag_mixer(
@@ -297,6 +336,8 @@ dropout_ratio=args.bag_mix_dropout,
     best_val_loss = float('inf')
     
     print("Training...")
+    use_psemix = getattr(args, 'use_psemix', False)
+    
     for epoch in range(start_epoch, args.epochs):
         epoch_start = time.time()
         train_dataset.set_epoch(epoch)
@@ -306,20 +347,43 @@ dropout_ratio=args.bag_mix_dropout,
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
             
-            if args.bag_mix != 'none' and random.random() < args.bag_mix_prob:
-                batch_size = images.shape[0]
-                aug_images = []
-                for i in range(batch_size):
-                    aug_crops = bag_mixer(images[i])
-                    aug_images.append(aug_crops)
-                images = torch.stack(aug_images)
+            if use_psemix and args.bag_mix_prob > 0 and random.random() < args.bag_mix_prob:
+                with torch.no_grad():
+                    features = model.extract_features(images)
+                
+                mixed_features, labels_a, labels_b, mix_ratios = bag_mixer.apply_psemix_to_batch(features, labels)
+                
+                if DEBUG:
+                    print(f"[DEBUG LOOP] features: {features.shape}, mixed: {mixed_features.shape}")
+                    print(f"[DEBUG LOOP] labels_a: {labels_a.shape}, labels_b: {labels_b.shape}")
+                
+                optimizer.zero_grad()
+                ret = model.forward_with_features(mixed_features, return_attention=False)
+                if isinstance(ret, tuple):
+                    outputs, attn_w = ret
+                else:
+                    outputs = ret
+                
+                if DEBUG:
+                    print(f"[DEBUG LOOP] type(ret)={type(ret)}, outputs.shape={outputs.shape}")
+                
+                main_loss = soft_label_loss(outputs, labels_a, labels_b, mix_ratios, class_weights)
+            else:
+                if args.bag_mix != 'none' and random.random() < args.bag_mix_prob:
+                    batch_size = images.shape[0]
+                    aug_images = []
+                    for i in range(batch_size):
+                        aug_crops = bag_mixer(images[i])
+                        aug_images.append(aug_crops)
+                    images = torch.stack(aug_images)
+                
+                optimizer.zero_grad()
+                
+                outputs, attn_weights = model(images, return_attention=True)
+                
+                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
             
-            optimizer.zero_grad()
-            
-            outputs, attn_weights = model(images, return_attention=True)
-            
-            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
-            loss = main_loss  # No entropy loss
+            loss = main_loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
