@@ -1,5 +1,8 @@
 """
-MIL with cycle-based crop extraction + improvements
+MIL with 4 center positions -> 12 groups (36 crops total)
+Each epoch: use 4 different center positions, cycling through them
+Each center: 3 groups x 3 crops = 9 crops
+Total per image: 4 centers x 3 groups = 12 groups
 """
 
 import torch
@@ -9,12 +12,9 @@ import random
 import numpy as np
 from PIL import Image
 import albumentations as A
-from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
 import re
 import os
-
-DEBUG = os.environ.get('DEBUG_PSEMIX', '0') == '1'
 
 
 class AttentionPooling(nn.Module):
@@ -23,30 +23,22 @@ class AttentionPooling(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         
-        # Gated attention: V and U learn what to attend to
         self.V = nn.Linear(in_features, in_features // 4)
         self.U = nn.Linear(in_features, in_features // 4)
         self.w = nn.Linear(in_features // 4, num_heads)
     
     def forward(self, x, temperature=0.5):
-        # Gated attention: tanh(V) * sigmoid(U)
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
-        attn_weights = self.w(A)  # (B, N, H)
-        
-        # Temperature scaling to prevent attention collapse
+        attn_weights = self.w(A)
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
-        
-        # Weighted sum: (B, H, N) x (B, N, F) -> (B, H, F)
-        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
-        
+        pooled = torch.einsum("bnh,bnf->bhf", attn_weights, x)
         return pooled, attn_weights
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, mammoth=None):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5):
         super().__init__()
-        # Use EfficientNet features with proper flattening
-        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        base_model = torchvision.models.efficientnet_b0(weights="IMAGENET1K_V1")
         self.backbone = nn.Sequential(
             base_model.features,
             nn.AdaptiveAvgPool2d(1),
@@ -54,143 +46,21 @@ class AttentionMILModel(nn.Module):
         )
         feature_dim = 1280
         
-        # MAMMOTH: Mixture of Mini Experts (optional bottleneck)
-        # mammMOTH as drop-in replacement for linear layer (1280 -> 512)
-        self.use_mammoth = mammoth is not None
-        if self.use_mammoth:
-            self.mammoth = mammoth
-            self.attention_in_dim = 512  # mammMOTH output dim (passed as embed_dim=512)
-        else:
-            # Standard linear projection when not using mammMOTH
-            self.patch_embed = nn.Linear(feature_dim, feature_dim)
-            self.attention_in_dim = feature_dim  # 1280
-        
-        # Gated attention pooling
-        self.attention_pool = AttentionPooling(self.attention_in_dim, num_heads)
+        self.attention_pool = AttentionPooling(feature_dim, num_heads)
         self.attention_temp = attention_temp
-        
-        # Multi-head projection - output dim matches attention_in_dim for classifier input
-        pooled_dim = self.attention_in_dim * num_heads
-        self.head_proj = nn.Linear(pooled_dim, pooled_dim)
+        self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
-            nn.Linear(pooled_dim, num_classes)
+            nn.Linear(feature_dim, num_classes)
         )
-    
-    def extract_features(self, x):
-        """Extract features from input images using the backbone."""
-        batch_size, num_crops = x.shape[:2]
-        
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)  # (B, N, 1280)
-        
-        if not self.use_mammoth:
-            x = self.patch_embed(x)
-        
-        return x
-
-
-class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, mammoth=None):
-        super().__init__()
-        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
-        self.backbone = nn.Sequential(
-            base_model.features,
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
-        feature_dim = 1280
-        
-        self.use_mammoth = mammoth is not None
-        if self.use_mammoth:
-            self.mammoth = mammoth
-            self.attention_in_dim = 512
-        else:
-            self.patch_embed = nn.Linear(feature_dim, feature_dim)
-            self.attention_in_dim = feature_dim
-        
-        self.attention_pool = AttentionPooling(self.attention_in_dim, num_heads)
-        self.attention_temp = attention_temp
-        
-        pooled_dim = self.attention_in_dim * num_heads
-        self.head_proj = nn.Linear(pooled_dim, pooled_dim)
-        
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=0.2),
-            nn.Linear(pooled_dim, num_classes)
-        )
-    
-    def extract_features(self, x):
-        batch_size, num_crops = x.shape[:2]
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
-        if not self.use_mammoth:
-            x = self.patch_embed(x)
-        return x
-    
-    def forward_with_features(self, features: torch.Tensor, return_attention: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        batch_size, num_crops, feat_dim = features.shape
-        x = features
-        
-        if DEBUG:
-            print(f"[DEBUG forward_with_features] IN: features={features.shape}, mammoth={self.use_mammoth}")
-        
-        if self.use_mammoth:
-            x = self.mammoth(x)
-            if DEBUG:
-                print(f"[DEBUG forward_with_features] after mammoth: {x.shape}")
-            assert x.shape[-1] == self.attention_in_dim, \
-                f"Mammoth output dim {x.shape[-1]} != expected {self.attention_in_dim}. Check keep_slots=False in mammoth wrapper."
-            x = x.mean(dim=1)
-            if DEBUG:
-                print(f"[DEBUG forward_with_features] after mean: {x.shape}")
-            x = x.unsqueeze(1).expand(-1, num_crops, -1)
-            if DEBUG:
-                print(f"[DEBUG forward_with_features] after expand: {x.shape}")
-        
-        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
-        if DEBUG:
-            print(f"[DEBUG forward_with_features] pooled: {pooled.shape}")
-        
-        pooled = pooled.reshape(batch_size, -1)
-        if DEBUG:
-            print(f"[DEBUG forward_with_features] pooled flat: {pooled.shape}")
-        
-        pooled = self.head_proj(pooled)
-        if DEBUG:
-            print(f"[DEBUG forward_with_features] after proj: {pooled.shape}")
-        
-        logits = self.classifier(pooled)
-        if DEBUG:
-            print(f"[DEBUG forward_with_features] logits: {logits.shape}, pool_in: {pooled.shape}")
-            print(f"[DEBUG forward_with_features] classifier: {self.classifier}")
-        
-        assert logits.dim() == 2 and logits.shape[0] == batch_size, \
-            f"Expected logits shape ({batch_size}, num_classes), got {logits.shape}, pooled: {pooled.shape}"
-        
-        if logits.dim() != 2:
-            raise ValueError(f"logits is not 2D! shape={logits.shape}")
-        
-        if return_attention:
-            return logits, attn_weights
-        return logits
     
     def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
-        features = self.extract_features(x)
-        
-        if self.use_mammoth:
-            x = self.mammoth(features)
-            assert x.shape[-1] == self.attention_in_dim, \
-                f"Mammoth output dim {x.shape[-1]} != expected {self.attention_in_dim}. Check keep_slots=False in mammoth wrapper."
-            x = x.mean(dim=1)
-            x = x.unsqueeze(1).expand(-1, num_crops, -1)
-        else:
-            x = features
+        x = x.view(batch_size * num_crops, *x.shape[2:])
+        x = self.backbone(x)
+        x = x.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
@@ -205,140 +75,108 @@ class AttentionMILModel(nn.Module):
 
 
 class MultiCropDataset(Dataset):
-    """Cycle-based crop extraction with configurable neighborhood for MIL"""
+    """4 center positions -> 12 groups (36 crops total)"""
     
-    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, neighborhood=5, augment=True, seed=42, epoch=0, single_crop=False):
+    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, num_centers=4, augment=False, seed=42, epoch=0):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
         self.grid_size = grid_size
-        self.neighborhood = neighborhood
+        self.num_centers = num_centers
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
-        self.single_crop_mode = single_crop  # Use only center crop
         
-        sample_img = Image.open(image_paths[0]).convert('RGB')
+        sample_img = Image.open(image_paths[0]).convert("L")
         w, h = sample_img.size
         self.image_size = w
         
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
-        # Only positions with full neighborhood (margin = neighborhood radius)
-        radius = neighborhood // 2
         positions = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * stride
                 top = i * stride
                 if left + crop_size <= w and top + crop_size <= h:
-                    can_left = left - radius * stride >= 0
-                    can_right = left + radius * stride + crop_size <= w
-                    can_top = top - radius * stride >= 0
-                    can_bottom = top + radius * stride + crop_size <= h
+                    can_left = left - stride >= 0
+                    can_right = left + stride + crop_size <= w
+                    can_top = top - stride >= 0
+                    can_bottom = top + stride + crop_size <= h
                     if can_left and can_right and can_top and can_bottom:
                         positions.append((left, top))
         
         self.positions = positions
-        self.num_neighbors = neighborhood * neighborhood - 1
         
-        if augment:
-            self.transform = A.Compose([
-                A.RandomRotate90(p=0.5),
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.5, p=0.3),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                ToTensorV2(),
-            ], seed=seed)
-        else:
-            self.transform = A.Compose([
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                ToTensorV2(),
-            ], seed=seed)
+        center_left = (w - crop_size) // 2
+        center_top = (h - crop_size) // 2
+        quarter_w = w // 4
+        quarter_h = h // 4
         
-        if self.single_crop_mode:
-            print(f"MIL: {len(positions)} positions, SINGLE CROP mode (center only), augment={augment}")
-        else:
-            neighborhood_name = f"{self.neighborhood}x{self.neighborhood}"
-            print(f"MIL: {len(positions)} positions, {neighborhood_name} neighborhood ({self.num_neighbors + 1} crops/image), augment={augment}")
+        self.center_positions = [
+            (center_left, center_top),
+            (center_left - quarter_w // 2, center_top - quarter_h // 2),
+            (center_left + quarter_w // 2, center_top + quarter_h // 2),
+            (center_left - quarter_w // 2, center_top + quarter_h // 2),
+        ]
+        self.center_positions = [
+            (max(0, min(left, self.image_size - self.crop_size)),
+             max(0, min(top, self.image_size - self.crop_size)))
+            for left, top in self.center_positions
+        ]
+        
+        print(f"MIL: {num_centers} centers x 3 groups = {num_centers * 3} groups per image")
     
     def set_epoch(self, epoch):
         self.epoch = epoch
-        num_pos = len(self.positions)
-        num_images = len(self.image_paths)
         
-        if not self.augment or self.single_crop_mode:
-            # Val/test or single_crop_val: use TRUE image center
-            center_left = (self.image_size - self.crop_size) // 2
-            center_top = (self.image_size - self.crop_size) // 2
-            self.epoch_centers = {i: (center_left, center_top) for i in range(num_images)}
-            return
+        if len(self.positions) == 0:
+            raise ValueError("No positions available for crop extraction!")
         
-        # Train: cycle-based with shuffled positions
-        cycle = epoch // num_pos
-        pos_in_cycle = epoch % num_pos
-        rng = random.Random(self.seed + cycle)
-        shuffled = self.positions.copy()
-        rng.shuffle(shuffled)
-        
-        self.epoch_centers = {}
-        for idx in range(num_images):
-            assigned_idx = (idx + pos_in_cycle) % num_pos
-            self.epoch_centers[idx] = shuffled[assigned_idx]
+        self.epoch_centers = self.center_positions
     
     def __len__(self):
         return len(self.image_paths)
     
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(img_path).convert("L")
         
-        center_left, center_top = self.epoch_centers[idx]
+        all_groups = []
         
-        if self.single_crop_mode:
-            # Single crop mode (center only)
-            crop = image.crop((center_left, center_top, center_left + self.crop_size, center_top + self.crop_size))
-            crop = np.array(crop)
-            crop = self.transform(image=crop)['image']
-            crops = crop.unsqueeze(0)
-        else:
-            # Use neighborhood parameter (1, 3, 5, 7, 9, 11)
-            radius = self.neighborhood // 2
+        for center_idx, (center_left, center_top) in enumerate(self.epoch_centers):
+            crop_positions_3x3 = [
+                (-1, -1), (0, -1), (1, -1),
+                (-1, 0),  (0, 0),  (1, 0),
+                (-1, 1),  (0, 1),  (1, 1)
+            ]
             
-            jitter_range = self.stride // 4
-            crops_list = []
-            for di in range(-radius, radius + 1):
-                for dj in range(-radius, radius + 1):
-                    if self.augment:
-                        jitter_x = random.randint(-jitter_range, jitter_range)
-                        jitter_y = random.randint(-jitter_range, jitter_range)
-                    else:
-                        jitter_x = jitter_y = 0
-                    left = center_left + dj * self.stride + jitter_x
-                    top = center_top + di * self.stride + jitter_y
-                    left = max(0, min(left, self.image_size - self.crop_size))
-                    top = max(0, min(top, self.image_size - self.crop_size))
-                    crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
-                    crop = np.array(crop)
-                    crop = self.transform(image=crop)['image']
-                    crops_list.append(crop)
+            crops_gray = []
+            for di, dj in crop_positions_3x3:
+                left = center_left + dj * self.stride
+                top = center_top + di * self.stride
+                left = max(0, min(left, self.image_size - self.crop_size))
+                top = max(0, min(top, self.image_size - self.crop_size))
+                crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
+                crop_np = np.array(crop, dtype=np.float32) / 255.0
+                crop_np = (crop_np - 0.456) / 0.224
+                crop_tensor = torch.from_numpy(crop_np).unsqueeze(0)
+                crops_gray.append(crop_tensor)
             
-            # Shuffle crop order
-            if self.augment:
-                num_crops = len(crops_list)
-                perm = list(range(num_crops))
-                random.shuffle(perm)
-                crops_list = [crops_list[i] for i in perm]
+            ch_group_1 = torch.cat([crops_gray[0], crops_gray[1], crops_gray[2]], dim=0)
+            ch_group_2 = torch.cat([crops_gray[3], crops_gray[4], crops_gray[5]], dim=0)
+            ch_group_3 = torch.cat([crops_gray[6], crops_gray[7], crops_gray[8]], dim=0)
             
-            crops = torch.stack(crops_list)
+            all_groups.extend([ch_group_1, ch_group_2, ch_group_3])
+        
+        crops = torch.stack(all_groups, dim=0)
         
         return crops, self.labels[idx]
 
 
 def extract_well_from_filename(filename):
-    match = re.search(r'Well(\w\d+)_', filename)
+    match = re.search(r"Well(\w\d+)_", filename)
     return match.group(1) if match else None
 
 
@@ -349,4 +187,4 @@ def get_gene_from_path(img_path, plate_maps):
     well = extract_well_from_filename(filename)
     if plate in plate_maps and well in plate_maps[plate]:
         return plate_maps[plate][well]
-    return 'WT'
+    return "WT"

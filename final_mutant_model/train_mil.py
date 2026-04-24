@@ -30,8 +30,6 @@ from collections import Counter
 import multiprocessing
 
 from mil_model import AttentionMILModel, MultiCropDataset, get_gene_from_path, extract_well_from_filename
-from bag_mix import create_bag_mixer, add_bagmix_args, add_psemix_args
-from mammoth_import import create_mammoth, add_mammoth_args
 
 SEED = 42
 random.seed(SEED)
@@ -48,41 +46,24 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay for optimizer')
-parser.add_argument('--warmup_epochs', type=int, default=5, help='Linear warmup epochs before cosine annealing')
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
-parser.add_argument('--grid_size', type=int, default=12, help='Grid size for sampling positions (default: 12)')
-parser.add_argument('--crop_size', type=int, default=224, help='Crop size for each patch')
-parser.add_argument('--neighborhood', type=int, default=5, choices=[1, 3, 5, 7, 9, 11], 
-                    help='Neighborhood: 1 (1x1=1 crop), 3 (3x3=9), 5 (5x5=25), 7 (7x7=49), 9 (9x9=81), 11 (11x11=121)')
-parser.add_argument('--single_crop_val', action='store_true', default=False, 
-                    help='Use single center crop for validation/testing instead of multi-crop')
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
-parser.add_argument('--checkpoint_type', type=str, default='auc', choices=['auc', 'acc', 'loss'], 
-                    help='Which checkpoint to use for testing: auc (best AUC), acc (best accuracy), loss (lowest loss)')
-parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint file (e.g., checkpoint_epoch_50.pth)')
-parser.add_argument('--resume_epoch', type=int, default=None, help='Resume from specific epoch number')
-parser.add_argument('--num_workers', type=int, default=4, help='Number of data loading workers')
-parser.add_argument('--use_amp', action='store_true', default=True, help='Use automatic mixed precision (AMP)')
-parser.add_argument('--compile_model', action='store_true', default=False, help='Use torch.compile()')
-parser = add_bagmix_args(parser)
-parser = add_psemix_args(parser)
-parser = add_mammoth_args(parser)
 args = parser.parse_args()
 
-NUM_WORKERS = args.num_workers
+# Set num_workers based on OS
+if sys.platform.startswith('win'):
+    NUM_WORKERS = 4  # Try 4 workers on Windows
+else:
+    NUM_WORKERS = 4
 
 SEED = args.seed
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if args.data_root:
@@ -130,54 +111,11 @@ def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-DEBUG = os.environ.get('DEBUG_PSEMIX', '0') == '1'
-
 def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0):
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
-
-def soft_label_loss(logits: torch.Tensor, labels_a: torch.Tensor, labels_b: torch.Tensor, 
-                 mix_ratios: torch.Tensor, weights: torch.Tensor, alpha: float = 0.25, gamma: float = 2.0) -> torch.Tensor:
-    """
-    Soft label loss for PseMix.
-    loss = lambda * focal_loss(pred, label_a) + (1 - lambda) * focal_loss(pred, label_b)
-    """
-    if DEBUG:
-        print(f"[DEBUG soft_label_loss] logits: {logits.shape}, labels_a: {labels_a.shape if hasattr(labels_a, 'shape') else type(labels_a)}")
-    
-    if isinstance(labels_a, torch.Tensor):
-        labels_a = labels_a.clone().view(-1).long().to(logits.device)
-    if isinstance(labels_b, torch.Tensor):
-        labels_b = labels_b.clone().view(-1).long().to(logits.device)
-    if isinstance(mix_ratios, torch.Tensor):
-        mix_ratios = mix_ratios.clone().view(-1).float().to(logits.device)
-    
-    if DEBUG:
-        print(f"[DEBUG soft_label_loss] after prep - labels_a: {labels_a}, labels_b: {labels_b}")
-    
-    ce_loss_a = nn.functional.cross_entropy(logits, labels_a, reduction='none')
-    ce_loss_b = nn.functional.cross_entropy(logits, labels_b, reduction='none')
-    
-    pt_a = torch.exp(-ce_loss_a)
-    pt_b = torch.exp(-ce_loss_b)
-    focal_a = alpha * (1 - pt_a) ** gamma * ce_loss_a
-    focal_b = alpha * (1 - pt_b) ** gamma * ce_loss_b
-    
-    weights_a = weights[labels_a]
-    weights_b = weights[labels_b]
-    
-    loss_a = (focal_a * weights_a).sum() / (weights_a.sum() + 1e-8)
-    loss_b = (focal_b * weights_b).sum() / (weights_b.sum() + 1e-8)
-    
-    lam = mix_ratios.mean().clamp(0, 1)
-    loss = lam * loss_a + (1 - lam) * loss_b
-    
-    if DEBUG:
-        print(f"[DEBUG soft_label_loss] loss: {loss.item():.4f}")
-    
-    return loss
 
 def attention_entropy_loss(attn_weights):
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
@@ -230,23 +168,17 @@ def train_single_fold(test_plate):
     
     class_counts = Counter(train_labels)
     total = len(train_labels)
+
+    for i in range(num_classes):
+        if class_counts[i] == 0:
+            raise ValueError(f"Class {i} has no samples in training set!")
+
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, 
-                                  crop_size=args.crop_size, grid_size=args.grid_size,
-                                  neighborhood=args.neighborhood,
-                                  augment=True, seed=SEED)
-    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps,
-                                  crop_size=args.crop_size, grid_size=args.grid_size,
-                                  neighborhood=args.neighborhood,
-                                  augment=False, seed=SEED, 
-                                  single_crop=args.single_crop_val)
-    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps,
-                                  crop_size=args.crop_size, grid_size=args.grid_size,
-                                  neighborhood=args.neighborhood,
-                                  augment=False, seed=SEED,
-                                  single_crop=args.single_crop_val)
+    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, augment=True, seed=SEED)
+    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, augment=False, seed=SEED)
+    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, augment=False, seed=SEED)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -264,40 +196,9 @@ def train_single_fold(test_plate):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    # Calculate crops per image based on neighborhood
-    crops_per_image = args.neighborhood * args.neighborhood
-    neighborhood_label = f"{args.neighborhood}x{args.neighborhood}"
+    print(f"Crops per image: 9 (center + 3x3 neighbors)")
     
-    print(f"Crops per image: {crops_per_image} ({neighborhood_label} neighborhood)")
-    if args.use_psemix:
-        print(f"PseMix: {args.psemix_mode}, n_pseb={args.psemix_n_pseb}, n_pheno={args.psemix_n_pheno}, min_size={args.psemix_min_size}")
-        bag_mixer = create_bag_mixer(
-            mode=args.psemix_mode,
-            use_psemix=True,
-            n_pseb=args.psemix_n_pseb,
-            n_pheno=args.psemix_n_pheno,
-            alpha=args.psemix_alpha,
-            prob_mixup=args.psemix_prob,
-            min_pseudo_bag_size=args.psemix_min_size
-        )
-    else:
-        print(f"BagMix: {args.bag_mix}")
-        bag_mixer = create_bag_mixer(
-            mode=args.bag_mix,
-            mix_ratio=args.bag_mix_ratio,
-            subset_size=args.bag_mix_subset_size,
-dropout_ratio=args.bag_mix_dropout,
-            alpha=args.bag_mix_alpha
-        )
-    
-    # Create MAMMOTH if enabled
-    mammoth = None
-    if getattr(args, 'use_mammoth', False):
-        # mammMOTH as drop-in replacement for linear layer (1280 -> 512)
-        mammoth = create_mammoth(args, input_dim=1280, embed_dim=512)
-        print(f"Using MAMMOTH: {args.mammoth_num_experts} experts, {args.mammoth_num_slots} slots")
-    
-    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, mammoth=mammoth)
+    model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
@@ -306,42 +207,9 @@ dropout_ratio=args.bag_mix_dropout,
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': args.lr * 0.1},
         {'params': attention_params, 'lr': args.lr}
-    ], weight_decay=args.weight_decay)
+    ], weight_decay=0.01)
     
-    # Linear warmup + Cosine annealing
-    def lr_lambda(epoch):
-        if epoch < args.warmup_epochs:
-            return (epoch + 1) / args.warmup_epochs
-        else:
-            progress = (epoch - args.warmup_epochs) / (args.epochs - args.warmup_epochs)
-            return 0.5 * (1 + np.cos(np.pi * progress))
-    
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-    
-    start_epoch = 0
-    if args.resume:
-        resume_path = os.path.join(OUTPUT_DIR, args.resume)
-        if os.path.exists(resume_path):
-            print(f"Resuming from checkpoint: {args.resume}")
-            checkpoint = torch.load(resume_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            if 'optimizer_state_dict' in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            if 'epoch' in checkpoint:
-                start_epoch = checkpoint['epoch'] + 1
-                print(f"Resuming from epoch {checkpoint['epoch']}")
-        else:
-            print(f"WARNING: Resume checkpoint not found: {resume_path}")
-    
-    if args.resume_epoch:
-        resume_path = os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{args.resume_epoch}.pth')
-        if os.path.exists(resume_path):
-            print(f"Resuming from epoch {args.resume_epoch}")
-            checkpoint = torch.load(resume_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-        else:
-            print(f"WARNING: Resume checkpoint not found: {resume_path}")
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
@@ -354,9 +222,7 @@ dropout_ratio=args.bag_mix_dropout,
     best_val_loss = float('inf')
     
     print("Training...")
-    use_psemix = getattr(args, 'use_psemix', False)
-    
-    for epoch in range(start_epoch, args.epochs):
+    for epoch in range(args.epochs):
         epoch_start = time.time()
         train_dataset.set_epoch(epoch)
         model.train()
@@ -364,44 +230,13 @@ dropout_ratio=args.bag_mix_dropout,
         
         for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
             images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
             
-            if use_psemix and args.bag_mix_prob > 0 and random.random() < args.bag_mix_prob:
-                with torch.no_grad():
-                    features = model.extract_features(images)
-                
-                mixed_features, labels_a, labels_b, mix_ratios = bag_mixer.apply_psemix_to_batch(features, labels)
-                
-                if DEBUG:
-                    print(f"[DEBUG LOOP] features: {features.shape}, mixed: {mixed_features.shape}")
-                    print(f"[DEBUG LOOP] labels_a: {labels_a.shape}, labels_b: {labels_b.shape}")
-                
-                optimizer.zero_grad()
-                ret = model.forward_with_features(mixed_features, return_attention=False)
-                if isinstance(ret, tuple):
-                    outputs, attn_w = ret
-                else:
-                    outputs = ret
-                
-                if DEBUG:
-                    print(f"[DEBUG LOOP] type(ret)={type(ret)}, outputs.shape={outputs.shape}")
-                
-                main_loss = soft_label_loss(outputs, labels_a, labels_b, mix_ratios, class_weights)
-            else:
-                if args.bag_mix != 'none' and random.random() < args.bag_mix_prob:
-                    batch_size = images.shape[0]
-                    aug_images = []
-                    for i in range(batch_size):
-                        aug_crops = bag_mixer(images[i])
-                        aug_images.append(aug_crops)
-                    images = torch.stack(aug_images)
-                
-                optimizer.zero_grad()
-                
-                outputs, attn_weights = model(images, return_attention=True)
-                
-                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+            outputs, attn_weights = model(images, return_attention=True)
             
-            loss = main_loss
+            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+            ent_loss = attention_entropy_loss(attn_weights)
+            loss = main_loss + 0.01 * ent_loss
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -460,25 +295,10 @@ dropout_ratio=args.bag_mix_dropout,
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
         if (epoch + 1) % 10 == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_auc': best_val_auc,
-                'val_acc': best_val_acc,
-                'val_loss': best_val_loss
-            }, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
     
     print("Testing...")
-    if args.checkpoint_type == 'auc':
-        checkpoint_file = 'best_model.pth'
-    elif args.checkpoint_type == 'acc':
-        checkpoint_file = 'best_model_acc.pth'
-    else:  # loss
-        checkpoint_file = 'best_model_loss.pth'
-    
-    print(f"Loading checkpoint: {checkpoint_file}")
-    checkpoint = torch.load(os.path.join(OUTPUT_DIR, checkpoint_file), map_location=device)
+    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
@@ -491,7 +311,7 @@ dropout_ratio=args.bag_mix_dropout,
             _, predicted = outputs.max(1)
             all_preds.extend(predicted.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(labels.numpy())
+            all_labels.extend(labels.cpu().numpy())
     
     test_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
     test_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))

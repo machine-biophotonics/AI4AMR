@@ -28,19 +28,19 @@ Place plate folders (P1-P6) in the project root directory.
 | Model | Backbone | Pooling | Crops | Description |
 |-------|----------|---------|-------|-------------|
 | `final_crispr_model` | EfficientNet-B0 | Attention (3x3) | 9 | 3x3 neighborhood MIL |
-| `final_mutant_model` | EfficientNet-B0 | Gated Multi-head Attention | 25 | 5x5 neighborhood MIL with BagMix/PseMix |
+| `final_mutant_model` | EfficientNet-B0 | Gated Multi-head Attention | 9 | 3x3 neighborhood MIL with BagMix/PseMix |
 | `final_max_model` | EfficientNet-B0 | Configurable (max/mean/gmp/certainty/attention) | 3x3 or 5x5 | Versatile MIL with multiple pooling strategies |
 
 ---
 
 ## Final Mutant Model (Recommended with Data Augmentation)
 
-MIL model with gated multi-head attention pooling and 5x5 neighborhood (25 crops). Supports **BagMix** and **PseMix** data augmentation.
+MIL model with gated multi-head attention pooling and 3x3 neighborhood (9 crops). Supports **BagMix** and **PseMix** data augmentation.
 
 ### Architecture
 - **Backbone**: EfficientNet-B0 (ImageNet pretrained)
 - **Pooling**: Gated Multi-head Attention (4 heads)
-- **Crop Neighborhood**: 5×5 (25 crops)
+- **Crop Neighborhood**: 3×3 (9 crops)
 - **Feature Dimension**: 1280-dim
 
 ### BagMix Data Augmentation
@@ -253,7 +253,7 @@ Each training run saves 4 best models:
 │   ├── predict_all_crops.py        # Prediction script
 │   └── fold_P{1-6}/                # Results per fold
 │
-├── final_mutant_model/             # 5x5 neighborhood MIL with BagMix/PseMix
+├── final_mutant_model/             # 3x3 neighborhood MIL with BagMix/PseMix
 │   ├── train_mil.py               # Training script
 │   ├── mil_model.py                # Model definition
 │   ├── bag_mix.py                  # BagMix & PseMix implementation
