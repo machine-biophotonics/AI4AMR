@@ -32,24 +32,46 @@ HIERARCHY = {
     'parC': 'chromosome segregation', 'parE': 'chromosome organization',
 }
 
-# Trial pathway mapping
+# Trial pathway mapping - user's biological process table
 TRIAL_PATHWAY = {
-    'folP': 'folic acid biosynthetic process', 'folA': 'folic acid biosynthetic process',
-    'ftsZ': 'cell cycle process',
-    'dnaE': 'DNA-templated DNA replication', 'dnaB': 'DNA-templated DNA replication',
-    'secY': 'intracellular transport', 'secA': 'intracellular transport',
-    'rpoB': 'regulation of DNA-templated transcription elongation',
-    'rpoA': 'regulation of DNA-templated transcription elongation',
-    'parE': 'cellular component organization', 'parC': 'cellular component organization',
-    'gyrB': 'cellular component organization', 'gyrA': 'cellular component organization',
-    'lptC': 'lipid transport', 'lptA': 'lipid transport', 'msbA': 'lipid transport',
-    'rplC': 'positive regulation of gene expression', 'rplA': 'positive regulation of gene expression',
-    'rpsA': 'positive regulation of gene expression', 'rpsL': 'positive regulation of gene expression',
-    'murC': 'glycosaminoglycan biosynthetic process', 'murA': 'glycosaminoglycan biosynthetic process',
-    'ftsI': 'glycosaminoglycan biosynthetic process', 'ftsZ': 'glycosaminoglycan biosynthetic process',
-    'mrdA': 'glycosaminoglycan biosynthetic process', 'mrcA': 'glycosaminoglycan biosynthetic process',
-    'mrcB': 'glycosaminoglycan biosynthetic process', 'lpxC': 'glycosaminoglycan biosynthetic process',
-    'lpxA': 'glycosaminoglycan biosynthetic process',
+    # Folic acid biosynthetic process
+    'folP': 'Folic acid biosynthetic process',
+    'folA': 'Folic acid biosynthetic process',
+    # Intracellular protein transport
+    'secY': 'Intracellular protein transport',
+    'secA': 'Intracellular protein transport',
+    # Regulation of DNA-templated transcription elongation
+    'rpoB': 'Regulation of DNA-templated transcription elongation',
+    'rpoA': 'Regulation of DNA-templated transcription elongation',
+    # Cell envelope organization
+    'lptC': 'Cell envelope organization',
+    'lptA': 'Cell envelope organization',
+    'msbA': 'Cell envelope organization',
+    # Division septum assembly
+    'ftsZ': 'Division septum assembly',
+    # Regulation of translational initiation
+    'rplC': 'Regulation of translational initiation',
+    'rplA': 'Regulation of translational initiation',
+    'rpsA': 'Regulation of translational initiation',
+    'rpsL': 'Regulation of translational initiation',
+    # Aminoglycan biosynthetic process
+    'murC': 'Aminoglycan biosynthetic process',
+    'murA': 'Aminoglycan biosynthetic process',
+    'mrcB': 'Aminoglycan biosynthetic process',
+    # Regulation of cell shape
+    'mrdA': 'Regulation of cell shape',
+    'mrcA': 'Regulation of cell shape',
+    'ftsI': 'Regulation of cell shape',
+    # Lipid A biosynthetic process
+    'lpxC': 'Lipid A biosynthetic process',
+    'lpxA': 'Lipid A biosynthetic process',
+    # Chromosome organization
+    'gyrB': 'Chromosome organization',
+    'gyrA': 'Chromosome organization',
+    'dnaB': 'Chromosome organization',
+    'parE': 'Chromosome organization',
+    'parC': 'Chromosome organization',
+    'dnaE': 'Chromosome organization',
 }
 
 FAMILY = {

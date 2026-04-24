@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Predict all 144 crops for each test image in plate_fold_increasing experiment.
-Runs predictions for all 16 folds (4 n_plates × 4 runs).
-Fixed test plate: P6
+Runs predictions for all 6 val/test experiments with their respective test plates.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
 import argparse
@@ -29,81 +29,62 @@ with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
     PLATE_WELL_ID: dict = json.load(f)
 
 
-def get_folds_to_run(args) -> list[tuple[str, str]]:
-    """Get folds to run based on arguments"""
-    # Create experiment name
-    exp_name = f"val{args.val_plate}{args.test_plate}"
-    
-    # Case directories mapping (base names without experiment suffix)
-    case_run_mapping = {
-        1: ['run_0', 'run_1', 'run_2', 'run_3'],
-        2: ['run_0', 'run_1', 'run_2', 'run_3'],
-        3: ['run_0', 'run_1', 'run_2', 'run_3'],
-        4: ['run_0', 'run_1', 'run_2', 'run_3'],
-    }
-    
-    case_combo_names = {
-        1: ['P1', 'P2', 'P3', 'P4'],
-        2: ['P1P2', 'P2P3', 'P3P4', 'P4P1'],
-        3: ['P1P2P3', 'P2P3P4', 'P3P4P1', 'P4P1P2'],
-        4: ['P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4', 'P1P2P3P4'],
-    }
-    
+def parse_experiment_name(exp_dir: str) -> tuple[str, str]:
+    """Extract val_plate and test_plate from experiment directory name."""
+    match = re.search(r'val(P[1-6])test(P[1-6])', exp_dir)
+    if match:
+        return match.group(1), match.group(2)
+    return None, None
+
+
+def get_folds_to_run(args) -> list[tuple[str, str, str]]:
+    """Get folds to run based on arguments. Returns (run_dir, fold_name, test_plate)."""
     if args.all_experiments:
-        # Run all 6 val/test experiments, all cases, all runs
         folds = []
         val_test_combos = [
-            ('P1', 'P2', 'val1_test2'),
-            ('P2', 'P3', 'val2_test3'),
-            ('P3', 'P4', 'val3_test4'),
-            ('P4', 'P5', 'val4_test5'),
-            ('P5', 'P6', 'val5_test6'),
-            ('P6', 'P1', 'val6_test1'),
+            ('P1', 'P2', 'valP1testP2'),
+            ('P2', 'P3', 'valP2testP3'),
+            ('P3', 'P4', 'valP3testP4'),
+            ('P4', 'P5', 'valP4testP5'),
+            ('P5', 'P6', 'valP5testP6'),
+            ('P6', 'P1', 'valP6testP1'),
         ]
-        for val_p, test_p, exp_n in val_test_combos:
+        for val_p, test_p, exp_name in val_test_combos:
+            exp_dir = os.path.join(SCRIPT_DIR, exp_name)
+            if not os.path.exists(exp_dir):
+                print(f"WARNING: Experiment directory not found: {exp_dir}")
+                continue
             for case_num in [1, 2, 3, 4]:
-                combo_name = case_combo_names[case_num]
+                case_combo_names = get_case_combo_names(case_num, val_p, test_p)
                 for run_idx in range(4):
-                    case_dir = f'case_{case_num}_{combo_name[run_idx]}_{exp_n}'
+                    combo_name = case_combo_names[run_idx]
+                    case_dir = f'case_{case_num}_{combo_name}'
                     run_subdir = f'run_{run_idx}'
-                    folds.append((os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir))
-    elif args.all:
-        # Run all cases and all runs for given val/test
-        folds = []
-        for case_num in [1, 2, 3, 4]:
-            combo_name = case_combo_names[case_num]
-            for run_idx in range(4):
-                case_dir = f'case_{case_num}_{combo_name[run_idx]}_{exp_name}'
-                run_subdir = f'run_{run_idx}'
-                folds.append((os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir))
-    elif args.case is not None:
-        # Run specific case
-        case_num = args.case
-        combo_name = case_combo_names[case_num]
-        if args.run is not None:
-            # Run specific run
-            case_dir = f'case_{case_num}_{combo_name[args.run]}_{exp_name}'
-            run_subdir = f'run_{args.run}'
-            folds = [(os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir)]
-        else:
-            # Run all runs for this case
-            folds = []
-            for run_idx in range(4):
-                case_dir = f'case_{case_num}_{combo_name[run_idx]}_{exp_name}'
-                run_subdir = f'run_{run_idx}'
-                folds.append((os.path.join(SCRIPT_DIR, case_dir, run_subdir), case_dir))
+                    full_run_dir = os.path.join(exp_dir, case_dir, run_subdir)
+                    folds.append((full_run_dir, f'{exp_name}/{case_dir}/{run_subdir}', test_p))
+        return folds
     else:
-        print("Use: --case N --run N, or --case N, or --all, or --all_experiments")
+        print("Use: --all_experiments to run all 6 val/test experiments")
         exit(1)
+
+
+def get_case_combo_names(case_num: int, val_plate: str, test_plate: str) -> list[str]:
+    """Get combo names for a case based on val and test plates."""
+    train_plates = [p for p in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'] if p != val_plate and p != test_plate]
     
-    return folds
+    if case_num == 1:
+        return train_plates
+    elif case_num == 2:
+        return [f"{train_plates[i]}{train_plates[(i+1)%4]}" for i in range(4)]
+    elif case_num == 3:
+        return [f"{train_plates[i]}{train_plates[(i+1)%4]}{train_plates[(i+2)%4]}" for i in range(4)]
+    else:
+        return [''.join(train_plates)] * 4
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Predict all crops for diversity experiment')
-    parser.add_argument('--case', type=int, choices=[1,2,3,4], help='Case number (1-4)')
-    parser.add_argument('--run', type=int, choices=[0,1,2,3], help='Run number (0-3), or all runs if not specified')
-    parser.add_argument('--all', action='store_true', help='Run all cases and all runs')
+    parser.add_argument('--all_experiments', action='store_true', help='Run all 6 val/test experiments')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
@@ -113,9 +94,6 @@ def main() -> None:
                         help='Batch size for inference')
     parser.add_argument('--checkpoint_name', type=str, default='best_model.pth',
                         help='Checkpoint filename to load')
-    parser.add_argument('--val_plate', type=str, default='P5', help='Validation plate (for ground truth)')
-    parser.add_argument('--test_plate', type=str, default='P6', help='Test plate for predictions')
-    parser.add_argument('--all_experiments', action='store_true', help='Run all 6 val/test experiments')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -123,7 +101,6 @@ def main() -> None:
     grid_size: int = args.grid_size
     crops_per_image: int = grid_size * grid_size
     
-    # Get folds to run based on arguments
     folds_to_run = get_folds_to_run(args)
     
     print(f"Config: {len(folds_to_run)} folds, crop_size={crop_size}, grid_size={grid_size}, crops_per_image={crops_per_image}")
@@ -147,8 +124,6 @@ def main() -> None:
 
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-
-    TEST_PLATE = args.test_plate
 
     class EfficientNetClassifier(nn.Module):
         def __init__(self, num_classes: int) -> None:
@@ -352,16 +327,16 @@ def main() -> None:
         return metrics
 
     # Process each fold
-    for fold_idx, (run_dir, fold_name) in enumerate(folds_to_run):
+    for fold_idx, (run_dir, fold_name, test_plate) in enumerate(folds_to_run):
         checkpoint_path: str = os.path.join(run_dir, args.checkpoint_name)
-        image_dir: str = os.path.join(BASE_DIR, TEST_PLATE)
+        image_dir: str = os.path.join(BASE_DIR, test_plate)
         output_dir: str = run_dir
         
         print(f"\n{'='*60}")
         print(f"Fold {fold_idx}: {fold_name}")
         print(f"  Using checkpoint: {args.checkpoint_name} (highest val_acc)")
         print(f"  image_dir: {image_dir}")
-        print(f"  test_plate: {TEST_PLATE}")
+        print(f"  test_plate: {test_plate}")
         print(f"{'='*60}")
         
         if not os.path.exists(checkpoint_path):
@@ -393,7 +368,7 @@ def main() -> None:
         
         for img_path in tqdm(image_paths, desc=f"Predicting"):
             img_path_str: str = str(img_path)
-            results: list[dict] = predict_image(model, img_path_str, TEST_PLATE, args.batch_size)
+            results: list[dict] = predict_image(model, img_path_str, test_plate, args.batch_size)
             all_results.extend(results)
         
         metrics: dict = compute_metrics(all_results, num_classes)

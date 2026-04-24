@@ -48,11 +48,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay for optimizer')
+parser.add_argument('--warmup_epochs', type=int, default=5, help='Linear warmup epochs before cosine annealing')
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
-parser.add_argument('--grid_size', type=int, default=12, help='Grid size for sampling positions (fixed)')
+parser.add_argument('--grid_size', type=int, default=12, help='Grid size for sampling positions (default: 12)')
 parser.add_argument('--crop_size', type=int, default=224, help='Crop size for each patch')
-parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9], help='Neighborhood size: 3 (3x3), 5 (5x5), 7 (7x7), 9 (9x9)')
+parser.add_argument('--neighborhood', type=int, default=5, choices=[1, 3, 5, 7, 9, 11], 
+                    help='Neighborhood: 1 (1x1=1 crop), 3 (3x3=9), 5 (5x5=25), 7 (7x7=49), 9 (9x9=81), 11 (11x11=121)')
+parser.add_argument('--single_crop_val', action='store_true', default=False, 
+                    help='Use single center crop for validation/testing instead of multi-crop')
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
@@ -76,6 +81,9 @@ random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if args.data_root:
@@ -233,11 +241,13 @@ def train_single_fold(test_plate):
     val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps,
                                   crop_size=args.crop_size, grid_size=args.grid_size,
                                   neighborhood=args.neighborhood,
-                                  augment=False, seed=SEED)
+                                  augment=False, seed=SEED, 
+                                  single_crop=args.single_crop_val)
     test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps,
                                   crop_size=args.crop_size, grid_size=args.grid_size,
                                   neighborhood=args.neighborhood,
-                                  augment=False, seed=SEED)
+                                  augment=False, seed=SEED,
+                                  single_crop=args.single_crop_val)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -261,14 +271,15 @@ def train_single_fold(test_plate):
     
     print(f"Crops per image: {crops_per_image} ({neighborhood_label} neighborhood)")
     if args.use_psemix:
-        print(f"PseMix: {args.psemix_mode}, n_pseb={args.psemix_n_pseb}, n_pheno={args.psemix_n_pheno}")
+        print(f"PseMix: {args.psemix_mode}, n_pseb={args.psemix_n_pseb}, n_pheno={args.psemix_n_pheno}, min_size={args.psemix_min_size}")
         bag_mixer = create_bag_mixer(
             mode=args.psemix_mode,
             use_psemix=True,
             n_pseb=args.psemix_n_pseb,
             n_pheno=args.psemix_n_pheno,
             alpha=args.psemix_alpha,
-            prob_mixup=args.psemix_prob
+            prob_mixup=args.psemix_prob,
+            min_pseudo_bag_size=args.psemix_min_size
         )
     else:
         print(f"BagMix: {args.bag_mix}")
@@ -296,9 +307,17 @@ dropout_ratio=args.bag_mix_dropout,
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': args.lr * 0.1},
         {'params': attention_params, 'lr': args.lr}
-    ], weight_decay=0.01)
+    ], weight_decay=args.weight_decay)
     
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    # Linear warmup + Cosine annealing
+    def lr_lambda(epoch):
+        if epoch < args.warmup_epochs:
+            return (epoch + 1) / args.warmup_epochs
+        else:
+            progress = (epoch - args.warmup_epochs) / (args.epochs - args.warmup_epochs)
+            return 0.5 * (1 + np.cos(np.pi * progress))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     
     start_epoch = 0
     if args.resume:

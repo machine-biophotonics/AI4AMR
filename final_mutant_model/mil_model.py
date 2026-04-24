@@ -142,6 +142,8 @@ class AttentionMILModel(nn.Module):
             x = self.mammoth(x)
             if DEBUG:
                 print(f"[DEBUG forward_with_features] after mammoth: {x.shape}")
+            assert x.shape[-1] == self.attention_in_dim, \
+                f"Mammoth output dim {x.shape[-1]} != expected {self.attention_in_dim}. Check keep_slots=False in mammoth wrapper."
             x = x.mean(dim=1)
             if DEBUG:
                 print(f"[DEBUG forward_with_features] after mean: {x.shape}")
@@ -183,6 +185,8 @@ class AttentionMILModel(nn.Module):
         
         if self.use_mammoth:
             x = self.mammoth(features)
+            assert x.shape[-1] == self.attention_in_dim, \
+                f"Mammoth output dim {x.shape[-1]} != expected {self.attention_in_dim}. Check keep_slots=False in mammoth wrapper."
             x = x.mean(dim=1)
             x = x.unsqueeze(1).expand(-1, num_crops, -1)
         else:
@@ -203,7 +207,7 @@ class AttentionMILModel(nn.Module):
 class MultiCropDataset(Dataset):
     """Cycle-based crop extraction with configurable neighborhood for MIL"""
     
-    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, augment=True, seed=42, epoch=0, neighborhood=5):
+    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, neighborhood=5, augment=True, seed=42, epoch=0, single_crop=False):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
@@ -212,7 +216,7 @@ class MultiCropDataset(Dataset):
         self.augment = augment
         self.seed = seed
         self.epoch = epoch
-        self.single_crop = False  # Default to multi-crop
+        self.single_crop_mode = single_crop  # Use only center crop
         
         sample_img = Image.open(image_paths[0]).convert('RGB')
         w, h = sample_img.size
@@ -222,7 +226,7 @@ class MultiCropDataset(Dataset):
         self.stride = stride
         
         # Only positions with full neighborhood (margin = neighborhood radius)
-        radius = neighborhood // 2  # 3→1, 5→2, 7→3, 9→4
+        radius = neighborhood // 2
         positions = []
         for i in range(grid_size):
             for j in range(grid_size):
@@ -237,7 +241,7 @@ class MultiCropDataset(Dataset):
                         positions.append((left, top))
         
         self.positions = positions
-        self.num_neighbors = neighborhood * neighborhood - 1  # Total - center crop
+        self.num_neighbors = neighborhood * neighborhood - 1
         
         if augment:
             self.transform = A.Compose([
@@ -254,23 +258,25 @@ class MultiCropDataset(Dataset):
                 ToTensorV2(),
             ], seed=seed)
         
-        neighborhood_name = f"{self.neighborhood}x{self.neighborhood}"
-        print(f"MIL: {len(positions)} positions, {neighborhood_name} neighborhood ({self.num_neighbors + 1} crops/image), augment={augment}")
+        if self.single_crop_mode:
+            print(f"MIL: {len(positions)} positions, SINGLE CROP mode (center only), augment={augment}")
+        else:
+            neighborhood_name = f"{self.neighborhood}x{self.neighborhood}"
+            print(f"MIL: {len(positions)} positions, {neighborhood_name} neighborhood ({self.num_neighbors + 1} crops/image), augment={augment}")
     
     def set_epoch(self, epoch):
         self.epoch = epoch
         num_pos = len(self.positions)
         num_images = len(self.image_paths)
         
-        if not self.augment:
-            # Val/test: use TRUE image center
+        if not self.augment or self.single_crop_mode:
+            # Val/test or single_crop_val: use TRUE image center
             center_left = (self.image_size - self.crop_size) // 2
             center_top = (self.image_size - self.crop_size) // 2
             self.epoch_centers = {i: (center_left, center_top) for i in range(num_images)}
-            self.single_crop = False
             return
         
-        # Train: cycle-based
+        # Train: cycle-based with shuffled positions
         cycle = epoch // num_pos
         pos_in_cycle = epoch % num_pos
         rng = random.Random(self.seed + cycle)
@@ -281,8 +287,6 @@ class MultiCropDataset(Dataset):
         for idx in range(num_images):
             assigned_idx = (idx + pos_in_cycle) % num_pos
             self.epoch_centers[idx] = shuffled[assigned_idx]
-        
-        self.single_crop = False
     
     def __len__(self):
         return len(self.image_paths)
@@ -293,14 +297,14 @@ class MultiCropDataset(Dataset):
         
         center_left, center_top = self.epoch_centers[idx]
         
-        if self.single_crop:
-            # Single crop mode
+        if self.single_crop_mode:
+            # Single crop mode (center only)
             crop = image.crop((center_left, center_top, center_left + self.crop_size, center_top + self.crop_size))
             crop = np.array(crop)
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
         else:
-            # Use neighborhood parameter (3, 5, 7, 9)
+            # Use neighborhood parameter (1, 3, 5, 7, 9, 11)
             radius = self.neighborhood // 2
             
             jitter_range = self.stride // 4

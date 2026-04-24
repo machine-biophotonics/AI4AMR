@@ -1,0 +1,4 @@
+  File "<string>", line 1
+    from mil_model import Mildropout; import torch; d = Mildropout(topk=3, kernel=7); d.train(); x = torch.randn(4, 25, 1280); y = d(x); print(fpsamil_trial
+                                                                                                                                              ^
+SyntaxError: '(' was never closed

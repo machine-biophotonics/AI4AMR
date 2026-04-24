@@ -1,14 +1,30 @@
 #!/usr/bin/env python3
 """
-Compatibility wrapper for mammoth-moe package.
-Provides create_mammoth and add_mammoth_args functions to match old API.
+MAMMOTH wrapper for mammoth-moe package (ICLR 2026).
+
+Install: pip install mammoth-moe
+
+This module provides create_mammoth() and add_mammoth_args() functions
+for integrating MAMMOTH MoE into the MIL pipeline.
+
+Usage:
+    from mammoth_import import create_mammoth, add_mammoth_args
+    parser = add_mammoth_args(parser)
+    mammoth = create_mammoth(args, input_dim=1280, embed_dim=512)
+    model = AttentionMILModel(num_classes=2, mammoth=mammoth)
 """
 
 import argparse
 from typing import Optional
 
 import torch
-from mammoth import Mammoth as _Mammoth
+
+try:
+    from mammoth import Mammoth as _Mammoth
+except ImportError:
+    raise ImportError(
+        "mammoth-moe package not found. Install with: pip install mammoth-moe"
+    )
 
 
 def add_mammoth_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:

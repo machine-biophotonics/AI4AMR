@@ -204,7 +204,6 @@ class PseMixer:
         prob_mixup: float = 0.5,
         clustering_method: str = 'kmeans',
         fine_tune_iter: int = 0,
-        min_pseudo_bag_size: int = 1,
         seed: int = 42,
         pad_value: float = 0.0
     ):
@@ -215,7 +214,6 @@ class PseMixer:
         self.prob_mixup = prob_mixup
         self.clustering_method = clustering_method
         self.fine_tune_iter = fine_tune_iter
-        self.min_pseudo_bag_size = min_pseudo_bag_size
         self.seed = seed
         self.pad_value = pad_value
         
@@ -558,50 +556,20 @@ def add_bagmix_args(parser):
 
 
 def add_psemix_args(parser):
-    """Add PseMix arguments to argparse"""
-    parser.add_argument(
-        '--use_psemix',
-        action='store_true',
-        help='Use PseMix instead of simple BagMix'
-    )
-    parser.add_argument(
-        '--psemix_mode',
-        type=str,
-        default='psebmix',
-        choices=['psebmix', 'psebmix_kmeans', 'psebmix_random'],
-        help='PseMix mode'
-    )
-    parser.add_argument(
-        '--psemix_n_pseb',
-        type=int,
-        default=8,
-        help='Number of pseudo-bags per bag'
-    )
-    parser.add_argument(
-        '--psemix_n_pheno',
-        type=int,
-        default=8,
-        help='Number of phenotype clusters'
-    )
-    parser.add_argument(
-        '--psemix_alpha',
-        type=float,
-        default=1.0,
-        help='Beta distribution parameter for PseMix'
-    )
-    parser.add_argument(
-        '--psemix_prob',
-        type=float,
-        default=0.5,
-        help='Probability of random mixing in PseMix'
-    )
-    parser.add_argument(
-        '--psemix_min_size',
-        type=int,
-        default=1,
-        help='Minimum instances per pseudo-bag (for more diversity)'
-    )
-    return parser
+    """Add PseMix arguments (delegates to psemix module)."""
+    import argparse
+    try:
+        from .psemix import add_psemix_args as _add_psemix
+        return _add_psemix(parser)
+    except ImportError:
+        # Fallback placeholder
+        parser.add_argument("--use_psemix", action="store_true", default=False)
+        parser.add_argument("--psemix_mode", type=str, default="psebmix")
+        parser.add_argument("--psemix_n_pseb", type=int, default=8)
+        parser.add_argument("--psemix_n_pheno", type=int, default=8)
+        parser.add_argument("--psemix_alpha", type=float, default=1.0)
+        parser.add_argument("--psemix_prob", type=float, default=0.5)
+        return parser
 
 
 if __name__ == '__main__':

@@ -32,24 +32,46 @@ HIERARCHY = {
     'parC': 'chromosome segregation', 'parE': 'chromosome organization',
 }
 
-# Trial pathway mapping
+# Trial pathway mapping - user's biological process table
 TRIAL_PATHWAY = {
-    'folP': 'folic acid biosynthetic process', 'folA': 'folic acid biosynthetic process',
-    'ftsZ': 'cell cycle process',
-    'dnaE': 'DNA-templated DNA replication', 'dnaB': 'DNA-templated DNA replication',
-    'secY': 'intracellular transport', 'secA': 'intracellular transport',
-    'rpoB': 'regulation of DNA-templated transcription elongation',
-    'rpoA': 'regulation of DNA-templated transcription elongation',
-    'parE': 'cellular component organization', 'parC': 'cellular component organization',
-    'gyrB': 'cellular component organization', 'gyrA': 'cellular component organization',
-    'lptC': 'lipid transport', 'lptA': 'lipid transport', 'msbA': 'lipid transport',
-    'rplC': 'positive regulation of gene expression', 'rplA': 'positive regulation of gene expression',
-    'rpsA': 'positive regulation of gene expression', 'rpsL': 'positive regulation of gene expression',
-    'murC': 'glycosaminoglycan biosynthetic process', 'murA': 'glycosaminoglycan biosynthetic process',
-    'ftsI': 'glycosaminoglycan biosynthetic process', 'ftsZ': 'glycosaminoglycan biosynthetic process',
-    'mrdA': 'glycosaminoglycan biosynthetic process', 'mrcA': 'glycosaminoglycan biosynthetic process',
-    'mrcB': 'glycosaminoglycan biosynthetic process', 'lpxC': 'glycosaminoglycan biosynthetic process',
-    'lpxA': 'glycosaminoglycan biosynthetic process',
+    # Folic acid biosynthetic process
+    'folP': 'Folic acid biosynthetic process',
+    'folA': 'Folic acid biosynthetic process',
+    # Intracellular protein transport
+    'secY': 'Intracellular protein transport',
+    'secA': 'Intracellular protein transport',
+    # Regulation of DNA-templated transcription elongation
+    'rpoB': 'Regulation of DNA-templated transcription elongation',
+    'rpoA': 'Regulation of DNA-templated transcription elongation',
+    # Cell envelope organization
+    'lptC': 'Cell envelope organization',
+    'lptA': 'Cell envelope organization',
+    'msbA': 'Cell envelope organization',
+    # Division septum assembly
+    'ftsZ': 'Division septum assembly',
+    # Regulation of translational initiation
+    'rplC': 'Regulation of translational initiation',
+    'rplA': 'Regulation of translational initiation',
+    'rpsA': 'Regulation of translational initiation',
+    'rpsL': 'Regulation of translational initiation',
+    # Aminoglycan biosynthetic process
+    'murC': 'Aminoglycan biosynthetic process',
+    'murA': 'Aminoglycan biosynthetic process',
+    'mrcB': 'Aminoglycan biosynthetic process',
+    # Regulation of cell shape
+    'mrdA': 'Regulation of cell shape',
+    'mrcA': 'Regulation of cell shape',
+    'ftsI': 'Regulation of cell shape',
+    # Lipid A biosynthetic process
+    'lpxC': 'Lipid A biosynthetic process',
+    'lpxA': 'Lipid A biosynthetic process',
+    # Chromosome organization
+    'gyrB': 'Chromosome organization',
+    'gyrA': 'Chromosome organization',
+    'dnaB': 'Chromosome organization',
+    'parE': 'Chromosome organization',
+    'parC': 'Chromosome organization',
+    'dnaE': 'Chromosome organization',
 }
 
 FAMILY = {
@@ -377,8 +399,19 @@ def main():
                         help='CSV filename to look for (default: predictions_all_crops.csv or predictions_all_crops_mil_100pos.csv)')
     parser.add_argument('--prediction_csv', type=str, default=None,
                         help='Specific prediction CSV file to use')
+    parser.add_argument('--prediction_csv_best_model', type=str, default='predictions_all_crops_mil_best_model.csv',
+                        help='CSV for best_model checkpoint')
+    parser.add_argument('--prediction_csv_best_model_acc', type=str, default='predictions_all_crops_mil_best_model_acc.csv',
+                        help='CSV for best_model_acc checkpoint')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory for confusion matrices')
+    parser.add_argument('--output_dir_trial', type=str, default=None,
+                        help='Output directory for trial results (used with --run_both)')
+    parser.add_argument('--run_both', action='store_true',
+                        help='Generate results for both best_model and best_model_acc')
+    parser.add_argument('--checkpoint_type', type=str, default=None,
+                        choices=['best_model', 'best_model_acc', None],
+                        help='Which checkpoint to use: best_model or best_model_acc')
     parser.add_argument('--mixed_checkpoints', action='store_true',
                         help='Use best_model_acc for P1-P5, best_model for P6')
     args = parser.parse_args()
@@ -406,7 +439,7 @@ def main():
     all_fold_data = {}
 
     for fold in folds:
-        fold_dir = os.path.join(SCRIPT_DIR, f'fold_{fold}')
+        fold_dir = os.path.join(SCRIPT_DIR, 'results', f'fold_{fold}')
         
         if args.prediction_csv:
             # Check if it's an absolute path or relative path
@@ -561,6 +594,187 @@ def main():
     results_df = pd.DataFrame(results)
     results_df.to_csv(os.path.join(output_dir, 'combined_metrics.csv'), index=False)
     print(f"\nSaved to {output_dir}/")
+
+
+def run_trial_generation(checkpoint_csv, checkpoint_name, args):
+    """Run generation for a specific checkpoint CSV."""
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    
+    # Override args for this run
+    if args.output_dir_trial:
+        output_dir = os.path.join(SCRIPT_DIR, args.output_dir_trial, checkpoint_name)
+    else:
+        output_dir = os.path.join(SCRIPT_DIR, 'trial', checkpoint_name)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    fold = args.single_fold if args.single_fold else 'P1'
+    fold_dir = os.path.join(SCRIPT_DIR, 'results', f'fold_{fold}')
+    
+    # Build the CSV path
+    csv_path = os.path.join(fold_dir, checkpoint_csv)
+    
+    if not os.path.exists(csv_path):
+        print(f"ERROR: CSV not found: {csv_path}")
+        return None
+    
+    print(f"\n{'='*60}")
+    print(f"Processing: {checkpoint_name}")
+    print(f"CSV: {csv_path}")
+    print(f"Output: {output_dir}")
+    print(f"{'='*60}")
+    
+    # Load data
+    df = pd.read_csv(csv_path)
+    df_valid = df[df['ground_truth_label'].notna()].copy()
+    
+    # Aggregate
+    image_df, well_df = aggregate_crop_to_well(df_valid)
+    
+    all_fold_data = {fold: {'crop': df_valid, 'image': image_df, 'well': well_df}}
+    
+    levels = [('crop', 'crop'), ('image', 'image'), ('well', 'well')]
+    if args.guide:
+        hierarchies = ['guide']
+    elif args.family:
+        hierarchies = ['family']
+    else:
+        hierarchies = ['guide', 'gene', 'pathway', 'family']
+    
+    results = []
+    
+    for level_key, level_name in levels:
+        for hier in hierarchies:
+            fold_raw_cms = []
+            fold_accs = []
+            all_labels_set = set()
+            
+            data = all_fold_data[fold]
+            level_df = data[level_key]
+            
+            true_col = 'ground_truth_label' if level_key == 'crop' else 'true_label'
+            true_mapped = map_hierarchy(level_df[true_col].values, hier)
+            
+            if level_key == 'crop':
+                pred_mapped = map_hierarchy(level_df['predicted_class_name'].values, hier)
+            else:
+                pred_mapped = map_hierarchy(level_df['pred_majority'].values, hier)
+            
+            acc = np.mean(np.array(true_mapped) == np.array(pred_mapped))
+            fold_accs.append(acc)
+            
+            all_labels = sorted(set(true_mapped) | set(pred_mapped))
+            all_labels_set.update(all_labels)
+            
+            cm_raw = confusion_matrix(true_mapped, pred_mapped, labels=all_labels, normalize=None)
+            fold_raw_cms.append((all_labels, cm_raw))
+            
+            all_labels = sorted(all_labels_set)
+            n_classes = len(all_labels)
+            if n_classes == 0:
+                print("ERROR: No classes found")
+                continue
+            random_baseline = 100.0 / n_classes
+            
+            cm_sum_raw = cm_raw
+            
+            row_sums = cm_sum_raw.sum(axis=1, keepdims=True)
+            row_sums = np.where(row_sums == 0, 1, row_sums)
+            cm_sum_normalized = cm_sum_raw / row_sums
+            
+            mean_acc = np.mean(fold_accs)
+            std_acc = np.std(fold_accs)
+            
+            n_above_random = np.sum(np.diag(cm_sum_normalized) * 100 > random_baseline)
+            n_above_50 = np.sum(np.diag(cm_sum_normalized) * 100 > 50)
+            
+            title = f'{checkpoint_name} - {level_name.capitalize()}/{hier.capitalize()} Acc: {100*mean_acc:.1f}%'
+            
+            # Plot
+            plot_binary_cm(cm_sum_normalized, all_labels, title,
+                        os.path.join(output_dir, f'binary_cm_{level_name}_{hier}.png'))
+            plot_raw_counts(cm_sum_raw, all_labels, title,
+                        os.path.join(output_dir, f'raw_cm_{level_name}_{hier}.png'))
+            show_annot = (n_classes < 50)
+            plot_percentage_cm(cm_sum_normalized, all_labels, title,
+                            os.path.join(output_dir, f'percent_cm_{level_name}_{hier}.png'),
+                            show_annot=show_annot)
+            
+            results.append({
+                'level': level_name,
+                'hierarchy': hier,
+                'mean_acc': mean_acc,
+                'std_acc': std_acc,
+                'n_folds': 1,
+                'n_classes': n_classes,
+                'random_baseline': random_baseline,
+                'classes_above_50': n_above_50,
+                'classes_above_random': n_above_random
+            })
+            
+            print(f"  {level_name}/{hier}: {100*mean_acc:.2f}% | {n_above_50}/{n_classes} > 50%")
+    
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(os.path.join(output_dir, 'combined_metrics.csv'), index=False)
+    print(f"\nSaved to {output_dir}/")
+    
+    return results_df
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for final_crispr_model')
+    parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
+    parser.add_argument('--single_fold', type=str, default='P1', help='Single fold to process (e.g., P1)')
+    parser.add_argument('--guide', action='store_true', help='Generate only guide-level')
+    parser.add_argument('--family', action='store_true', help='Generate only family-level')
+    parser.add_argument('--csv_name', type=str, default=None, 
+                        help='CSV filename to look for (default: predictions_all_crops.csv or predictions_all_crops_mil_100pos.csv)')
+    parser.add_argument('--prediction_csv', type=str, default=None,
+                        help='Specific prediction CSV file to use')
+    parser.add_argument('--prediction_csv_best_model', type=str, default='predictions_all_crops_mil_best_model.csv',
+                        help='CSV for best_model checkpoint')
+    parser.add_argument('--prediction_csv_best_model_acc', type=str, default='predictions_all_crops_mil_best_model_acc.csv',
+                        help='CSV for best_model_acc checkpoint')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Output directory for confusion matrices')
+    parser.add_argument('--output_dir_trial', type=str, default='trial',
+                        help='Output directory for trial results (used with --run_both)')
+    parser.add_argument('--run_both', action='store_true',
+                        help='Generate results for both best_model and best_model_acc')
+    parser.add_argument('--checkpoint_type', type=str, default=None,
+                        choices=['best_model', 'best_model_acc', None],
+                        help='Which checkpoint to use: best_model or best_model_acc')
+    parser.add_argument('--mixed_checkpoints', action='store_true',
+                        help='Use best_model_acc for P1-P5, best_model for P6')
+    args = parser.parse_args()
+    
+    # Handle --run_both mode
+    if args.run_both:
+        print("\n" + "="*60)
+        print("RUN_BOTH MODE: Generating confusion matrices for both checkpoints")
+        print("="*60)
+        
+        # Run for best_model
+        run_trial_generation(
+            args.prediction_csv_best_model, 
+            'best_model', 
+            args
+        )
+        
+        # Run for best_model_acc
+        run_trial_generation(
+            args.prediction_csv_best_model_acc, 
+            'best_model_acc', 
+            args
+        )
+        
+        print("\n" + "="*60)
+        print("COMPLETED: Both confusion matrices generated successfully!")
+        print(f"Outputs saved to: {args.output_dir_trial}/best_model/ and {args.output_dir_trial}/best_model_acc/")
+        print("="*60)
+        return
+    
+    # Original main logic continues...
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 if __name__ == '__main__':
