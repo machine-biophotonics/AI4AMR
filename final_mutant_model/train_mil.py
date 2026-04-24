@@ -65,16 +65,15 @@ parser.add_argument('--checkpoint_type', type=str, default='auc', choices=['auc'
                     help='Which checkpoint to use for testing: auc (best AUC), acc (best accuracy), loss (lowest loss)')
 parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint file (e.g., checkpoint_epoch_50.pth)')
 parser.add_argument('--resume_epoch', type=int, default=None, help='Resume from specific epoch number')
+parser.add_argument('--num_workers', type=int, default=4, help='Number of data loading workers')
+parser.add_argument('--use_amp', action='store_true', default=True, help='Use automatic mixed precision (AMP)')
+parser.add_argument('--compile_model', action='store_true', default=False, help='Use torch.compile()')
 parser = add_bagmix_args(parser)
 parser = add_psemix_args(parser)
 parser = add_mammoth_args(parser)
 args = parser.parse_args()
 
-# Set num_workers based on OS
-if sys.platform.startswith('win'):
-    NUM_WORKERS = 4  # Try 4 workers on Windows
-else:
-    NUM_WORKERS = 4
+NUM_WORKERS = args.num_workers
 
 SEED = args.seed
 random.seed(SEED)
