@@ -86,8 +86,8 @@ parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
 parser.add_argument('--use_sc_mil', action='store_true',
                     help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
-parser.add_argument('--sc_mil_epochs', type=int, default=100,
-                    help='Epochs for SC-MIL joint training (default 100)')
+parser.add_argument('--sc_mil_epochs', type=int, default=200,
+                    help='Epochs for SC-MIL joint training (default 200)')
 parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 
@@ -732,5 +732,6 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
 
 
