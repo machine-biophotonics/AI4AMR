@@ -94,8 +94,8 @@ parser.add_argument('--use_sam', action='store_true', help='Use Sharpness-Aware 
 parser.add_argument('--sam_rho', type=float, default=0.05, help='Rho parameter for SAM (default: 0.05)')
 parser.add_argument('--adaptive_sam', action='store_true', help='Use Adaptive SAM (ASAM) instead of SAM')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
-                    parser.add_argument('--focal_gamma', type=float, default=2.0, help='Focal loss gamma')
                     help='Temperature for SC-MIL contrastive loss')
+                    parser.add_argument(--focal_gamma, type=float, default=2.0, help=Focal
 args = parser.parse_args()
 
 # Set num_workers based on OS
