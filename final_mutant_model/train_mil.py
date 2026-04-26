@@ -82,10 +82,11 @@ parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
 parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
-parser.add_argument('--use_contrastive', action='store_true',
-                    help='Use patch-level contrastive pre-training')
-parser.add_argument('--use_sc_mil', action='store_true',
-                    help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
+parser.add_argument('--use_contrastive', action='store_true', default=False,
+                    help='Use patch-level contrastive (default: enabled, use --no_contrastive to disable)')
+parser.add_argument('--use_sc_mil', action='store_true', default=False,
+                    help='Use SC-MIL (default: enabled, use --no_sc_mil to disable)')
+parser.add_argument('--no_sc_mil', action='store_true', help='Disable SC-MIL contrastive')
 parser.add_argument('--sc_mil_epochs', type=int, default=200,
                     help='Epochs for SC-MIL joint training (default 200)')
 parser.add_argument('--sc_mil_weight', type=float, default=0.3,
@@ -103,6 +104,10 @@ parser.add_argument('--contrastive_batch_size', type=int, default=32,
 parser.add_argument('--contrastive_temp', type=float, default=0.1,
                     help='Temperature for SimCLR contrastive loss (default: 0.1)')
 args = parser.parse_args()
+
+# Default: Enable SC-MIL and contrastive pre-training (SAM is opt-in)
+args.use_sc_mil = True
+args.use_contrastive = True
 
 # Set num_workers based on OS
 if sys.platform.startswith('win'):
@@ -778,6 +783,7 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
 
 
 
