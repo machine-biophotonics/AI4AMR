@@ -639,6 +639,30 @@ def train_single_fold(test_plate):
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
         all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
         val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
+        
+        # Save metrics to CSV (after all metrics are calculated)
+        csv_writer.writerow([epoch+1, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
+        csv_file.flush()
+        
+        model.eval()
+        val_loss_total = 0.0
+        all_preds, all_probs, all_labels = [], [], []
+        
+        with torch.no_grad():
+            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+                images, labels = images.to(device), labels.to(device)
+                outputs, _ = model(images, return_attention=True)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+                all_preds.extend(predicted.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                val_loss_total += val_loss.item()
+        
+        val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+        all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+        val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
         avg_val_loss = val_loss_total / len(val_loader)
         
         backbone_lr = optimizer.param_groups[0]['lr']
@@ -732,6 +756,9 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
+
+
 
 
 
