@@ -79,7 +79,7 @@ parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate for classifier (default 0.5 for stronger regularization)')
 parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
-parser.add_argument('--label_smoothing', type=float, default=0.1,
+parser.add_argument('--label_smoothing', type=float, default=0.15,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
@@ -87,7 +87,7 @@ parser.add_argument('--use_sc_mil', action='store_true',
                     help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
 parser.add_argument('--sc_mil_epochs', type=int, default=100,
                     help='Epochs for SC-MIL joint training (default 100)')
-parser.add_argument('--sc_mil_weight', type=float, default=0.3,
+parser.add_argument('--sc_mil_weight', type=float, default=0.5,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 
 parser.add_argument('--use_sam', action='store_true', help='Use Sharpness-Aware Minimization (SAM) optimizer')
