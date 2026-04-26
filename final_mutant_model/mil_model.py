@@ -14,7 +14,6 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
 import re
 import os
-from mammoth import Mammoth
 
 
 class AttentionPooling(nn.Module):
@@ -69,21 +68,14 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
-        # MAMMOTH MoE for better representation learning
+        # Projection bottleneck (similar concept to MAMMOTH but simpler)
         mammoth_dim = 256
         self.use_mammoth = True
-        self.mammoth = Mammoth(
-            input_dim=self.feature_dim,
-            dim=mammoth_dim,
-            num_experts=30,
-            num_slots=10,
-            num_heads=num_heads,
-            dropout=dropout,
-            lora_rank=16,
-            auto_rank=True,
-            keep_slots=True,
-            share_lora_weights=True,
-            use_layernorm=False,
+        self.proj_bottleneck = nn.Sequential(
+            nn.Linear(self.feature_dim, mammoth_dim),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(mammoth_dim, mammoth_dim),
         )
         
         self.attention_pool = AttentionPooling(mammoth_dim, num_heads)
@@ -106,9 +98,9 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
-        # Apply MAMMOTH (simplified - use learned projection from mammoth's wq)
+        # Apply MAMMOTH-style projection
         crop_embeddings = crop_embeddings.view(batch_size * num_crops, -1)
-        crop_embeddings = self.mammoth.wq(crop_embeddings)  # use MAMMOTH's query projection
+        crop_embeddings = self.proj_bottleneck(crop_embeddings)
         crop_embeddings = crop_embeddings.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
