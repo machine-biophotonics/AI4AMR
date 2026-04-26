@@ -79,7 +79,7 @@ parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate for classifier (default 0.5 for stronger regularization)')
 parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
-parser.add_argument('--label_smoothing', type=float, default=0.15,
+parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
@@ -87,14 +87,13 @@ parser.add_argument('--use_sc_mil', action='store_true',
                     help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
 parser.add_argument('--sc_mil_epochs', type=int, default=100,
                     help='Epochs for SC-MIL joint training (default 100)')
-parser.add_argument('--sc_mil_weight', type=float, default=0.5,
+parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 
 parser.add_argument('--use_sam', action='store_true', help='Use Sharpness-Aware Minimization (SAM) optimizer')
 parser.add_argument('--sam_rho', type=float, default=0.05, help='Rho parameter for SAM (default: 0.05)')
 parser.add_argument('--adaptive_sam', action='store_true', help='Use Adaptive SAM (ASAM) instead of SAM')
-parser.add_argument('--sc_mil_temp', type=float, default=0.07
-parser.add_argument('--focal_gamma', type=float, default=2.0, help='Focal loss gamma (higher=harder focus)'),
+parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
 args = parser.parse_args()
 
@@ -331,9 +330,9 @@ def train_single_fold(test_plate):
     # Use MILEncoder for SC-MIL (has get_mil_embeddings), AttentionMILModel for standard
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
-        model = MILEncoder(num_classes=num_classes, num_heads=num_heads, dropout=dropout, use_contrastive=True, use_mammoth=not args.no_mammoth)
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True)
     else:
-        model = AttentionMILModel(num_classes=num_classes, num_heads=num_heads, dropout=dropout, use_mammoth=not args.no_mammoth)
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]

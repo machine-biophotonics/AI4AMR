@@ -1,4 +1,3 @@
-from mammoth import Mammoth
 """
 MIL with cycle-based crop extraction + configurable neighborhood + Contrastive Learning
 """
@@ -58,7 +57,7 @@ class ContrastiveEncoder(nn.Module):
 
 class MILEncoder(nn.Module):
     """MIL encoder with optional contrastive head"""
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, use_mammoth=True, projection_dim=256):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -69,35 +68,17 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
-        # MAMMOTH MoE (ICLR 2026) - drop-in replacement for linear layer
-        mammoth_dim = 256
-        self.use_mammoth = True
-        moe_args = {
-            "input_dim": self.feature_dim,
-            "dim": mammoth_dim,
-            "num_experts": 30,
-            "num_slots": 10,
-            "num_heads": num_heads,
-            "dropout": dropout,
-            "lora_rank": 16,
-            "auto_rank": False,
-            "keep_slots": True,
-            "share_lora_weights": True,
-            "use_layernorm": False,
-        }
-        self.mammoth = Mammoth(**moe_args)
-        
-        self.attention_pool = AttentionPooling(mammoth_dim, num_heads)
+        self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
         self.attention_temp = attention_temp
         
-        self.head_proj = nn.Linear(mammoth_dim * num_heads, mammoth_dim)
+        self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
         
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout),
-            nn.Linear(mammoth_dim, num_classes)
+            nn.Linear(self.feature_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False):
@@ -106,12 +87,6 @@ class MILEncoder(nn.Module):
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
-        
-        # Apply transformation: MAMMOTH or simple linear
-        if self.use_mammoth:
-            crop_embeddings = self.mammoth(crop_embeddings)
-        else:
-            crop_embeddings = self.mammoth(crop_embeddings)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
