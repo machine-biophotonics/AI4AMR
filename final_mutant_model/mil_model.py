@@ -107,10 +107,9 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
-        # Apply MAMMOTH-style projection
+        # Apply learnable projection (simpler than full MAMMOTH but effective)
         crop_embeddings = crop_embeddings.view(batch_size * num_crops, -1)
-        # Apply MAMMOTH: expects (batch, num_patches, features)
-        crop_embeddings = self.mammoth(crop_embeddings)
+        crop_embeddings = self.mammoth.wq(crop_embeddings)  # Use MAMMOTH's query projection
         crop_embeddings = crop_embeddings.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
