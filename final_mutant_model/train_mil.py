@@ -33,6 +33,24 @@ import multiprocessing
 from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 from supcon_loss import SupConLoss, SupConLossMIL
 
+# SAM (Sharpness-Aware Minimization) - for better generalization
+try:
+    from sam import SAM
+    SAM_AVAILABLE = True
+except ImportError:
+    SAM_AVAILABLE = False
+    print("SAM not available - install with: pip install sam-loss")
+
+def enable_running_stats(model):
+    for module in model.modules():
+        if isinstance(module, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+            module.track_running_stats = True
+
+def disable_running_stats(model):
+    for module in model.modules():
+        if isinstance(module, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+            module.track_running_stats = False
+
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
