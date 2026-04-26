@@ -1,3 +1,4 @@
+from mammoth import Mammoth
 """
 MIL with cycle-based crop extraction + configurable neighborhood + Contrastive Learning
 """
@@ -68,15 +69,23 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
-        # Projection bottleneck (similar concept to MAMMOTH but simpler)
+        # MAMMOTH MoE (ICLR 2026) - drop-in replacement for linear layer
         mammoth_dim = 256
         self.use_mammoth = True
-        self.proj_bottleneck = nn.Sequential(
-            nn.Linear(self.feature_dim, mammoth_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(mammoth_dim, mammoth_dim),
-        )
+        moe_args = {
+            "input_dim": self.feature_dim,
+            "dim": mammoth_dim,
+            "num_experts": 30,
+            "num_slots": 10,
+            "num_heads": num_heads,
+            "dropout": dropout,
+            "lora_rank": 16,
+            "auto_rank": False,
+            "keep_slots": True,
+            "share_lora_weights": True,
+            "use_layernorm": False,
+        }
+        self.mammoth = Mammoth(**moe_args)
         
         self.attention_pool = AttentionPooling(mammoth_dim, num_heads)
         self.attention_temp = attention_temp
@@ -100,7 +109,8 @@ class MILEncoder(nn.Module):
         
         # Apply MAMMOTH-style projection
         crop_embeddings = crop_embeddings.view(batch_size * num_crops, -1)
-        crop_embeddings = self.proj_bottleneck(crop_embeddings)
+        # Apply MAMMOTH: expects (batch, num_patches, features)
+        crop_embeddings = self.mammoth(crop_embeddings)
         crop_embeddings = crop_embeddings.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
