@@ -111,7 +111,7 @@ args.use_contrastive = True
 
 # Set num_workers based on OS
 if sys.platform.startswith('win'):
-    NUM_WORKERS = 0  # Windows Python 3.14: multiprocessing spawn required
+    NUM_WORKERS = 16  # Windows Python 3.14: multiprocessing spawn required
 else:
     NUM_WORKERS = 16
 
