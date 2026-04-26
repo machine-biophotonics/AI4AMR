@@ -325,9 +325,10 @@ def train_single_fold(test_plate):
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
-    with open(csv_path, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
+    csv_file = open(csv_path, 'w', newline='')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
+    csv_file.flush()
     
     best_val_auc = 0.0
     best_val_acc = 0.0
@@ -436,6 +437,7 @@ def train_single_fold(test_plate):
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         
         for epoch in range(args.sc_mil_epochs):
+            epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
             run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
@@ -478,9 +480,10 @@ def train_single_fold(test_plate):
             avg_cl_loss = run_cl_loss / len(train_loader)
             avg_ce_loss = run_ce_loss / len(train_loader)
             
-            # VALIDATION after each SC-MIL epoch
+            backbone_lr = sc_mil_optimizer.param_groups[0]['lr']
+            
             model.eval()
-            val_cl_loss, val_ce_loss = 0.0, 0.0
+            val_ce_loss = 0.0
             val_correct, val_total = 0, 0
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             
@@ -503,19 +506,28 @@ def train_single_fold(test_plate):
             val_auc = roc_auc_score(all_val_labels_bin, np.array(all_val_probs), average='macro')
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}")
+            print(f"\n{'='*70}")
+            print(f"[Fold: {test_plate} | SC-MIL Epoch: {epoch+1}/{args.sc_mil_epochs}]")
+            print(f"{'='*70}")
+            print(f"  [TRAIN]  CE Loss: {avg_ce_loss:.4f} | SupCon Loss: {avg_cl_loss:.4f} | Acc: {train_acc:.2f}%")
+            print(f"  [VAL]    CE Loss: {avg_val_ce_loss:.4f} | Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
+            print(f"  [LR]     LR: {backbone_lr:.2e}")
+            print(f"  [TIME]   Epoch: {time.time()-epoch_start:.1f}s")
+            print(f"{'='*70}")
             
-            # Save best model based on validation AUC
             if val_auc > best_val_auc:
+                print(f"  *** New best AUC: {val_auc:.4f} (previous: {best_val_auc:.4f}) ***")
                 best_val_auc = val_auc
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
             
             if val_acc > best_val_acc:
+                print(f"  *** New best Acc: {val_acc:.2f}% (previous: {best_val_acc:.2f}%) ***")
                 best_val_acc = val_acc
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
             
             if avg_val_ce_loss < best_val_loss:
+                print(f"  *** New best Loss: {avg_val_ce_loss:.4f} (previous: {best_val_loss:.4f}) ***")
                 best_val_loss = avg_val_ce_loss
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
@@ -582,22 +594,29 @@ def train_single_fold(test_plate):
         
         backbone_lr = optimizer.param_groups[0]['lr']
         classifier_lr = optimizer.param_groups[1]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
-        with open(csv_path, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
+        print(f"\n{'='*70}")
+        print(f"[Fold: {test_plate} | Epoch: {epoch+1}/{args.epochs}]")
+        print(f"{'='*70}")
+        print(f"  [TRAIN]  Loss: {avg_train_loss:.4f} | Acc: {train_acc:.2f}%")
+        print(f"  [VAL]    Loss: {avg_val_loss:.4f} | Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
+        print(f"  [LR]     Backbone: {backbone_lr:.2e} | Classifier: {classifier_lr:.2e}")
+        print(f"  [TIME]   Epoch: {time.time()-epoch_start:.1f}s")
+        print(f"{'='*70}")
         
         if val_auc > best_val_auc:
+            print(f"  *** New best AUC: {val_auc:.4f} (previous: {best_val_auc:.4f}) ***")
             best_val_auc = val_auc
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
         
         if val_acc > best_val_acc:
+            print(f"  *** New best Acc: {val_acc:.2f}% (previous: {best_val_acc:.2f}%) ***")
             best_val_acc = val_acc
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
         
         if avg_val_loss < best_val_loss:
+            print(f"  *** New best Loss: {avg_val_loss:.4f} (previous: {best_val_loss:.4f}) ***")
             best_val_loss = avg_val_loss
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
@@ -636,6 +655,7 @@ def train_single_fold(test_plate):
     with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
         json.dump(results, f, indent=2)
     
+    csv_file.close()
     print(f"Results saved to {OUTPUT_DIR}")
 
 
