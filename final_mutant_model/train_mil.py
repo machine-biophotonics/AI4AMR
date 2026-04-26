@@ -150,6 +150,17 @@ def get_image_paths_for_plate(plate):
             valid_paths.append(path)
     return valid_paths
 
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
+    pt = torch.exp(-ce_loss)
+    return (alpha * (1 - pt) ** gamma * ce_loss).mean()
+
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
+    pt = torch.exp(-ce_loss)
+    focal = alpha * (1 - pt) ** gamma * ce_loss
+    return (focal * weights).mean()
+
 def contrastive_loss(embeddings1, embeddings2, labels, temperature=0.1):
     """
     InfoNCE contrastive loss for positive pairs.
@@ -480,6 +491,7 @@ def train_single_fold(test_plate):
                 sc_loss = sc_criterion(bag_embeddings, labels)
                 
                 # Classification loss
+                ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                 
                 # Combined loss
                 loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
@@ -515,6 +527,7 @@ def train_single_fold(test_plate):
                     all_val_preds.extend(predicted.cpu().numpy())
                     all_val_probs.extend(probs.cpu().numpy())
                     all_val_labels.extend(labels.cpu().numpy())
+                    val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                     val_ce_loss += val_loss.item()
                     val_correct += predicted.eq(labels).sum().item()
                     val_total += labels.size(0)
@@ -571,6 +584,7 @@ def train_single_fold(test_plate):
                 
                 outputs, attn_weights = model(images, return_attention=True)
                 
+                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                 ent_loss = attention_entropy_loss(attn_weights)
                 loss = main_loss + 0.01 * ent_loss
                 
@@ -584,6 +598,7 @@ def train_single_fold(test_plate):
                     # Second forward-backward pass
                     disable_running_stats(model)
                     outputs, attn_weights = model(images, return_attention=True)
+                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                     ent_loss = attention_entropy_loss(attn_weights)
                     loss = main_loss + 0.01 * ent_loss
                     loss.backward()
@@ -617,6 +632,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
