@@ -1,5 +1,7 @@
 """
 MIL with cycle-based crop extraction + configurable neighborhood + Contrastive Learning
+Includes: Single forward pass for all features, EMA anchor for attention stabilization,
+Token dropout for regularization.
 """
 
 import torch
@@ -14,6 +16,67 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
 import re
 import os
+
+
+class TokenDropout(nn.Module):
+    """Randomly drops tokens (crops) during training to prevent overfitting.
+    
+    ASMIL-style regularization: randomly masks a fraction of crops in each bag.
+    Disabled at inference time.
+    """
+    def __init__(self, p=0.3):
+        super().__init__()
+        self.p = p
+    
+    def forward(self, x):
+        if not self.training:
+            return x
+        batch_size, num_crops, feat_dim = x.shape
+        mask = torch.rand(batch_size, num_crops, device=x.device) > self.p
+        mask = mask.unsqueeze(-1).float()
+        x = x * mask
+        num_kept = mask.sum(dim=1, keepdim=True)
+        x = x / (num_kept + 1e-8)
+        return x
+
+
+class EMAAnchor(nn.Module):
+    """EMA-based anchor for attention stabilization (ASMIL-style).
+    
+    Maintains exponential moving average of attention distributions across batches.
+    The online model is encouraged to match the anchor via KL divergence loss.
+    Stabilizes attention dynamics and reduces over-concentration.
+    
+    n_instances is inferred from first update call if not provided.
+    """
+    def __init__(self, num_heads=4, n_instances=None, ema_momentum=0.99):
+        super().__init__()
+        self.num_heads = num_heads
+        self.n_instances = n_instances
+        self.ema_momentum = ema_momentum
+        self.initialized = False
+        self._anchor_attn = None
+    
+    def update(self, attn_weights):
+        current = attn_weights.detach()
+        current_mean = current.mean(dim=0)
+        
+        if current_mean.ndim == 2:
+            n_inst, n_heads = current_mean.shape
+        elif current_mean.ndim == 3:
+            n_inst, n_heads = current_mean.shape[1], current_mean.shape[2]
+        else:
+            raise ValueError(f"Unexpected attn_weights shape: {attn_weights.shape}")
+        
+        if not self.initialized:
+            self._anchor_attn = current_mean.clone()
+            self.initialized = True
+        else:
+            self._anchor_attn = self._anchor_attn.to(current_mean.device)
+            self._anchor_attn.mul_(self.ema_momentum).add_(current_mean * (1 - self.ema_momentum))
+    
+    def get_anchor(self):
+        return self._anchor_attn
 
 
 class AttentionPooling(nn.Module):
@@ -46,18 +109,20 @@ class ContrastiveEncoder(nn.Module):
         )
     
     def forward(self, x):
-        # x: (B, feature_dim)
         return self.projection_head(x)
     
     def get_embedding(self, x):
-        # Return normalized embedding (without projection)
         with torch.no_grad():
             return F.normalize(x, dim=1)
 
 
 class MILEncoder(nn.Module):
-    """MIL encoder with optional contrastive head"""
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256):
+    """MIL encoder with optional contrastive head.
+    
+    Optimized for single forward pass - returns logits, attention weights,
+    and crop embeddings all in one pass.
+    """
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256, token_dropout_p=0.3):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -67,123 +132,68 @@ class MILEncoder(nn.Module):
         )
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
+        self.num_heads = num_heads
         
         self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
         self.attention_temp = attention_temp
-        
         self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
         
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
+        
+        self.token_dropout = TokenDropout(p=token_dropout_p)
+        self.ema_anchor = EMAAnchor(num_heads=num_heads, ema_momentum=0.99)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_embedding=False):
+    def forward(self, x, return_attention=False, return_crop_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
+        
+        crop_embeddings = x
         
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
         
-        if return_embedding and self.use_contrastive:
-            embedding = self.contrastive_head.get_embedding(pooled)
-            if return_attention:
-                return embedding, attn_weights
-            return embedding
-        
         output = self.classifier(pooled)
         
+        results = [output]
         if return_attention:
-            return output, attn_weights
-        return output
+            results.append(attn_weights)
+        if return_crop_embeddings:
+            results.append(crop_embeddings)
+        
+        return results[0] if len(results) == 1 else tuple(results)
     
     def get_contrastive_embedding(self, x):
-        """Get embedding for contrastive loss"""
-        batch_size, num_crops = x.shape[:2]
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)  # (B*N, 1280)
-        
-        # For single crop per image, skip attention pooling
-        if num_crops == 1:
-            x = x.squeeze(1)  # (B, 1280)
-            x = self.head_proj(x)
-            return self.contrastive_head.get_embedding(x)
-        
-        # For multiple crops, use attention to aggregate
-        x = x.view(batch_size, num_crops, -1)
-        pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
-        pooled = pooled.reshape(batch_size, -1)
-        pooled = self.head_proj(pooled)
-        
-        return self.contrastive_head.get_embedding(pooled)
-    
-    def get_backbone_features(self, x):
-        """Get backbone features directly (for crop-level contrastive)"""
-        batch_size, num_crops = x.shape[:2]
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
-        return x  # (B*N, 1280)
-    
-    def get_projected_features(self, x):
-        """Get projected features (before contrastive head)"""
-        # Handle input shape: (B, N, C, H, W) or (B, C, H, W)
-        if len(x.shape) == 5:
-            # Multiple crops per image
-            B, N, C, H, W = x.shape
-            x = x.view(B * N, C, H, W)
-            x = self.backbone(x)  # (B*N, 1280)
-            x = x.view(B, N, -1)
-            pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
-            pooled = pooled.reshape(B, -1)
-        else:
-            # Single crop per image
-            x = self.backbone(x)  # (B, 1280)
-            pooled = x
-        
-        pooled = self.head_proj(pooled)
-        return pooled
-    
-    def get_mil_embeddings(self, x):
-        """Get MIL bag embeddings (before classifier, for SC-MIL contrastive)"""
-        batch_size, num_crops = x.shape[:2]
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
-        
-        # Attention pooling over all crops
-        pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
-        pooled = pooled.reshape(batch_size, -1)
-        
-        # Project to feature dimension
-        pooled = self.head_proj(pooled)
-        
-        # Apply activation and return (before classifier)
-        return pooled
-    
-    def get_supcon_embeddings(self, x):
-        """Get embeddings in [batch, n_crops, feature_dim] shape for SupCon"""
-        batch_size, num_crops = x.shape[:2]
-        x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
-        # Return: [batch, n_crops, feature_dim]
-        return x.view(batch_size, num_crops, -1)
-    
-    def get_contrastive_embedding(self, x):
-        """Get embedding for contrastive loss"""
         pooled = self.get_projected_features(x)
         return self.contrastive_head.get_embedding(pooled)
     
     def get_backbone_features(self, x):
-        """Get backbone features directly"""
         x = self.backbone(x)
         return x
+    
+    def get_projected_features(self, x):
+        if len(x.shape) == 5:
+            B, N, C, H, W = x.shape
+            x = x.view(B * N, C, H, W)
+            x = self.backbone(x)
+            x = x.view(B, N, -1)
+            pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
+            pooled = pooled.reshape(B, -1)
+        else:
+            x = self.backbone(x)
+            pooled = x
+        
+        pooled = self.head_proj(pooled)
+        return pooled
 
 
 class AttentionMILModel(nn.Module):
@@ -207,12 +217,14 @@ class AttentionMILModel(nn.Module):
             nn.Linear(feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False):
+    def forward(self, x, return_attention=False, return_crop_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
+        
+        crop_embeddings = x
         
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         
@@ -221,9 +233,13 @@ class AttentionMILModel(nn.Module):
         
         output = self.classifier(pooled)
         
+        results = [output]
         if return_attention:
-            return output, attn_weights
-        return output
+            results.append(attn_weights)
+        if return_crop_embeddings:
+            results.append(crop_embeddings)
+        
+        return results[0] if len(results) == 1 else tuple(results)
 
 
 class MultiCropDataset(Dataset):
