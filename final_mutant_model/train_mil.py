@@ -58,6 +58,7 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False  # Disable for reproducibility
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
@@ -321,9 +322,9 @@ def train_single_fold(test_plate):
         effective_workers = NUM_WORKERS
         print(f"Using {effective_workers} workers")
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, worker_init_fn=worker_init_fn, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, worker_init_fn=worker_init_fn, pin_memory=True)
     
     print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2} crops")
     
@@ -383,8 +384,8 @@ def train_single_fold(test_plate):
         crop_dataset_v2.set_epoch(0)
         
         # Higher batch size for contrastive (more negatives = better learning)
-        crop_loader_v1 = DataLoader(crop_dataset_v1, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-        crop_loader_v2 = DataLoader(crop_dataset_v2, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+        crop_loader_v1 = DataLoader(crop_dataset_v1, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=0, worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True)
+        crop_loader_v2 = DataLoader(crop_dataset_v2, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=0, worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True)
         
         # Train encoder + projection head
         contrastive_params = [p for n, p in model.named_parameters() if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n]
@@ -462,7 +463,7 @@ def train_single_fold(test_plate):
         print(f"Using batch size: {effective_batch_size}")
         
         # Recreate data loaders with smaller batch size
-        train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
+        train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True)
         
         # Train encoder + attention + classifier jointly
         sc_mil_params = [p for n, p in model.named_parameters()]
@@ -731,3 +732,5 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
+
