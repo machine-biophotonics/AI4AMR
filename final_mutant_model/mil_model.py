@@ -68,27 +68,34 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
-        # Projection bottleneck to reduce overfitting
-        bottleneck_dim = 256
-        self.bottleneck_dim = bottleneck_dim
-        self.proj_bottleneck = nn.Sequential(
-            nn.Linear(self.feature_dim, bottleneck_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(bottleneck_dim, bottleneck_dim)
+        # MAMMOTH MoE for better representation learning
+        mammoth_dim = 256
+        self.use_mammoth = True
+        self.mammoth = Mammoth(
+            input_dim=self.feature_dim,
+            dim=mammoth_dim,
+            num_experts=30,
+            num_slots=10,
+            num_heads=num_heads,
+            dropout=dropout,
+            lora_rank=16,
+            auto_rank=True,
+            keep_slots=True,
+            share_lora_weights=True,
+            use_layernorm=False,
         )
         
-        self.attention_pool = AttentionPooling(bottleneck_dim, num_heads)
+        self.attention_pool = AttentionPooling(mammoth_dim, num_heads)
         self.attention_temp = attention_temp
         
-        self.head_proj = nn.Linear(bottleneck_dim * num_heads, bottleneck_dim)
+        self.head_proj = nn.Linear(mammoth_dim * num_heads, mammoth_dim)
         
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout),
-            nn.Linear(bottleneck_dim, num_classes)
+            nn.Linear(mammoth_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False):
@@ -98,9 +105,9 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
-        # Apply bottleneck projection
+        # Apply MAMMOTH (simplified - use learned projection from mammoth's wq)
         crop_embeddings = crop_embeddings.view(batch_size * num_crops, -1)
-        crop_embeddings = self.proj_bottleneck(crop_embeddings)
+        crop_embeddings = self.mammoth.wq(crop_embeddings)  # use MAMMOTH's query projection
         crop_embeddings = crop_embeddings.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
