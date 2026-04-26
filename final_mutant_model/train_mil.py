@@ -94,6 +94,7 @@ parser.add_argument('--use_sam', action='store_true', help='Use Sharpness-Aware 
 parser.add_argument('--sam_rho', type=float, default=0.05, help='Rho parameter for SAM (default: 0.05)')
 parser.add_argument('--adaptive_sam', action='store_true', help='Use Adaptive SAM (ASAM) instead of SAM')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
+                    parser.add_argument('--focal_gamma', type=float, default=2.0, help='Focal loss gamma')
                     help='Temperature for SC-MIL contrastive loss')
 args = parser.parse_args()
 
@@ -491,7 +492,7 @@ def train_single_fold(test_plate):
                 sc_loss = sc_criterion(bag_embeddings, labels)
                 
                 # Classification loss
-                ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels], gamma=args.focal_gamma)
                 
                 # Combined loss
                 loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
@@ -527,7 +528,7 @@ def train_single_fold(test_plate):
                     all_val_preds.extend(predicted.cpu().numpy())
                     all_val_probs.extend(probs.cpu().numpy())
                     all_val_labels.extend(labels.cpu().numpy())
-                    val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                    val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], gamma=args.focal_gamma)
                     val_ce_loss += val_loss.item()
                     val_correct += predicted.eq(labels).sum().item()
                     val_total += labels.size(0)
@@ -584,7 +585,7 @@ def train_single_fold(test_plate):
                 
                 outputs, attn_weights = model(images, return_attention=True)
                 
-                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing, gamma=args.focal_gamma)
                 ent_loss = attention_entropy_loss(attn_weights)
                 loss = main_loss + 0.01 * ent_loss
                 
@@ -598,7 +599,7 @@ def train_single_fold(test_plate):
                     # Second forward-backward pass
                     disable_running_stats(model)
                     outputs, attn_weights = model(images, return_attention=True)
-                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing, gamma=args.focal_gamma)
                     ent_loss = attention_entropy_loss(attn_weights)
                     loss = main_loss + 0.01 * ent_loss
                     loss.backward()
@@ -632,7 +633,7 @@ def train_single_fold(test_plate):
                 all_preds.extend(predicted.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
-                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing, gamma=args.focal_gamma)
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
