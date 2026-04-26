@@ -58,7 +58,7 @@ class ContrastiveEncoder(nn.Module):
 
 class MILEncoder(nn.Module):
     """MIL encoder with optional contrastive head"""
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, use_mammoth=True, projection_dim=256):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -107,8 +107,11 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
-        # Full MAMMOTH MoE forward: pass 3D tensor (B, N, features)
-        crop_embeddings = self.mammoth(crop_embeddings)
+        # Apply transformation: MAMMOTH or simple linear
+        if self.use_mammoth:
+            crop_embeddings = self.mammoth(crop_embeddings)
+        else:
+            crop_embeddings = self.mammoth(crop_embeddings)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
