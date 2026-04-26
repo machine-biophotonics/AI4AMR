@@ -96,6 +96,12 @@ parser.add_argument('--sam_rho', type=float, default=0.05, help='Rho parameter f
 parser.add_argument('--adaptive_sam', action='store_true', help='Use Adaptive SAM (ASAM) instead of SAM')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
+parser.add_argument('--contrastive_epochs', type=int, default=50,
+                    help='Epochs for contrastive pre-training (default: 50)')
+parser.add_argument('--contrastive_batch_size', type=int, default=32,
+                    help='Batch size for contrastive pre-training (default: 32)')
+parser.add_argument('--contrastive_temp', type=float, default=0.1,
+                    help='Temperature for SimCLR contrastive loss (default: 0.1)')
 args = parser.parse_args()
 
 # Set num_workers based on OS
@@ -109,6 +115,7 @@ random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if args.data_root:
@@ -218,8 +225,9 @@ def supervised_contrastive_loss(embeddings: torch.Tensor, labels: torch.Tensor, 
     
     # Return mean loss
     return loss.mean()
-    
-    batch_size = embeddings1.shape[0]
+
+
+def attention_entropy_loss(attn_weights):
     
     # Compute similarity matrix
     similarity = torch.matmul(embeddings1, embeddings2.T) / temperature
@@ -452,6 +460,13 @@ def train_single_fold(test_plate):
     
     # SC-MIL: Supervised Bag-Level Contrastive + Classification Joint Training
     if args.use_sc_mil:
+        timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path_sc_mil = os.path.join(OUTPUT_DIR, f'training_metrics_sc_mil_{timestamp_sc_mil}.csv')
+        csv_file_sc_mil = open(csv_path_sc_mil, 'w', newline='')
+        csv_writer_sc_mil = csv.writer(csv_file_sc_mil)
+        csv_writer_sc_mil.writerow(['epoch', 'train_ce_loss', 'train_cl_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
+        csv_file_sc_mil.flush()
+        
         print(f"\n{'='*60}")
         print(f"SC-MIL: Supervised Bag-Level Contrastive Joint Training")
         print(f"SC-MIL epochs: {args.sc_mil_epochs}, Temp: {args.sc_mil_temp}")
@@ -537,6 +552,10 @@ def train_single_fold(test_plate):
             all_val_labels_bin = label_binarize(all_val_labels, classes=list(range(num_classes)))
             val_auc = roc_auc_score(all_val_labels_bin, np.array(all_val_probs), average='macro')
             avg_val_ce_loss = val_ce_loss / len(val_loader)
+            
+            # Save metrics to CSV
+            csv_writer_sc_mil.writerow([epoch+1, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, backbone_lr])
+            csv_file_sc_mil.flush()
             
             print(f"\n{'='*70}")
             print(f"[Fold: {test_plate} | SC-MIL Epoch: {epoch+1}/{args.sc_mil_epochs}]")
@@ -725,10 +744,13 @@ def train_single_fold(test_plate):
         'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
     }
     
+    # Close CSV files
+    csv_file.close()
+    if args.use_sc_mil:
+        csv_file_sc_mil.close()
+    
     with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
         json.dump(results, f, indent=2)
-    
-    csv_file.close()
     print(f"Results saved to {OUTPUT_DIR}")
 
 
@@ -756,6 +778,10 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
+
+
+
 
 
 
