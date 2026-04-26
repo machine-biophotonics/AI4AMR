@@ -99,7 +99,7 @@ parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
 parser.add_argument('--contrastive_epochs', type=int, default=50,
                     help='Epochs for contrastive pre-training (default: 50)')
-parser.add_argument('--contrastive_batch_size', type=int, default=32,
+parser.add_argument('--contrastive_batch_size', type=int, default=256,
                     help='Batch size for contrastive pre-training (default: 32)')
 parser.add_argument('--contrastive_temp', type=float, default=0.1,
                     help='Temperature for SimCLR contrastive loss (default: 0.1)')
