@@ -570,9 +570,26 @@ def train_single_fold(test_plate):
                 ent_loss = attention_entropy_loss(attn_weights)
                 loss = main_loss + 0.01 * ent_loss
                 
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
+                # SAM training loop - two forward-backward passes
+                if use_sam_optimizer:
+                    enable_running_stats(model)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.first_step(zero_grad=True)
+                    
+                    # Second forward-backward pass
+                    disable_running_stats(model)
+                    outputs, attn_weights = model(images, return_attention=True)
+                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    ent_loss = attention_entropy_loss(attn_weights)
+                    loss = main_loss + 0.01 * ent_loss
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.second_step(zero_grad=True)
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
                 
                 run_loss += main_loss.item()
                 _, predicted = outputs.max(1)
