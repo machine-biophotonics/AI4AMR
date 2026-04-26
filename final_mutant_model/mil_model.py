@@ -68,17 +68,27 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
-        self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
+        # Projection bottleneck to reduce overfitting
+        bottleneck_dim = 256
+        self.bottleneck_dim = bottleneck_dim
+        self.proj_bottleneck = nn.Sequential(
+            nn.Linear(self.feature_dim, bottleneck_dim),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(bottleneck_dim, bottleneck_dim)
+        )
+        
+        self.attention_pool = AttentionPooling(bottleneck_dim, num_heads)
         self.attention_temp = attention_temp
         
-        self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
+        self.head_proj = nn.Linear(bottleneck_dim * num_heads, bottleneck_dim)
         
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
         
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout),
-            nn.Linear(self.feature_dim, num_classes)
+            nn.Linear(bottleneck_dim, num_classes)
         )
     
     def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False):
@@ -87,6 +97,11 @@ class MILEncoder(nn.Module):
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
+        
+        # Apply bottleneck projection
+        crop_embeddings = crop_embeddings.view(batch_size * num_crops, -1)
+        crop_embeddings = self.proj_bottleneck(crop_embeddings)
+        crop_embeddings = crop_embeddings.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
