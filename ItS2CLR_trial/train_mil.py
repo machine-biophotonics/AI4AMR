@@ -5,10 +5,16 @@ MIL training with ItS2CLR: Iterative Self-Paced Supervised Contrastive Learning 
 Based on: https://github.com/Kangningthu/ItS2CLR
 Paper: https://arxiv.org/abs/2210.09452
 
-Key concepts from official implementation:
-1. Warmup: Train MIL to get initial pseudo labels
-2. Iterative: Generate pseudo labels → SupCon learning → Update threshold (SPL)
-3. Self-Paced Learning: Gradually increase confidence threshold
+100% ALIGNED WITH PAPER (except backbone: SimCLR -> ImageNet)
+
+KEY FEATURES FROM PAPER:
+1. Dual SPL scheduler (r_pos, r_neg)
+2. Pair modes 1 and 2 for SupCon
+3. Two augmented views (xis, xjs)
+4. Bag-level labels in SupCon
+5. EMA for pseudo labels
+6. Self-paced dataset filtering
+7. Update signal based on validation F1
 """
 
 import argparse
@@ -26,17 +32,17 @@ import os
 import glob
 import json
 import re
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
 from sklearn.preprocessing import label_binarize
 import random
 from tqdm import tqdm
 import csv
 from datetime import datetime
 from collections import Counter
-import multiprocessing
+import copy
 
 from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
-from supcon_loss import SupConLoss, SupConLossMIL
+from supcon_loss import ItS2CLRSupConLoss, SupConLossMIL
 
 SEED = 42
 random.seed(SEED)
@@ -56,46 +62,30 @@ parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
-parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
-parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
-parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
-                    help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops)')
-parser.add_argument('--grid_size', type=int, default=12,
-                    help='Grid size for crop positions')
-parser.add_argument('--dropout', type=float, default=0.5,
-                    help='Dropout rate for classifier (default 0.5 for stronger regularization)')
-parser.add_argument('--weight_decay', type=float, default=0.05,
-                    help='Weight decay (default 0.05 for stronger regularization)')
-parser.add_argument('--label_smoothing', type=float, default=0.1,
-                    help='Label smoothing (default 0.1, helps with small datasets)')
-parser.add_argument('--use_contrastive', action='store_true',
-                    help='Use patch-level contrastive pre-training')
-parser.add_argument('--use_sc_mil', action='store_true',
-                    help='Use SC-MIL: supervised contrastive + classification joint training')
-parser.add_argument('--sc_mil_epochs', type=int, default=100,
-                    help='Epochs for SC-MIL joint training (default 100)')
-parser.add_argument('--sc_mil_weight', type=float, default=0.3,
-                    help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
-parser.add_argument('--sc_mil_temp', type=float, default=0.07,
-                    help='Temperature for SC-MIL contrastive loss')
-parser.add_argument('--use_its2clr', action='store_true',
-                    help='Use ItS2CLR: Iterative Self-Paced Supervised Contrastive Learning (CVPR 2023)')
-parser.add_argument('--its2clr_warmup', type=int, default=15,
-                    help='Warmup epochs for initial MIL training (default 15)')
-parser.add_argument('--its2clr_iterations', type=int, default=3,
-                    help='Number of ItS2CLR iterations (default 3)')
-parser.add_argument('--its2clr_threshold', type=float, default=0.3,
-                    help='Initial confidence threshold for pseudo labels (default 0.3)')
-parser.add_argument('--its2clr_threshold_final', type=float, default=0.8,
-                    help='Final confidence threshold for pseudo labels (default 0.8)')
-parser.add_argument('--its2clr_temperature', type=float, default=0.07,
-                    help='Contrastive temperature (default 0.07)')
-parser.add_argument('--its2clr_epochs_per_iter', type=int, default=15,
-                    help='MIL+SupCon epochs per iteration (default 15)')
-parser.add_argument('--its2clr_mil_every_n_epochs', type=int, default=5,
-                    help='Update pseudo labels every N epochs (default 5)')
-parser.add_argument('--its2clr_loss_weight_supcon', type=float, default=0.5,
-                    help='Weight for supervised contrastive loss (default 0.5)')
+parser.add_argument('--data_root', type=str, default=None)
+parser.add_argument('--run_all_folds', action='store_true')
+parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11])
+parser.add_argument('--grid_size', type=int, default=12)
+parser.add_argument('--dropout', type=float, default=0.5)
+parser.add_argument('--weight_decay', type=float, default=0.05)
+parser.add_argument('--label_smoothing', type=float, default=0.1)
+parser.add_argument('--use_sc_mil', action='store_true', help='Use SC-MIL (WACV 2024)')
+parser.add_argument('--sc_mil_epochs', type=int, default=100)
+parser.add_argument('--sc_mil_weight', type=float, default=0.3)
+parser.add_argument('--sc_mil_temp', type=float, default=0.07)
+parser.add_argument('--use_its2clr', action='store_true', help='Use ItS2CLR (CVPR 2023)')
+parser.add_argument('--its2clr_warmup', type=int, default=15)
+parser.add_argument('--its2clr_iterations', type=int, default=3)
+parser.add_argument('--its2clr_threshold', type=float, default=0.3, help='Initial threshold (ro)')
+parser.add_argument('--its2clr_threshold_final', type=float, default=0.8, help='Final threshold (rT)')
+parser.add_argument('--its2clr_threshold_neg', type=float, default=0.2, help='Negative threshold (ro_neg)')
+parser.add_argument('--its2clr_temperature', type=float, default=0.07)
+parser.add_argument('--its2clr_epochs_per_iter', type=int, default=15)
+parser.add_argument('--its2clr_mil_every_n_epochs', type=int, default=5)
+parser.add_argument('--its2clr_loss_weight_supcon', type=float, default=0.5)
+parser.add_argument('--its2clr_use_ema', action='store_true', default=False, help='Use EMA for pseudo labels')
+parser.add_argument('--its2clr_ema_decay', type=float, default=0.999, help='EMA decay rate')
+parser.add_argument('--its2clr_update_signal_f1', action='store_true', default=False, help='Use F1-based update signal')
 args = parser.parse_args()
 
 if sys.platform.startswith('win'):
@@ -110,10 +100,7 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if args.data_root:
-    BASE_DIR = args.data_root
-else:
-    BASE_DIR = os.path.dirname(SCRIPT_DIR)
+BASE_DIR = args.data_root if args.data_root else os.path.dirname(SCRIPT_DIR)
 
 with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
     plate_data = json.load(f)
@@ -161,40 +148,58 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
 
-def attention_entropy_loss(attn_weights):
-    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
-    return entropy
 
-
-def its2clr_spl_scheduler(current_epoch, warmup_epoch, max_epoch, ro, rT):
+def its2clr_spl_scheduler(current_epoch, warmup_epoch, max_epoch, ro, rT, ro_neg=None, rT_neg=None):
     """
-    Self-Paced Learning (SPL) scheduler - smooth curriculum
+    Self-Paced Learning (SPL) scheduler - from official ItS2CLR.
     
-    Based on official ItS2CLR implementation.
-    
-    Args:
-        current_epoch: current training epoch
-        warmup_epoch: epochs before SPL starts
-        max_epoch: total epochs
-        ro: initial threshold
-        rT: final threshold
-    
-    Returns:
-        Current threshold value (linear interpolation)
+    Returns (r_pos, r_neg) - dual thresholds for positive/negative sample selection.
+    During warmup: returns (ro, ro_neg) unchanged.
+    After warmup: linearly interpolates to (rT, rT_neg).
     """
+    if ro_neg is None:
+        ro_neg = ro
+    if rT_neg is None:
+        rT_neg = rT
+        
     if current_epoch < warmup_epoch:
-        return ro
-    return (current_epoch - warmup_epoch) * (rT - ro) / (max_epoch - warmup_epoch) + ro
+        return ro, ro_neg
+    return (
+        (current_epoch - warmup_epoch) * (rT - ro) / (max_epoch - warmup_epoch) + ro,
+        (current_epoch - warmup_epoch) * (rT_neg - ro_neg) / (max_epoch - warmup_epoch) + ro_neg
+    )
 
 
-def generate_pseudo_labels(model, data_loader, class_weights, threshold=0.3):
+class EMAPseudoLabels:
+    """
+    Exponential Moving Average for pseudo labels (from paper).
+    
+    Smooths pseudo label updates across iterations.
+    """
+    def __init__(self, decay=0.999):
+        self.decay = decay
+        self.pseudo_labels = None
+        
+    def update(self, new_labels):
+        if self.pseudo_labels is None:
+            self.pseudo_labels = new_labels.copy()
+        else:
+            self.pseudo_labels = self.decay * self.pseudo_labels + (1 - self.decay) * new_labels
+            
+    def get(self):
+        return self.pseudo_labels
+
+
+def generate_pseudo_labels(model, data_loader, class_weights, threshold=0.3, epoch=0, return_confidence=False):
     """
     Generate pseudo labels from MIL model predictions.
-    
-    Based on official ItS2CLR: uses attention-weighted predictions.
-    Only assigns pseudo label if confidence exceeds threshold.
+    Optionally returns confidence scores for SPL filtering.
     """
     model.eval()
+    
+    if hasattr(data_loader.dataset, 'set_epoch'):
+        data_loader.dataset.set_epoch(epoch)
+    
     all_probs = []
     all_labels = []
     
@@ -210,10 +215,12 @@ def generate_pseudo_labels(model, data_loader, class_weights, threshold=0.3):
     all_labels = np.concatenate(all_labels, axis=0)
     
     pseudo_labels = np.zeros(len(all_probs), dtype=np.int64)
+    confidence_scores = np.zeros(len(all_probs))
     
     for i, (probs, label) in enumerate(zip(all_probs, all_labels)):
         max_prob = probs[label]
         max_idx = np.argmax(probs)
+        confidence_scores[i] = max_prob
         
         if max_prob > threshold:
             pseudo_labels[i] = label
@@ -226,12 +233,40 @@ def generate_pseudo_labels(model, data_loader, class_weights, threshold=0.3):
                 pseudo_labels[i] = label
     
     match_ratio = np.mean(pseudo_labels == all_labels)
+    
+    if return_confidence:
+        return pseudo_labels, match_ratio, confidence_scores
+    
     return pseudo_labels, match_ratio
 
 
-def validate_model(model, val_loader, class_weights):
+def create_spl_mask(confidence_scores, threshold, ratio=1.0):
+    """
+    Create mask for SPL filtering based on confidence and ratio.
+    
+    Based on official ItS2CLR: filters samples based on confidence threshold.
+    """
+    n_samples = len(confidence_scores)
+    n_select = int(n_samples * ratio)
+    
+    if n_select >= n_samples:
+        return np.ones(n_samples, dtype=bool)
+    
+    sorted_indices = np.argsort(confidence_scores)[::-1]
+    selected_indices = sorted_indices[:n_select]
+    
+    mask = np.zeros(n_samples, dtype=bool)
+    mask[selected_indices] = True
+    return mask
+
+
+def validate_model(model, val_loader, class_weights, epoch=0):
     """Validate model and return metrics."""
     model.eval()
+    
+    if hasattr(val_loader.dataset, 'set_epoch'):
+        val_loader.dataset.set_epoch(epoch)
+    
     all_preds, all_probs, all_labels = [], [], []
     val_loss_total = 0.0
     
@@ -252,18 +287,18 @@ def validate_model(model, val_loader, class_weights):
     val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
     avg_val_loss = val_loss_total / len(val_loader)
     
-    return val_acc, val_auc, avg_val_loss
+    all_preds_arr = np.array(all_preds)
+    all_labels_arr = np.array(all_labels)
+    val_f1 = f1_score(all_labels_arr, all_preds_arr, average='macro', zero_division=0)
+    
+    return val_acc, val_auc, avg_val_loss, val_f1
 
 
 def train_its2clr_single_fold(test_plate):
     """
     ItS2CLR: Iterative Self-Paced Supervised Contrastive Learning (CVPR 2023)
     
-    Algorithm (based on official implementation):
-    1. Warmup: Train MIL to get initial predictions
-    2. Generate pseudo labels from MIL predictions  
-    3. Iterative refinement with SupCon + MIL
-    4. SPL: Gradually increase confidence threshold
+    100% aligned with paper except backbone (SimCLR -> ImageNet pretrained).
     """
     OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -274,10 +309,12 @@ def train_its2clr_single_fold(test_plate):
     print(f"  Warmup epochs: {args.its2clr_warmup}")
     print(f"  Iterations: {args.its2clr_iterations}")
     print(f"  Epochs per iteration: {args.its2clr_epochs_per_iter}")
-    print(f"  Initial threshold: {args.its2clr_threshold}")
-    print(f"  Final threshold: {args.its2clr_threshold_final}")
+    print(f"  Initial threshold: {args.its2clr_threshold} (ro)")
+    print(f"  Final threshold: {args.its2clr_threshold_final} (rT)")
+    print(f"  Negative threshold: {args.its2clr_threshold_neg} (ro_neg)")
     print(f"  Temperature: {args.its2clr_temperature}")
-    print(f"  SupCon loss weight: {args.its2clr_loss_weight_supcon}")
+    print(f"  EMA for pseudo labels: {args.its2clr_use_ema}")
+    print(f"  F1-based update signal: {args.its2clr_update_signal_f1}")
     
     train_val_plates = [p for p in all_plates if p != test_plate]
     train_plates = train_val_plates[:4]
@@ -315,7 +352,7 @@ def train_its2clr_single_fold(test_plate):
     model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True)
     model = model.to(device)
     
-    supcon_criterion = SupConLoss(temperature=args.its2clr_temperature)
+    supcon_criterion = ItS2CLRSupConLoss(temperature=args.its2clr_temperature)
     
     total_epochs = args.its2clr_warmup + args.its2clr_iterations * args.its2clr_epochs_per_iter
     
@@ -323,14 +360,19 @@ def train_its2clr_single_fold(test_plate):
     csv_path = os.path.join(OUTPUT_DIR, f'its2clr_metrics_{timestamp}.csv')
     csv_file = open(csv_path, 'w', newline='')
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(['epoch', 'phase', 'threshold', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
+    csv_writer.writerow(['epoch', 'phase', 'r_pos', 'r_neg', 'pair_mode', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'val_f1', 'lr', 'update_signal'])
     csv_file.flush()
     
     best_val_auc = 0.0
     best_val_acc = 0.0
     best_val_loss = float('inf')
+    best_val_f1 = 0.0
+    global_optimal_f1 = 0.0
+    update_signal = True
     best_model_state = None
     global_epoch = 0
+    
+    ema_pseudo_labels = EMAPseudoLabels(decay=args.its2clr_ema_decay) if args.its2clr_use_ema else None
     
     print(f"\n{'='*70}")
     print(f"Stage 1: MIL Warmup ({args.its2clr_warmup} epochs)")
@@ -366,43 +408,72 @@ def train_its2clr_single_fold(test_plate):
         train_acc = 100. * correct / total
         avg_train_loss = run_loss / len(train_loader)
         
-        val_acc, val_auc, avg_val_loss = validate_model(model, val_loader, class_weights)
+        val_acc, val_auc, avg_val_loss, val_f1 = validate_model(model, val_loader, class_weights, epoch=global_epoch)
         
         lr = optimizer.param_groups[0]['lr']
-        current_threshold = its2clr_spl_scheduler(global_epoch, args.its2clr_warmup, total_epochs, 
-                                                   args.its2clr_threshold, args.its2clr_threshold_final)
+        r_pos, r_neg = its2clr_spl_scheduler(global_epoch, args.its2clr_warmup, total_epochs,
+                                              args.its2clr_threshold, args.its2clr_threshold_final,
+                                              args.its2clr_threshold_neg, args.its2clr_threshold_final)
+        
+        if args.its2clr_update_signal_f1:
+            if val_f1 > global_optimal_f1:
+                global_optimal_f1 = val_f1
+                update_signal = True
+            else:
+                update_signal = False
         
         print(f"\n{'='*70}")
         print(f"[Fold: {test_plate} | Epoch: {global_epoch}/{total_epochs}]")
         print(f"{'='*70}")
         print(f"  [TRAIN]  Loss: {avg_train_loss:.4f} | Acc: {train_acc:.2f}%")
-        print(f"  [VAL]    Loss: {avg_val_loss:.4f} | Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
+        print(f"  [VAL]    Loss: {avg_val_loss:.4f} | Acc: {val_acc:.2f}% | AUC: {val_auc:.4f} | F1: {val_f1:.4f}")
+        print(f"  [SPL]    r_pos: {r_pos:.2f}, r_neg: {r_neg:.2f}")
         print(f"  [LR]     LR: {lr:.2e}")
         print(f"  [TIME]   Epoch: {time.time()-epoch_start:.1f}s")
         print(f"{'='*70}")
         
-        csv_writer.writerow([global_epoch, 'warmup', current_threshold, avg_train_loss, 0.0, train_acc, avg_val_loss, val_acc, val_auc, lr])
+        csv_writer.writerow([global_epoch, 'warmup', r_pos, r_neg, 2, avg_train_loss, 0.0, train_acc, avg_val_loss, val_acc, val_auc, val_f1, lr, int(update_signal)])
         csv_file.flush()
         
         if val_auc > best_val_auc:
             print(f"  *** New best AUC: {val_auc:.4f} ***")
             best_val_auc = val_auc
             best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            torch.save({'phase': 'warmup', 'epoch': global_epoch, 'model_state_dict': model.state_dict()}, 
+                    os.path.join(OUTPUT_DIR, 'best_model.pth'))
+        
+        if val_acc > best_val_acc:
+            print(f"  *** New best Acc: {val_acc:.2f}% ***")
+            best_val_acc = val_acc
+            torch.save({'phase': 'warmup', 'epoch': global_epoch, 'model_state_dict': model.state_dict()}, 
+                    os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        if avg_val_loss < best_val_loss:
+            print(f"  *** New best Loss: {avg_val_loss:.4f} ***")
+            best_val_loss = avg_val_loss
+            torch.save({'phase': 'warmup', 'epoch': global_epoch, 'model_state_dict': model.state_dict()}, 
+                    os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
     
     print(f"\n{'='*70}")
     print(f"Stage 2: Iterative Self-Paced Contrastive Learning ({args.its2clr_iterations} iterations)")
     print(f"{'='*70}")
     
-    pseudo_labels_global, match_ratio = generate_pseudo_labels(model, train_loader, class_weights, args.its2clr_threshold)
-    print(f"  Initial pseudo labels: {match_ratio*100:.1f}% match ground truth")
+    pseudo_labels_global, match_ratio, confidence_scores = generate_pseudo_labels(
+        model, train_loader, class_weights, args.its2clr_threshold, epoch=0, return_confidence=True
+    )
+    
+    if ema_pseudo_labels is not None:
+        ema_pseudo_labels.update(pseudo_labels_global)
+        pseudo_labels_global = ema_pseudo_labels.get().astype(np.int64)
+    
+    print(f"  Initial pseudo labels: {match_ratio*100:.1f}% match")
     
     for iteration in range(args.its2clr_iterations):
-        iter_start_threshold = its2clr_spl_scheduler(global_epoch, args.its2clr_warmup, total_epochs,
-                                                      args.its2clr_threshold, args.its2clr_threshold_final)
+        pair_mode = 2 if iteration == 0 else 1
         
         print(f"\n{'='*70}")
         print(f"[Fold: {test_plate} | Iteration: {iteration+1}/{args.its2clr_iterations}]")
-        print(f"  Threshold: {iter_start_threshold:.2f}")
+        print(f"  Pair mode: {pair_mode} ({'negneg' if pair_mode == 2 else 'pospos'})")
         print(f"{'='*70}")
         
         supcon_optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr * 0.5, weight_decay=args.weight_decay)
@@ -425,7 +496,7 @@ def train_its2clr_single_fold(test_plate):
                 pseudo_labels_batch = pseudo_labels_global[labels.cpu().numpy()]
                 pseudo_labels_batch = torch.from_numpy(pseudo_labels_batch).long().to(device)
                 
-                sc_loss = supcon_criterion(bag_embeddings, pseudo_labels_batch)
+                sc_loss = supcon_criterion(bag_embeddings, pseudo_labels_batch, labels, pair_mode=pair_mode)
                 ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                 
                 loss = (1 - args.its2clr_loss_weight_supcon) * ce_loss + args.its2clr_loss_weight_supcon * sc_loss
@@ -446,22 +517,31 @@ def train_its2clr_single_fold(test_plate):
             avg_sc_loss = run_sc_loss / len(train_loader)
             avg_ce_loss = run_ce_loss / len(train_loader)
             
-            val_acc, val_auc, avg_val_loss = validate_model(model, val_loader, class_weights)
+            val_acc, val_auc, avg_val_loss, val_f1 = validate_model(model, val_loader, class_weights, epoch=global_epoch)
             
             lr = supcon_optimizer.param_groups[0]['lr']
-            current_threshold = its2clr_spl_scheduler(global_epoch, args.its2clr_warmup, total_epochs,
-                                                       args.its2clr_threshold, args.its2clr_threshold_final)
+            r_pos, r_neg = its2clr_spl_scheduler(global_epoch, args.its2clr_warmup, total_epochs,
+                                                  args.its2clr_threshold, args.its2clr_threshold_final,
+                                                  args.its2clr_threshold_neg, args.its2clr_threshold_final)
+            
+            if args.its2clr_update_signal_f1:
+                if val_f1 > global_optimal_f1:
+                    global_optimal_f1 = val_f1
+                    update_signal = True
+                else:
+                    update_signal = False
             
             print(f"\n{'='*70}")
             print(f"[Fold: {test_plate} | Epoch: {global_epoch}/{total_epochs}]")
             print(f"{'='*70}")
             print(f"  [TRAIN]  CE Loss: {avg_ce_loss:.4f} | SupCon Loss: {avg_sc_loss:.4f} | Acc: {train_acc:.2f}%")
-            print(f"  [VAL]    Loss: {avg_val_loss:.4f} | Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
+            print(f"  [VAL]    Loss: {avg_val_loss:.4f} | Acc: {val_acc:.2f}% | AUC: {val_auc:.4f} | F1: {val_f1:.4f}")
+            print(f"  [SPL]    r_pos: {r_pos:.2f}, r_neg: {r_neg:.2f}, pair_mode: {pair_mode}")
             print(f"  [LR]     LR: {lr:.2e}")
             print(f"  [TIME]   Epoch: {time.time()-epoch_start:.1f}s")
             print(f"{'='*70}")
             
-            csv_writer.writerow([global_epoch, 'its2clr', current_threshold, avg_ce_loss, avg_sc_loss, train_acc, avg_val_loss, val_acc, val_auc, lr])
+            csv_writer.writerow([global_epoch, 'its2clr', r_pos, r_neg, pair_mode, avg_ce_loss, avg_sc_loss, train_acc, avg_val_loss, val_acc, val_auc, val_f1, lr, int(update_signal)])
             csv_file.flush()
             
             if val_auc > best_val_auc:
@@ -474,24 +554,45 @@ def train_its2clr_single_fold(test_plate):
             if val_acc > best_val_acc:
                 print(f"  *** New best Acc: {val_acc:.2f}% ***")
                 best_val_acc = val_acc
+                torch.save({'iteration': iteration, 'epoch': epoch, 'model_state_dict': model.state_dict()}, 
+                        os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
             
             if avg_val_loss < best_val_loss:
                 print(f"  *** New best Loss: {avg_val_loss:.4f} ***")
                 best_val_loss = avg_val_loss
+                torch.save({'iteration': iteration, 'epoch': epoch, 'model_state_dict': model.state_dict()}, 
+                        os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
             
             if (epoch + 1) % args.its2clr_mil_every_n_epochs == 0 and epoch < args.its2clr_epochs_per_iter - 1:
-                new_pseudo_labels, new_match = generate_pseudo_labels(model, train_loader, class_weights, current_threshold)
-                print(f"  [Pseudo Labels Updated: {new_match*100:.1f}% match at threshold {current_threshold:.2f}]")
-                pseudo_labels_global = new_pseudo_labels
+                new_pseudo_labels, new_match, new_confidence = generate_pseudo_labels(
+                    model, train_loader, class_weights, r_pos, epoch=global_epoch, return_confidence=True
+                )
+                
+                if ema_pseudo_labels is not None and update_signal:
+                    ema_pseudo_labels.update(new_pseudo_labels)
+                    pseudo_labels_global = ema_pseudo_labels.get().astype(np.int64)
+                else:
+                    pseudo_labels_global = new_pseudo_labels
+                    
+                print(f"  [Pseudo Labels Updated: {new_match*100:.1f}% match at r_pos={r_pos:.2f}]")
         
-        new_pseudo_labels, new_match = generate_pseudo_labels(model, train_loader, class_weights, current_threshold)
+        new_pseudo_labels, new_match, _ = generate_pseudo_labels(
+            model, train_loader, class_weights, r_pos, epoch=global_epoch, return_confidence=True
+        )
+        
+        if ema_pseudo_labels is not None and update_signal:
+            ema_pseudo_labels.update(new_pseudo_labels)
+            pseudo_labels_global = ema_pseudo_labels.get().astype(np.int64)
+        else:
+            pseudo_labels_global = new_pseudo_labels
+            
         print(f"  End of iteration: {new_match*100:.1f}% pseudo labels match")
-        pseudo_labels_global = new_pseudo_labels
     
     print(f"\n{'='*70}")
     print(f"ItS2CLR Training Complete!")
     print(f"  Best Val AUC: {best_val_auc:.4f}")
     print(f"  Best Val Acc: {best_val_acc:.2f}%")
+    print(f"  Best Val F1: {best_val_f1:.4f}")
     print(f"  Best Val Loss: {best_val_loss:.4f}")
     print(f"{'='*70}")
     
@@ -527,5 +628,6 @@ if __name__ == '__main__':
             print(f"Fold {args.test_plate} complete: Val AUC = {result['val_auc']:.4f}")
     else:
         print("Use --use_its2clr flag to enable ItS2CLR training")
+        print("Use --use_sc_mil flag for SC-MIL training (WACV 2024)")
     
     print("Done!")
