@@ -81,14 +81,14 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_embedding=False):
+    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        x = x.view(batch_size, num_crops, -1)
+        crop_embeddings = x.view(batch_size, num_crops, -1)  # Store for reuse
         
-        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+        pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
         
@@ -100,9 +100,13 @@ class MILEncoder(nn.Module):
         
         output = self.classifier(pooled)
         
+        results = [output]
         if return_attention:
-            return output, attn_weights
-        return output
+            results.append(attn_weights)
+        if return_crop_embeddings:
+            results.append(crop_embeddings)
+        
+        return results[0] if len(results) == 1 else tuple(results)
     
     def get_contrastive_embedding(self, x):
         """Get embedding for contrastive loss"""
