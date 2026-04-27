@@ -346,7 +346,7 @@ def evaluate_model(
     all_labels: list[int] = []
     
     with torch.no_grad():
-        for images, labels in data_loader:
+        for images, labels in tqdm(data_loader, desc='Validating', leave=False):
             images = images.to(device)
             labels = labels.to(device)
             
@@ -855,6 +855,14 @@ def _train_standard(
     print(f"Standard Training: {args.epochs} epochs")
     print(f"{'='*60}")
     
+    # CSV logging for standard training
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = output_dir / f'training_standard_{timestamp}.csv'
+    csv_file = open(csv_path, 'w', newline='')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
+    csv_file.flush()
+    
     best_auc, best_acc, best_loss = 0.0, 0.0, float('inf')
     
     for epoch in range(args.epochs):
@@ -896,14 +904,23 @@ def _train_standard(
             label_smoothing=args.label_smoothing
         )
         
+        lr = optimizer.param_groups[0]['lr']
+        
+        # Save to CSV
+        csv_writer.writerow([epoch + 1, avg_loss, train_acc, val_loss, val_acc, val_auc, lr])
+        csv_file.flush()
+        
         print(f"\nEpoch: {epoch+1}/{args.epochs}")
         print(f"TRAIN - Loss: {avg_loss:.4f}, Acc: {train_acc:.2f}%")
         print(f"VAL   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%, AUC: {val_auc:.4f}")
+        print(f"LR: {lr:.2e}, Time: {time.time()-epoch_start:.1f}s")
         
         # Save best
         if val_auc > best_auc:
             best_auc = val_auc
             save_checkpoint(output_dir / 'best_model.pth', epoch + 1, model,
+                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+            save_checkpoint(output_dir / 'best_model_auc.pth', epoch + 1, model,
                           {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
         
         if val_acc > best_acc:
@@ -915,6 +932,8 @@ def _train_standard(
             best_loss = val_loss
             save_checkpoint(output_dir / 'best_model_loss.pth', epoch + 1, model,
                           {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+    
+    csv_file.close()
 
 
 def _evaluate_full(
