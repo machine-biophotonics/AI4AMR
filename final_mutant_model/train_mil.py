@@ -43,8 +43,8 @@ Arguments:
 --sc_mil         : Enable SC-MIL (default: enabled)
 --no_sc_mil      : Disable SC-MIL, use standard
 --sc_mil_epochs  : Epochs for SC-MIL (default: 200)
---sc_mil_weight  : Weight for contrastive loss (default: 0.3)
---sc_mil_temp   : Temperature for SupCon (default: 0.07)
+--sc_mil_weight  : Weight for contrastive loss (default: 0.3, paper uses 0.3)
+--sc_mil_temp   : Temperature for SupCon (default: 1.0, paper uses τ=1)
 
 Usage:
     python train_mil.py --test_plate P6
@@ -108,7 +108,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'use_sc_mil': True,
     'sc_mil_epochs': 200,
     'sc_mil_weight': 0.3,
-    'sc_mil_temp': 0.07,
+    'sc_mil_temp': 1.0,
     'contrastive_epochs': 50,
     'contrastive_batch_size': 128,
     'contrastive_temp': 0.1,
@@ -735,7 +735,12 @@ def _train_sc_mil(
     
     print(f"\n{'='*60}")
     print(f"SC-MIL: Supervised Contrastive + Classification")
-    print(f"Epochs: {args.sc_mil_epochs}, Weight: {args.sc_mil_weight}")
+    print(f"Epochs: {args.sc_mil_epochs}")
+    if args.sc_mil_curriculum:
+        print(f"Curriculum: ON (β transitions 1→{args.sc_mil_weight})")
+    else:
+        print(f"Weight: {args.sc_mil_weight}")
+    print(f"Temperature: {args.sc_mil_temp} (paper: τ=1)")
     print(f"{'='*60}")
     
     # SC-MIL optimizer (train all parameters)
@@ -752,7 +757,7 @@ def _train_sc_mil(
     csv_file = open(csv_path, 'w', newline='')
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow(['epoch', 'train_ce', 'train_cl', 'train_acc',
-                     'val_ce', 'val_acc', 'val_auc', 'lr'])
+                     'val_ce', 'val_acc', 'val_auc', 'lr', 'beta'])
     csv_file.flush()
     
     best_auc, best_acc, best_loss = best_val_auc, best_val_acc, best_val_loss
@@ -781,8 +786,14 @@ def _train_sc_mil(
             # Classification loss
             ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
             
-            # Combined loss
-            loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
+            # Combined loss with curriculum (beta transitions from 1 to target weight)
+            # Paper: "with a linear curriculum ... with βt = 1 at the start of training"
+            if args.sc_mil_curriculum:
+                beta = 1.0 - (epoch / args.sc_mil_epochs) * (1.0 - args.sc_mil_weight)
+            else:
+                beta = args.sc_mil_weight
+            
+            loss = (1 - beta) * ce_loss + beta * sc_loss
             loss.backward()
             sc_optimizer.step()
             
@@ -799,21 +810,29 @@ def _train_sc_mil(
         avg_cl = train_cl / len(train_loader)
         lr = sc_optimizer.param_groups[0]['lr']
         
-        # Validation
+# Validation
         val_acc, val_auc, val_loss, _, _, _ = evaluate_model(
             model, val_loader, class_weights, device
         )
         
-        # Log to CSV
+        # Curriculum learning: beta transitions from 1 to target weight
+        # Paper: "with a linear curriculum as described in Section 2.2, with βt = 1 at the start of training"
+        if args.sc_mil_curriculum:
+            # Beta = 1 at start, transitions to target sc_mil_weight by end of training
+            beta = 1.0 - (epoch / args.sc_mil_epochs) * (1.0 - args.sc_mil_weight)
+        else:
+            beta = args.sc_mil_weight
+        
+        # Save to CSV
         csv_writer.writerow([epoch + 1, avg_ce, avg_cl, train_acc,
-                          val_loss, val_acc, val_auc, lr])
+                          val_loss, val_acc, val_auc, lr, beta])
         csv_file.flush()
         
         print(f"\n{'='*60}")
         print(f"Epoch: {epoch+1}/{args.sc_mil_epochs}")
         print(f"TRAIN - CE: {avg_ce:.4f}, Cl: {avg_cl:.4f}, Acc: {train_acc:.2f}%")
         print(f"VAL   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%, AUC: {val_auc:.4f}")
-        print(f"LR: {lr:.2e}, Time: {time.time()-epoch_start:.1f}s")
+        print(f"LR: {lr:.2e}, β: {beta:.3f}, Time: {time.time()-epoch_start:.1f}s")
         print(f"{'='*60}")
         
         # Save best models
@@ -1007,17 +1026,19 @@ def main() -> None:
     parser.add_argument('--contrastive_temp', type=float, default=0.1,
                         help='Temperature for SimCLR loss')
     
-    # Stage 2: SC-MIL
+# Stage 2: SC-MIL
     parser.add_argument('--sc_mil', action='store_true', default=True,
-                        help='Use SC-MIL (default: enabled)')
+                      help='Use SC-MIL (default: enabled)')
     parser.add_argument('--no_sc_mil', action='store_true',
-                        help='Disable SC-MIL, use standard training')
+                      help='Disable SC-MIL, use standard training')
     parser.add_argument('--sc_mil_epochs', type=int, default=200,
-                        help='SC-MIL epochs')
+                      help='SC-MIL epochs')
+    parser.add_argument('--sc_mil_temp', type=float, default=1.0,
+                      help='Temperature for SupCon loss (paper: τ=1)')
     parser.add_argument('--sc_mil_weight', type=float, default=0.3,
-                        help='Weight for contrastive loss in SC-MIL')
-    parser.add_argument('--sc_mil_temp', type=float, default=0.07,
-                        help='Temperature for SupCon loss')
+                      help='Weight for contrastive loss (paper: 0.3)')
+    parser.add_argument('--sc_mil_curriculum', action='store_true', default=False,
+                      help='Use linear curriculum (paper: β 1→0.3)')
     args = parser.parse_args()
     
     # Handle toggles
