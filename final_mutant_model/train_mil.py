@@ -947,7 +947,15 @@ def main() -> None:
     setup_seeds(args.seed)
     device = get_device()
     script_dir = Path(__file__).parent.resolve()
+    
+    # base_dir: look next to script_dir (siblings P1-P6), OR use explicit data_root
+    # Structure: /workspace/P1/, /workspace/P2/, ..., /workspace/final_mutant_model/
     base_dir = Path(args.data_root) if args.data_root else script_dir.parent
+    
+    # Debug info
+    print(f"Script dir: {script_dir}")
+    print(f"Data dir: {base_dir}")
+    print(f"P1 exists: {(base_dir / 'P1').exists()}")
     
     # Load configuration
     plate_data = load_plate_config(script_dir)
