@@ -570,6 +570,14 @@ def train_single_fold(
             worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True
         )
         
+        # CSV logging for Stage 1
+        timestamp_c1 = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path_c1 = output_dir / f'training_contrastive_{timestamp_c1}.csv'
+        csv_file_c1 = open(csv_path_c1, 'w', newline='')
+        csv_writer_c1 = csv.writer(csv_file_c1)
+        csv_writer_c1.writerow(['epoch', 'loss', 'lr'])
+        csv_file_c1.flush()
+        
         # Contrastive optimizer
         cont_params = [
             p for n, p in model.named_parameters()
@@ -620,8 +628,15 @@ def train_single_fold(
             
             cont_scheduler.step()
             avg_loss = run_loss / max(n_batches, 1)
-            print(f"Epoch {epoch}: Loss={avg_loss:.4f}")
+            lr = cont_optimizer.param_groups[0]['lr']
+            
+            # Save to CSV
+            csv_writer_c1.writerow([epoch + 1, avg_loss, lr])
+            csv_file_c1.flush()
+            
+            print(f"Epoch {epoch}: Loss={avg_loss:.4f}, LR={lr:.2e}")
         
+        csv_file_c1.close()
         print("Stage 1 complete!")
         train_dataset.set_epoch(0)
     
