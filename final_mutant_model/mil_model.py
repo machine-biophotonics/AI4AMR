@@ -64,7 +64,7 @@ class MultiScaleMILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-def forward(self, x, return_attention=False, return_crop_embeddings=False):
+    def forward(self, x, return_attention=False, return_crop_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
