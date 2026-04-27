@@ -36,22 +36,30 @@ class AttentionPooling(nn.Module):
 
 
 class MultiScaleMILEncoder(nn.Module):
-    """MIL encoder with multi-scale feature extraction from EfficientNet stages"""
+    """MIL encoder with multi-scale feature extraction using feature hooks
+    
+    Extracts features from multiple EfficientNet stages using forward hooks:
+    - Stage 3 (after block 2): 24 channels, 28x28
+    - Stage 4 (after block 4): 40 channels, 14x14
+    - Stage 5+ (after block 7): 320 channels, 7x7
+    """
     def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         
-        self.early_stages = base_model.features[:3]
-        self.mid_stages = base_model.features[3:5]
-        self.late_stages = base_model.features[5:]
+        # Full backbone
+        self.backbone = base_model.features
         
-        self.early_pool = nn.AdaptiveAvgPool2d(1)
-        self.mid_pool = nn.AdaptiveAvgPool2d(1)
-        self.late_pool = nn.AdaptiveAvgPool2d(1)
+        # Feature dimensions from each stage
+        # Stage 0-2: 16 channels -> use after block 2
+        # Stage 3-4: 40 channels -> use after block 4  
+        # Stage 5-7: 320 channels -> use after block 7
+        self.stage_dims = [16, 40, 320]
+        self.total_dim = sum(self.stage_dims)  # 376
         
-        self.total_dim = 376  # 16 + 40 + 320
         self.feature_dim = 1280
         
+        # Project concatenated features to standard dim
         self.feature_proj = nn.Linear(self.total_dim, self.feature_dim)
         
         self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
@@ -63,30 +71,55 @@ class MultiScaleMILEncoder(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
+        
+        # Register hooks for feature extraction
+        self.features_hook = []
+        self._register_hooks()
+    
+    def _register_hooks(self):
+        """Register forward hooks to capture intermediate features"""
+        def get_hook(name):
+            def hook(module, input, output):
+                self.features_hook.append(output)
+            return hook
+        
+        # Hook after block 2 (stage 3)
+        self.backbone[2].register_forward_hook(get_hook('stage3'))
+        # Hook after block 4 (stage 4)  
+        self.backbone[4].register_forward_hook(get_hook('stage4'))
+        # Hook after block 7 (final stage)
+        self.backbone[7].register_forward_hook(get_hook('stage7'))
     
     def forward(self, x, return_attention=False, return_crop_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
+        # Clear hooks
+        self.features_hook = []
+        
         x = x.view(batch_size * num_crops, *x.shape[2:])
         
-        # Early features - process original input, then pool
-        early = self.early_stages(x)
-        early = self.early_pool(early).flatten(1)
+        # Forward through backbone - hooks capture intermediate features
+        _ = self.backbone(x)
         
-        # Mid features - process original input, then pool
-        mid = self.mid_stages(x)  # Use original x, not early
-        mid = self.mid_pool(mid).flatten(1)
+        # Extract features from hooks: [stage3, stage4, stage7]
+        # Each is (B*N, C, H, W)
+        stage3_feat = self.features_hook[0]  # 16 channels
+        stage4_feat = self.features_hook[1]  # 40 channels
+        stage7_feat = self.features_hook[2]  # 320 channels
         
-        # Late features - process original input, then pool  
-        late = self.late_stages(x)  # Use original x, not mid
-        late = self.late_pool(late).flatten(1)
+        # Global average pool each stage
+        stage3 = F.adaptive_avg_pool2d(stage3_feat, 1).flatten(1)  # (B*N, 16)
+        stage4 = F.adaptive_avg_pool2d(stage4_feat, 1).flatten(1)  # (B*N, 40)
+        stage7 = F.adaptive_avg_pool2d(stage7_feat, 1).flatten(1)  # (B*N, 320)
         
         # Concatenate multi-scale features
-        multi_scale = torch.cat([early, mid, late], dim=1)
-        multi_scale = F.relu(self.feature_proj(multi_scale))
+        multi_scale = torch.cat([stage3, stage4, stage7], dim=1)  # (B*N, 376)
+        multi_scale = F.relu(self.feature_proj(multi_scale))  # (B*N, 1280)
         
+        # Reshape for MIL: (batch, num_crops, feature_dim)
         crop_embeddings = multi_scale.view(batch_size, num_crops, -1)
         
+        # Attention pooling
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
@@ -113,11 +146,9 @@ class ContrastiveEncoder(nn.Module):
         )
     
     def forward(self, x):
-        # x: (B, feature_dim)
         return self.projection_head(x)
     
     def get_embedding(self, x):
-        # Return normalized embedding (without projection)
         with torch.no_grad():
             return F.normalize(x, dim=1)
 
