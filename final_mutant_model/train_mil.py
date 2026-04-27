@@ -495,7 +495,11 @@ def train_single_fold(
     print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2}")
     
     # Create model
-    if args.use_sc_mil:
+    # Need MILEncoder for both SC-MIL and Stage 1 contrastive pre-training
+    # Use AttentionMILModel only when both stages are disabled
+    use_mil_encoder = args.use_sc_mil or args.contrastive_epochs > 0
+    
+    if use_mil_encoder:
         model = MILEncoder(
             num_classes=num_classes,
             num_heads=args.num_heads,
