@@ -537,7 +537,8 @@ def train_single_fold(
     # =========================================================================
     # STAGE 1: Contrastive Pre-training (optional)
     # =========================================================================
-    if args.use_contrastive and args.contrastive_epochs > 0:
+    # Stage 1 runs if contrastive_epochs > 0
+    if args.contrastive_epochs > 0:
         print(f"\n{'='*60}")
         print(f"Stage 1: Patch-Level SimCLR Pre-training")
         print(f"Epochs: {args.contrastive_epochs}, Batch size: {args.contrastive_batch_size}")
@@ -942,21 +943,43 @@ def main() -> None:
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--weight_decay', type=float, default=0.05)
     parser.add_argument('--label_smoothing', type=float, default=0.1)
-    parser.add_argument('--use_contrastive', action='store_true', default=True)
-    parser.add_argument('--no_contrastive', action='store_true')
-    parser.add_argument('--use_sc_mil', action='store_true', default=True)
-    parser.add_argument('--no_sc_mil', action='store_true')
-    parser.add_argument('--sc_mil_epochs', type=int, default=200)
-    parser.add_argument('--sc_mil_weight', type=float, default=0.3)
-    parser.add_argument('--sc_mil_temp', type=float, default=0.07)
-    parser.add_argument('--contrastive_epochs', type=int, default=50)
+    
+    # Stage 1: Contrastive pre-training
+    parser.add_argument('--contrastive_epochs', type=int, default=50,
+                        help='Epochs for Stage 1 (0 to skip)')
     parser.add_argument('--contrastive_batch_size', type=int, default=128)
-    parser.add_argument('--contrastive_temp', type=float, default=0.1)
+    parser.add_argument('--contrastive_temp', type=float, default=0.1,
+                        help='Temperature for SimCLR loss')
+    
+    # Stage 2: SC-MIL
+    parser.add_argument('--sc_mil', action='store_true', default=True,
+                        help='Use SC-MIL (default: enabled)')
+    parser.add_argument('--no_sc_mil', action='store_true',
+                        help='Disable SC-MIL, use standard training')
+    parser.add_argument('--sc_mil_epochs', type=int, default=200,
+                        help='SC-MIL epochs')
+    parser.add_argument('--sc_mil_weight', type=float, default=0.3,
+                        help='Weight for contrastive loss in SC-MIL')
+    parser.add_argument('--sc_mil_temp', type=float, default=0.07,
+                        help='Temperature for SupCon loss')
     args = parser.parse_args()
     
     # Handle toggles
-    args.use_contrastive = not args.no_contrastive
     args.use_sc_mil = not args.no_sc_mil
+    
+    # Print configuration
+    print(f"\n{'='*60}")
+    print("CONFIGURATION:")
+    print(f"  test_plate: {args.test_plate}")
+    print(f"  epochs: {args.epochs}")
+    print(f"  batch_size: {args.batch_size}")
+    print(f"  lr: {args.lr}")
+    print(f"  neighborhood: {args.neighborhood}")
+    print(f"  dropout: {args.dropout}")
+    print(f"  weight_decay: {args.weight_decay}")
+    print(f"  Stage 1 (Contrastive): epochs={args.contrastive_epochs}")
+    print(f"  Stage 2 (SC-MIL): use_sc_mil={args.use_sc_mil}, epochs={args.sc_mil_epochs}")
+    print(f"{'='*60}\n")
     
     # Setup
     setup_seeds(args.seed)
