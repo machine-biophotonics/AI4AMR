@@ -435,6 +435,13 @@ def train_single_fold(test_plate):
         sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         
+        # Create CSV file for SC-MIL metrics
+        timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
+        with open(csv_path_sc_mil, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
+        
         for epoch in range(args.sc_mil_epochs):
             train_dataset.set_epoch(epoch)
             model.train()
@@ -498,6 +505,11 @@ def train_single_fold(test_plate):
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
             print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}")
+            
+            # Save metrics to CSV
+            with open(csv_path_sc_mil, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
             
             # Save best model based on validation AUC
             if val_auc > best_val_auc:
@@ -657,6 +669,8 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
+
 
 
 
