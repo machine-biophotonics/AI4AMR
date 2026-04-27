@@ -555,6 +555,10 @@ def train_single_fold(
             augment=True, seed=SEED + 1
         )
         
+        # Initialize epoch centers for contrastive datasets
+        cont_dataset_1.set_epoch(0)
+        cont_dataset_2.set_epoch(0)
+        
         cont_loader_1 = DataLoader(
             cont_dataset_1, batch_size=args.contrastive_batch_size,
             shuffle=True, num_workers=0,
