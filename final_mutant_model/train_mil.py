@@ -11,12 +11,45 @@ Architecture:
 - Crops: 3x3 neighborhood (9 crops per image)
 - Feature Dim: 1280
 
-Training Strategy:
-- Stage 1: Patch-level SimCLR contrastive pre-training (optional)
-- Stage 2: SC-MIL supervised contrastive + classification joint training
+Training Pipeline:
+- Stage 1: Patch-level SimCLR contrastive pre-training (optional, controlled by --contrastive_epochs)
+  - neighborhood=1 (single crop), InfoNCE loss, learns generic features
+  - Skip with: --contrastive_epochs 0
+
+- Stage 2: SC-MIL supervised contrastive + classification joint training (default)
+  - neighborhood=3 (9 crops = bag), SupCon + Focal CE loss
+  - Disable with: --no_sc_mil
+
+Model Selection:
+- MILEncoder: Used for Stage 1 (needs contrastive projection head)
+- AttentionMILModel: Only when BOTH stages disabled
+
+Arguments:
+--epochs           : Total training epochs (default: 200)
+--batch_size       : Batch size (default: 16)
+--lr              : Learning rate (default: 1e-4)
+--num_heads        : Attention heads (default: 4)
+--seed            : Random seed (default: 42)
+--test_plate       : Test plate P1-P6 (default: P6)
+--neighborhood    : Crop neighborhood 3/5/7/9/11 (default: 3)
+--dropout        : Dropout rate (default: 0.5)
+--weight_decay   : Weight decay (default: 0.05)
+--label_smoothing: Label smoothing (default: 0.1)
+
+--contrastive_epochs : Epochs for Stage 1, 0 to skip (default: 50)
+--contrastive_batch_size: Batch size for Stage 1 (default: 128)
+--contrastive_temp  : Temperature for SimCLR (default: 0.1)
+
+--sc_mil         : Enable SC-MIL (default: enabled)
+--no_sc_mil      : Disable SC-MIL, use standard
+--sc_mil_epochs  : Epochs for SC-MIL (default: 200)
+--sc_mil_weight  : Weight for contrastive loss (default: 0.3)
+--sc_mil_temp   : Temperature for SupCon (default: 0.07)
 
 Usage:
     python train_mil.py --test_plate P6
+    python train_mil.py --test_plate P6 --contrastive_epochs 0
+    python train_mil.py --test_plate P6 --no_sc_mil
     python train_mil.py --run_all_folds
 """
 
