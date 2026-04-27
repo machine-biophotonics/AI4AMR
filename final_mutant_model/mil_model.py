@@ -50,12 +50,9 @@ class MultiScaleMILEncoder(nn.Module):
         # Full backbone
         self.backbone = base_model.features
         
-        # Feature dimensions from each stage
-        # Stage 0-2: 16 channels -> use after block 2
-        # Stage 3-4: 40 channels -> use after block 4  
-        # Stage 5-7: 320 channels -> use after block 7
-        self.stage_dims = [16, 40, 320]
-        self.total_dim = sum(self.stage_dims)  # 376
+# Feature dimensions from each stage (actual after hooks)
+        self.stage_dims = [24, 80, 320]
+        self.total_dim = sum(self.stage_dims)  # 424
         
         self.feature_dim = 1280
         
@@ -83,11 +80,11 @@ class MultiScaleMILEncoder(nn.Module):
                 self.features_hook.append(output)
             return hook
         
-        # Hook after block 2 (stage 3)
+        # Hook after block 2 (outputs 24 channels)
         self.backbone[2].register_forward_hook(get_hook('stage3'))
-        # Hook after block 4 (stage 4)  
+        # Hook after block 4 (outputs 80 channels)
         self.backbone[4].register_forward_hook(get_hook('stage4'))
-        # Hook after block 7 (final stage)
+        # Hook after block 7 (outputs 320 channels)
         self.backbone[7].register_forward_hook(get_hook('stage7'))
     
     def forward(self, x, return_attention=False, return_crop_embeddings=False):
@@ -103,17 +100,17 @@ class MultiScaleMILEncoder(nn.Module):
         
         # Extract features from hooks: [stage3, stage4, stage7]
         # Each is (B*N, C, H, W)
-        stage3_feat = self.features_hook[0]  # 16 channels
-        stage4_feat = self.features_hook[1]  # 40 channels
+        stage3_feat = self.features_hook[0]  # 24 channels
+        stage4_feat = self.features_hook[1]  # 80 channels
         stage7_feat = self.features_hook[2]  # 320 channels
         
         # Global average pool each stage
-        stage3 = F.adaptive_avg_pool2d(stage3_feat, 1).flatten(1)  # (B*N, 16)
-        stage4 = F.adaptive_avg_pool2d(stage4_feat, 1).flatten(1)  # (B*N, 40)
+        stage3 = F.adaptive_avg_pool2d(stage3_feat, 1).flatten(1)  # (B*N, 24)
+        stage4 = F.adaptive_avg_pool2d(stage4_feat, 1).flatten(1)  # (B*N, 80)
         stage7 = F.adaptive_avg_pool2d(stage7_feat, 1).flatten(1)  # (B*N, 320)
         
         # Concatenate multi-scale features
-        multi_scale = torch.cat([stage3, stage4, stage7], dim=1)  # (B*N, 376)
+        multi_scale = torch.cat([stage3, stage4, stage7], dim=1)  # (B*N, 424)
         multi_scale = F.relu(self.feature_proj(multi_scale))  # (B*N, 1280)
         
         # Reshape for MIL: (batch, num_crops, feature_dim)
