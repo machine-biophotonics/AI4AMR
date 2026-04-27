@@ -269,19 +269,16 @@ class MultiCropDataset(Dataset):
         self.num_neighbors = neighborhood * neighborhood - 1
         
         if augment:
-            # ImageNet normalization (model is pretrained on ImageNet)
-            # Brightness/contrast for grayscale images
+            # ImageNet normalization (model pretrained on ImageNet)
+            # Geometric augmentations only (no color changes in albumentations 2.0.8)
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
-                A.RandomBrightness(brightness_limit=0.5, p=0.5),
-                A.RandomContrast(contrast_limit=0.5, p=0.5),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
         else:
-            # ImageNet normalization (no augmentation)
             self.transform = A.Compose([
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
