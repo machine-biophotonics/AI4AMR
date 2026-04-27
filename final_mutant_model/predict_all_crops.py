@@ -48,6 +48,9 @@ def main() -> None:
                         help='Dropout for inference (default: 0.0, set to 0 to disable)')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads (default: 4)')
+    parser.add_argument('--attention_mode', type=str, default='softmax',
+                        choices=['softmax', 'sigmoid'],
+                        help='Attention type: softmax or sigmoid (default: softmax)')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -116,7 +119,8 @@ def main() -> None:
         num_heads=args.num_heads, 
         attention_temp=0.5, 
         dropout=args.dropout,
-        use_contrastive=has_contrastive or args.use_sc_mil
+        use_contrastive=has_contrastive or args.use_sc_mil,
+        attention_mode=args.attention_mode
     )
     model = model.to(device)
     

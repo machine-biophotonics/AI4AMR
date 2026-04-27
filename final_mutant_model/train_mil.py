@@ -445,14 +445,8 @@ def train_single_fold(test_plate):
                 sc_mil_optimizer.zero_grad()
                 
                 # Get bag embeddings (after attention pooling)
-                outputs, attn_weights = model(images, return_attention=True)
-                
-                # Get crop embeddings for SupCon: [batch, n_crops, feature_dim]
-                bag_embeddings = model.get_supcon_embeddings(images)
-                
-                # L2 normalize for SupCon (IMPORTANT!)
-                bag_embeddings = F.normalize(bag_embeddings, p=2, dim=-1)
-                
+                outputs, attn_weights, crop_embeddings = model(images, return_attention=True, return_crop_embeddings=True)
+                bag_embeddings = F.normalize(crop_embeddings, p=2, dim=-1)
                 # Use official SupConLoss from supcon_loss.py
                 sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
                 sc_loss = sc_criterion(bag_embeddings, labels)
@@ -663,4 +657,7 @@ if __name__ == '__main__':
         train_single_fold(args.test_plate)
     
     print("Done!")
+
+
+
 

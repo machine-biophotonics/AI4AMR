@@ -11,6 +11,28 @@ Multiple Instance Learning (MIL) model with attention pooling for classifying CR
 | **Crops** | 3×3 neighborhood (9 crops per image) |
 | **Feature Dim** | 1280 |
 
+## Research Backing
+
+This implementation follows established research papers:
+
+| Component | Paper | Citation |
+|-----------|-------|----------|
+| Gated Attention Pooling | Attention-based Deep Multiple Instance Learning | Ilse et al., ICML 2018 |
+| SC-MIL | SC-MIL: Supervised Contrastive MIL for Imbalanced Classification | Juyal et al., WACV 2024 (arXiv:2303.13405) |
+| Focal Loss | Focal Loss for Dense Object Detection | Lin et al., ICCV 2017 |
+| Supervised Contrastive | Supervised Contrastive Learning | Khosla et al., arXiv:2004.11362 |
+| SimCLR | Simple Framework for Contrastive Learning | Chen et al., ICML 2020 |
+
+### Key Parameters from Papers
+
+| Parameter | This Code | SC-MIL Paper |
+|-----------|----------|------------|
+| Temperature τ | 1.0 | τ = 1 (fixed) |
+| Curriculum β | 1 → 0.3 | β_t transitions 1 → target |
+| SC-MIL weight | 0.3 | 0.3 |
+| Focal γ | 2.0 | - |
+| Focal α | 0.25 | - |
+
 ## Training Pipeline
 
 ### Stage 1: Patch-Level SimCLR Pre-training (Optional)
@@ -33,6 +55,7 @@ Multiple Instance Learning (MIL) model with attention pooling for classifying CR
 | `--epochs` | 200 | Total training epochs for standard mode |
 | `--batch_size` | 16 | Batch size |
 | `--lr` | 1e-4 | Learning rate |
+| `--lr_decay` | OFF | Enable LR decay (cosine annealing) |
 | `--num_heads` | 4 | Attention heads |
 | `--seed` | 42 | Random seed |
 
@@ -49,13 +72,14 @@ Multiple Instance Learning (MIL) model with attention pooling for classifying CR
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--dropout` | 0.5 | Dropout rate |
-| `--weight_decay` | 0.05 | Weight decay |
+| `--weight_decay` | 0.0 | Weight decay (SC-MIL paper: NOT specified) |
 | `--label_smoothing` | 0.1 | Label smoothing |
+| `--attention_mode` | softmax | Attention: softmax or sigmoid (ASMIL) |
 
 ### Stage 1: Contrastive Pre-training
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--contrastive_epochs` | 50 | Epochs for Stage 1 (0 to skip) |
+| `--contrastive_epochs` | 0 | Epochs for Stage 1 (0 to skip) |
 | `--contrastive_batch_size` | 128 | Batch size for contrastive |
 | `--contrastive_temp` | 0.1 | Temperature for SimCLR loss |
 
@@ -66,7 +90,7 @@ Multiple Instance Learning (MIL) model with attention pooling for classifying CR
 | `--no_sc_mil` | - | Disable SC-MIL, use standard training |
 | `--sc_mil_epochs` | 200 | Epochs for SC-MIL |
 | `--sc_mil_weight` | 0.3 | Weight for contrastive loss (0.1-1.0) |
-| `--sc_mil_temp` | 0.07 | Temperature for SupCon loss |
+| `--sc_mil_temp` | 1.0 | Temperature for SupCon loss (SC-MIL paper: τ=1) |
 
 ## Usage Examples
 
@@ -106,12 +130,12 @@ python train_mil.py --test_plate P6 \
 
 ## Loss Functions
 
-| Function | Purpose | Equation |
-|----------|---------|----------|
-| `focal_loss` | Handle class imbalance | α(1-p_t)^γ × CE |
-| `weighted_focal_loss` | Focal + weights + smoothing | weighted focal |
-| `attention_entropy_loss` | Focused attention | -Σ p·log(p) |
-| `SupConLoss` | Bag-level supervised contrastive | Supervised SimCLR |
+| Function | Purpose | Paper |
+|----------|---------|-------|
+| `focal_loss` | Handle class imbalance | Lin et al., ICCV 2017 |
+| `weighted_focal_loss` | Focal + class weights + smoothing | Lin et al. + label smoothing |
+| `attention_entropy_loss` | Focused attention (standard mode only) | Regularization |
+| `SupConLoss` | Supervised contrastive loss | Khosla et al., 2020 |
 
 ## Output Files
 
@@ -138,12 +162,27 @@ pip install -r requirements.txt
 
 ## Citation
 
-If you use this code, please cite:
+If you use this code for SC-MIL, please cite:
 
 ```
-@software{crispri-mil,
-  title={MIL Training for CRISPRi Reference Plate Imaging},
-  author={Machine Biophotonics Lab},
-  url={https://github.com/machine-biophotonics/AI4AMR}
-}
+SC-MIL: Supervised Contrastive Multiple Instance Learning for Imbalanced Classification in Pathology
+Juyal et al., WACV 2024
+arXiv:2303.13405
 ```
+
+Other key citations:
+
+```
+Attention-based Deep Multiple Instance Learning
+Ilse et al., ICML 2018
+
+Focal Loss for Dense Object Detection  
+Lin et al., ICCV 2017
+
+Supervised Contrastive Learning
+Khosla et al., arXiv:2004.11362
+```
+
+## License
+
+MIT License
