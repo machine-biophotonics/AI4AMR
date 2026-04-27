@@ -35,6 +35,69 @@ class AttentionPooling(nn.Module):
         return pooled, attn_weights
 
 
+class MultiScaleMILEncoder(nn.Module):
+    """MIL encoder with multi-scale feature extraction from EfficientNet stages"""
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2):
+        super().__init__()
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        
+        self.early_stages = base_model.features[:3]
+        self.mid_stages = base_model.features[3:5]
+        self.late_stages = base_model.features[5:]
+        
+        self.early_pool = nn.AdaptiveAvgPool2d(1)
+        self.mid_pool = nn.AdaptiveAvgPool2d(1)
+        self.late_pool = nn.AdaptiveAvgPool2d(1)
+        
+        self.total_dim = 376  # 16 + 40 + 320
+        self.feature_dim = 1280
+        
+        self.feature_proj = nn.Linear(self.total_dim, self.feature_dim)
+        
+        self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
+        self.attention_temp = attention_temp
+        
+        self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
+        
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(self.feature_dim, num_classes)
+        )
+    
+    def forward(self, x, return_attention=False, return_crop_embeddings=False):
+        batch_size, num_crops = x.shape[:2]
+        
+        x = x.view(batch_size * num_crops, *x.shape[2:])
+        
+        early = self.early_stages(x)
+        early = self.early_pool(early).flatten(1)
+        
+        mid = self.mid_stages(early)
+        mid = self.mid_pool(mid).flatten(1)
+        
+        late = self.late_stages(mid)
+        late = self.late_pool(late).flatten(1)
+        
+        multi_scale = torch.cat([early, mid, late], dim=1)
+        multi_scale = F.relu(self.feature_proj(multi_scale))
+        
+        crop_embeddings = multi_scale.view(batch_size, num_crops, -1)
+        
+        pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
+        pooled = pooled.reshape(batch_size, -1)
+        pooled = self.head_proj(pooled)
+        
+        output = self.classifier(pooled)
+        
+        results = [output]
+        if return_attention:
+            results.append(attn_weights)
+        if return_crop_embeddings:
+            results.append(crop_embeddings)
+        
+        return results[0] if len(results) == 1 else tuple(results)
+
+
 class ContrastiveEncoder(nn.Module):
     """Encoder for contrastive learning"""
     def __init__(self, feature_dim=1280, projection_dim=256):
@@ -86,7 +149,7 @@ class MILEncoder(nn.Module):
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        crop_embeddings = x.view(batch_size, num_crops, -1)  # Store for reuse
+        crop_embeddings = x.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
@@ -109,18 +172,15 @@ class MILEncoder(nn.Module):
         return results[0] if len(results) == 1 else tuple(results)
     
     def get_contrastive_embedding(self, x):
-        """Get embedding for contrastive loss"""
         batch_size, num_crops = x.shape[:2]
         x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)  # (B*N, 1280)
+        x = self.backbone(x)
         
-        # For single crop per image, skip attention pooling
         if num_crops == 1:
-            x = x.squeeze(1)  # (B, 1280)
+            x = x.squeeze(1)
             x = self.head_proj(x)
             return self.contrastive_head.get_embedding(x)
         
-        # For multiple crops, use attention to aggregate
         x = x.view(batch_size, num_crops, -1)
         pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
@@ -129,63 +189,50 @@ class MILEncoder(nn.Module):
         return self.contrastive_head.get_embedding(pooled)
     
     def get_backbone_features(self, x):
-        """Get backbone features directly (for crop-level contrastive)"""
         batch_size, num_crops = x.shape[:2]
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        return x  # (B*N, 1280)
+        return x
     
     def get_projected_features(self, x):
-        """Get projected features (before contrastive head)"""
-        # Handle input shape: (B, N, C, H, W) or (B, C, H, W)
         if len(x.shape) == 5:
-            # Multiple crops per image
             B, N, C, H, W = x.shape
             x = x.view(B * N, C, H, W)
-            x = self.backbone(x)  # (B*N, 1280)
+            x = self.backbone(x)
             x = x.view(B, N, -1)
             pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
             pooled = pooled.reshape(B, -1)
         else:
-            # Single crop per image
-            x = self.backbone(x)  # (B, 1280)
+            x = self.backbone(x)
             pooled = x
         
         pooled = self.head_proj(pooled)
         return pooled
     
     def get_mil_embeddings(self, x):
-        """Get MIL bag embeddings (before classifier, for SC-MIL contrastive)"""
         batch_size, num_crops = x.shape[:2]
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
         
-        # Attention pooling over all crops
         pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
         
-        # Project to feature dimension
         pooled = self.head_proj(pooled)
         
-        # Apply activation and return (before classifier)
         return pooled
     
     def get_supcon_embeddings(self, x):
-        """Get embeddings in [batch, n_crops, feature_dim] shape for SupCon"""
         batch_size, num_crops = x.shape[:2]
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        # Return: [batch, n_crops, feature_dim]
         return x.view(batch_size, num_crops, -1)
     
     def get_contrastive_embedding(self, x):
-        """Get embedding for contrastive loss"""
         pooled = self.get_projected_features(x)
         return self.contrastive_head.get_embedding(pooled)
     
     def get_backbone_features(self, x):
-        """Get backbone features directly"""
         x = self.backbone(x)
         return x
 
@@ -199,7 +246,7 @@ class AttentionMILModel(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
-        feature_dim = 1280  # EfficientNet-B0 feature dimension
+        feature_dim = 1280
         
         self.attention_pool = AttentionPooling(feature_dim, num_heads)
         self.attention_temp = attention_temp
