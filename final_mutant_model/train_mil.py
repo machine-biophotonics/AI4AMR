@@ -1037,8 +1037,8 @@ def main() -> None:
                       help='Temperature for SupCon loss (paper: τ=1)')
     parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                       help='Weight for contrastive loss (paper: 0.3)')
-    parser.add_argument('--sc_mil_curriculum', action='store_true', default=False,
-                      help='Use linear curriculum (paper: β 1→0.3)')
+    parser.add_argument('--sc_mil_curriculum', action='store_true', default=True,
+                      help='Use linear curriculum (paper: β 1→0.3, default: ON')
     args = parser.parse_args()
     
     # Handle toggles
@@ -1055,7 +1055,7 @@ def main() -> None:
     print(f"  dropout: {args.dropout}")
     print(f"  weight_decay: {args.weight_decay}")
     print(f"  Stage 1 (Contrastive): epochs={args.contrastive_epochs}")
-    print(f"  Stage 2 (SC-MIL): use_sc_mil={args.use_sc_mil}, epochs={args.sc_mil_epochs}")
+    print(f"  Stage 2 (SC-MIL): epochs={args.sc_mil_epochs}, temp={args.sc_mil_temp}, weight={args.sc_mil_weight}, curriculum={args.sc_mil_curriculum}")
     print(f"{'='*60}\n")
     
     # Setup
