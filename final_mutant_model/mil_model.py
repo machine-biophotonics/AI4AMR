@@ -81,14 +81,14 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False):
+    def forward(self, x, return_attention=False, return_embedding=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
-        crop_embeddings = x.view(batch_size, num_crops, -1)
+        x = x.view(batch_size, num_crops, -1)
         
-        pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
+        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
         
@@ -100,13 +100,9 @@ class MILEncoder(nn.Module):
         
         output = self.classifier(pooled)
         
-        results = [output]
         if return_attention:
-            results.append(attn_weights)
-        if return_crop_embeddings:
-            results.append(crop_embeddings)
-        
-        return results[0] if len(results) == 1 else tuple(results)
+            return output, attn_weights
+        return output
     
     def get_contrastive_embedding(self, x):
         """Get embedding for contrastive loss"""
@@ -269,13 +265,11 @@ class MultiCropDataset(Dataset):
         self.num_neighbors = neighborhood * neighborhood - 1
         
         if augment:
-            # ImageNet normalization (model pretrained on ImageNet)
-            # Use brightness_only (contrast_limit=0) to avoid color changes
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.5, contrast_limit=0, p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.5, contrast_limit=0.5, p=0.3),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])

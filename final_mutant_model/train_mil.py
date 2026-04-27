@@ -1,467 +1,274 @@
 #!/usr/bin/env python3
 """
-MIL Training Script for CRISPRi Reference Plate Imaging
-
-This script trains a Multiple Instance Learning (MIL) model with attention pooling
-for classifying CRISPRi guide experiments from plate-based images.
-
-Architecture:
-- Backbone: EfficientNet-B0 (ImageNet pretrained)
-- Pooling: Gated Multi-head Attention (4 heads)
-- Crops: 3x3 neighborhood (9 crops per image)
-- Feature Dim: 1280
-
-Training Pipeline:
-- Stage 1: Patch-level SimCLR contrastive pre-training (optional, controlled by --contrastive_epochs)
-  - neighborhood=1 (single crop), InfoNCE loss, learns generic features
-  - Skip with: --contrastive_epochs 0
-
-- Stage 2: SC-MIL supervised contrastive + classification joint training (default)
-  - neighborhood=3 (9 crops = bag), SupCon + Focal CE loss
-  - Disable with: --no_sc_mil
-
-Model Selection:
-- MILEncoder: Used for Stage 1 (needs contrastive projection head)
-- AttentionMILModel: Only when BOTH stages disabled
-
-Arguments:
---epochs           : Total training epochs (default: 200)
---batch_size       : Batch size (default: 16)
---lr              : Learning rate (default: 1e-4)
---num_heads        : Attention heads (default: 4)
---seed            : Random seed (default: 42)
---test_plate       : Test plate P1-P6 (default: P6)
---neighborhood    : Crop neighborhood 3/5/7/9/11 (default: 3)
---dropout        : Dropout rate (default: 0.5)
---weight_decay   : Weight decay (default: 0.05)
---label_smoothing: Label smoothing (default: 0.1)
-
---contrastive_epochs : Epochs for Stage 1, 0 to skip (default: 50)
---contrastive_batch_size: Batch size for Stage 1 (default: 128)
---contrastive_temp  : Temperature for SimCLR (default: 0.1)
-
---sc_mil         : Enable SC-MIL (default: enabled)
---no_sc_mil      : Disable SC-MIL, use standard
---sc_mil_epochs  : Epochs for SC-MIL (default: 200)
---sc_mil_weight  : Weight for contrastive loss (default: 0.3, paper uses 0.3)
---sc_mil_temp   : Temperature for SupCon (default: 1.0, paper uses τ=1)
-
-Usage:
-    python train_mil.py --test_plate P6
-    python train_mil.py --test_plate P6 --contrastive_epochs 0
-    python train_mil.py --test_plate P6 --no_sc_mil
-    python train_mil.py --run_all_folds
+MIL training with cycle-based crop extraction + neighbors
+Training: configurable crops (3x3, 5x5, 7x7, 9x9, 11x11 neighborhood)
+Validation/Test: single center crop
+Supports --run_all_folds for cross-validation
 """
 
-from __future__ import annotations
-
 import argparse
-import json
-import os
 import sys
 import time
-from collections import Counter
-from datetime import datetime
-from pathlib import Path
-from typing import Any
-
 import matplotlib
 matplotlib.use('Agg')
-
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
 import torchvision
 from torch.utils.data import DataLoader
+import os
+import glob
+import json
+import re
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.preprocessing import label_binarize
+import random
 from tqdm import tqdm
 import csv
-import random
+from datetime import datetime
+from collections import Counter
+import multiprocessing
 
-# Local imports
 from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
-from supcon_loss import SupConLoss
+from supcon_loss import SupConLoss, SupConLossMIL
 
-# ============================================================================
-# CONFIGURATION & CONSTANTS
-# ============================================================================
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
 
-SEED: int = 42
-"""Random seed for reproducibility"""
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device: {device}")
 
-ALL_PLATES: list[str] = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
-"""Available plate directories"""
+parser = argparse.ArgumentParser()
+parser.add_argument('--epochs', type=int, default=200)
+parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--num_heads', type=int, default=4)
+parser.add_argument('--seed', type=int, default=42)
+parser.add_argument('--test_plate', type=str, default='P6')
+parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
+parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
+parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
+                    help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops)')
+parser.add_argument('--grid_size', type=int, default=12,
+                    help='Grid size for crop positions')
+parser.add_argument('--dropout', type=float, default=0.5,
+                    help='Dropout rate for classifier (default 0.5 for stronger regularization)')
+parser.add_argument('--weight_decay', type=float, default=0.05,
+                    help='Weight decay (default 0.05 for stronger regularization)')
+parser.add_argument('--label_smoothing', type=float, default=0.1,
+                    help='Label smoothing (default 0.1, helps with small datasets)')
+parser.add_argument('--use_contrastive', action='store_true',
+                    help='Use patch-level contrastive pre-training')
+parser.add_argument('--use_sc_mil', action='store_true',
+                    help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
+parser.add_argument('--sc_mil_epochs', type=int, default=100,
+                    help='Epochs for SC-MIL joint training (default 100)')
+parser.add_argument('--sc_mil_weight', type=float, default=0.3,
+                    help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
+parser.add_argument('--sc_mil_temp', type=float, default=0.07,
+                    help='Temperature for SC-MIL contrastive loss')
+args = parser.parse_args()
 
-DEFAULT_CONFIG: dict[str, Any] = {
-    'epochs': 200,
-    'batch_size': 16,
-    'lr': 1e-4,
-    'num_heads': 4,
-    'dropout': 0.5,
-    'weight_decay': 0.05,
-    'label_smoothing': 0.1,
-    'neighborhood': 3,
-    'grid_size': 12,
-    'use_contrastive': True,
-    'use_sc_mil': True,
-    'sc_mil_epochs': 200,
-    'sc_mil_weight': 0.3,
-    'sc_mil_temp': 1.0,
-    'contrastive_epochs': 50,
-    'contrastive_batch_size': 128,
-    'contrastive_temp': 0.1,
-}
+# Set num_workers based on OS
+if sys.platform.startswith('win'):
+    NUM_WORKERS = 0  # Windows Python 3.14: multiprocessing spawn required
+else:
+    NUM_WORKERS = 16
 
-# ============================================================================
-# SETUP
-# ============================================================================
+SEED = args.seed
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
 
-def setup_seeds(seed: int) -> None:
-    """Set random seeds for reproducibility across all libraries."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if args.data_root:
+    BASE_DIR = args.data_root
+else:
+    BASE_DIR = os.path.dirname(SCRIPT_DIR)
 
+with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+    plate_data = json.load(f)
 
-def get_device() -> torch.device:
-    """Get available compute device (CUDA if available, else CPU)."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+plate_maps = {}
+for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
+    plate_maps[plate] = {}
+    for row, wells in plate_data[plate].items():
+        for col, info in wells.items():
+            well = f"{row}{int(col):02d}"
+            plate_maps[plate][well] = info['id']
 
+def extract_gene(label):
+    return label
 
-# ============================================================================
-# LOSS FUNCTIONS
-# ============================================================================
+all_genes = sorted(set(extract_gene(label) for pm in plate_maps.values() for label in pm.values()))
+gene_to_idx = {gene: idx for idx, gene in enumerate(all_genes)}
+num_classes = len(all_genes)
+print(f"Classes: {num_classes}")
 
-def focal_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    alpha: float = 0.25,
-    gamma: float = 2.0
-) -> torch.Tensor:
-    """
-    Focal Loss for handling class imbalance.
-    
-    Args:
-        logits: Model predictions (before softmax)
-        targets: Ground truth labels
-        alpha: Weighting factor for class balance
-        gamma: Focusing parameter for hard examples
-    
-    Returns:
-        Scalar loss value
-    """
+all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+
+def get_image_paths_for_plate(plate):
+    plate_dir = os.path.join(BASE_DIR, plate)
+    if not os.path.exists(plate_dir):
+        return []
+    paths = []
+    for pattern in ['*.tif', '*.tiff', '*.png']:
+        paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
+    valid_paths = []
+    for path in paths:
+        well = extract_well_from_filename(os.path.basename(path))
+        if well and well in plate_maps.get(plate, {}):
+            valid_paths.append(path)
+    return valid_paths
+
+def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
-    focal_loss = alpha * (1 - pt) ** gamma * ce_loss
-    return focal_loss.mean()
+    return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-
-def weighted_focal_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    weights: torch.Tensor,
-    alpha: float = 0.25,
-    gamma: float = 2.0,
-    label_smoothing: float = 0.0
-) -> torch.Tensor:
-    """
-    Weighted Focal Loss with class weights and optional label smoothing.
-    
-    Args:
-        logits: Model predictions (before softmax)
-        targets: Ground truth labels (indices)
-        weights: Class weights tensor (same device as targets)
-        alpha: Weighting factor for class balance
-        gamma: Focusing parameter for hard examples
-        label_smoothing: Label smoothing factor (0.0 = no smoothing)
-    
-    Returns:
-        Scalar loss value
-    """
-    ce_loss = nn.functional.cross_entropy(
-        logits, targets, reduction='none', label_smoothing=label_smoothing
-    )
+def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+    ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
 
+def contrastive_loss(embeddings1, embeddings2, labels, temperature=0.1):
+    """
+    InfoNCE contrastive loss for positive pairs.
+    Positive pairs: samples with same label
+    Negative pairs: samples with different labels
+    """
+    embeddings1 = F.normalize(embeddings1, dim=1)
+    embeddings2 = F.normalize(embeddings2, dim=1)
 
-def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
+def supervised_contrastive_loss(embeddings: torch.Tensor, labels: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
     """
-    Attention entropy loss for encouraging focused attention maps.
+    SupCon (Supervised Contrastive) Loss - Properly implemented for backprop
     
-    Encourages the model to attend to fewer, more informative crops
-    by penalizing uniform attention distributions.
+    For each sample i:
+    - Positive: all samples with same label
+    - Negative: all samples with different labels
     
-    Args:
-        attn_weights: Attention weights from MIL pooling (batch_size, num_heads, num_crops)
-    
-    Returns:
-        Scalar entropy loss
+    Loss = -log(exp(sim(i,j)) + sum(exp(i,k)))
     """
-    # Ensure valid inputs to avoid log(0)
-    attn_safe = attn_weights + 1e-8
-    entropy = -(attn_safe * torch.log(attn_safe)).sum(dim=-1).mean()
+    # Normalize embeddings
+    embeddings = F.normalize(embeddings, dim=1)
+    batch_size: int = embeddings.shape[0]
+    
+    # Ensure labels is 1D
+    labels = labels.view(-1)
+    
+    # Create positive mask: samples with same label
+    mask_positive: torch.Tensor = labels.unsqueeze(0) == labels.unsqueeze(1)
+    mask_positive.fill_diagonal_(False)
+    
+    # Compute similarity matrix: (B, B) - no temperature yet
+    sim_matrix: torch.Tensor = torch.matmul(embeddings, embeddings.T)
+    
+    # For numerical stability
+    sim_matrix_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+    sim_matrix = sim_matrix - sim_matrix_max.detach()
+    
+    # Apply temperature
+    sim_matrix = sim_matrix / temperature
+    
+    # Compute loss: for each sample, compute -log(positive_sum / all_sum)
+    exp_sim = torch.exp(sim_matrix)
+    
+    # Denominator: sum of all exp(sim)
+    denom = exp_sim.sum(dim=1, keepdim=True)
+    
+    # Numerator: sum of exp(sim) for positives only
+    # Create a tensor of zeros and fill in positive values
+    mask_exp = mask_positive.float()
+    numer = (exp_sim * mask_exp).sum(dim=1)
+    
+    # Compute loss
+    loss = -torch.log(numer / (denom.squeeze() + 1e-8))
+    
+    # Return mean loss
+    return loss.mean()
+    
+    batch_size = embeddings1.shape[0]
+    
+    # Compute similarity matrix
+    similarity = torch.matmul(embeddings1, embeddings2.T) / temperature
+    
+    # Create mask for positive pairs (same label)
+    labels = labels.view(-1)
+    mask = labels.unsqueeze(0) == labels.unsqueeze(1)
+    mask = mask.fill_diagonal_(False)
+    
+    # For InfoNCE, we need to identify which pairs are positive
+    # Since we're doing within-batch contrastive, use labels to find positives
+    loss = 0.0
+    for i in range(batch_size):
+        pos_indices = torch.where(mask[i])[0]
+        if len(pos_indices) == 0:
+            continue
+        
+        # Positive logits
+        pos_sim = similarity[i, pos_indices]
+        
+        # All logits (positive + negative)
+        neg_mask = ~mask[i]
+        neg_sim = similarity[i, neg_mask]
+        
+        # InfoNCE: -log(exp(pos) / sum(exp(all)))
+        logits = torch.cat([pos_sim, neg_sim])
+        labels_idx = torch.zeros(len(pos_indices), dtype=torch.long, device=embeddings1.device)
+        
+        loss += F.cross_entropy(logits, labels_idx)
+    
+    return loss / batch_size if batch_size > 0 else torch.tensor(0.0, device=embeddings1.device)
+
+def attention_entropy_loss(attn_weights):
+    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
     return entropy
 
-
-# ============================================================================
-# DATA LOADING
-# ============================================================================
-
-def load_plate_config(script_dir: Path) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load plate-well-to-gene mapping from JSON config."""
-    config_path = script_dir / 'plate_well_id_path.json'
-    with open(config_path, 'r') as f:
-        return json.load(f)
-
-
-def build_plate_maps(plate_data: dict[str, dict[str, dict[str, Any]]]) -> dict[str, dict[str, str]]:
-    """
-    Build plate-to-well mapping dictionary.
-    
-    Args:
-        plate_data: Raw plate data from JSON
-    
-    Returns:
-        Nested dict: plate -> well_id -> gene_id
-    """
-    plate_maps: dict[str, dict[str, str]] = {}
-    for plate in ALL_PLATES:
-        plate_maps[plate] = {}
-        for row, wells in plate_data[plate].items():
-            for col, info in wells.items():
-                # Format: "A1" -> "A01"
-                well_id = f"{row}{int(col):02d}"
-                plate_maps[plate][well_id] = info['id']
-    return plate_maps
-
-
-def get_image_paths(
-    plate_dir: Path,
-    plate: str,
-    plate_maps: dict[str, dict[str, str]]
-) -> list[str]:
-    """
-    Get all valid image paths for a plate.
-    
-    Args:
-        plate_dir: Base directory containing plate folders
-        plate: Plate identifier (e.g., 'P1')
-        plate_maps: Well mapping dictionary
-    
-    Returns:
-        List of valid image file paths
-    """
-    plate_path = plate_dir / plate
-    if not plate_path.exists():
-        return []
-    
-    # Find all image files (support multiple formats)
-    patterns = ['*.tif', '*.tiff', '*.png']
-    paths: list[str] = []
-    for pattern in patterns:
-        paths.extend(plate_path.glob(f'**/{pattern}'))
-    
-    # Filter to valid wells
-    valid_paths = []
-    for path in paths:
-        well = extract_well_from_filename(path.name)
-        if well and well in plate_maps.get(plate, {}):
-            valid_paths.append(str(path))
-    
-    return valid_paths
-
-
-def compute_class_weights(
-    labels: np.ndarray,
-    num_classes: int,
-    device: torch.device
-) -> torch.Tensor:
-    """
-    Compute inverse frequency class weights for imbalanced data.
-    
-    Args:
-        labels: Array of class labels
-        num_classes: Total number of classes
-        device: Target compute device
-    
-    Returns:
-        Tensor of class weights
-    """
-    counts = Counter(labels)
-    total = len(labels)
-    weights = torch.tensor([
-        total / (num_classes * counts.get(i, 1)) for i in range(num_classes)
-    ], device=device)
-    # Normalize so weights sum to num_classes
-    return weights / weights.sum() * num_classes
-
-
-# ============================================================================
-# TRAINING HELPERS
-# ============================================================================
-
-def worker_init_fn(worker_id: int, seed: int = 42) -> None:
-    """
-    Initialize worker random state for DataLoader multiprocessing.
-    
-    Args:
-        worker_id: DataLoader worker ID
-        seed: Base seed value
-    """
+def worker_init_fn(worker_id, seed=42):
+    """Module-level worker init function for multiprocessing compatibility"""
     random.seed(seed + worker_id)
 
 
-def evaluate_model(
-    model: nn.Module,
-    data_loader: DataLoader,
-    class_weights: torch.Tensor,
-    device: torch.device,
-    label_smoothing: float = 0.0
-) -> tuple[float, float, float, list[np.ndarray], list[np.ndarray], list[int]]:
-    """
-    Run validation/test evaluation.
-    
-    Args:
-        model: PyTorch model
-        data_loader: DataLoader for evaluation
-        class_weights: Class weights tensor
-        device: Compute device
-        label_smoothing: Label smoothing value
-    
-    Returns:
-        Tuple of (accuracy, AUC, loss, predictions, probabilities, labels)
-    """
-    model.eval()
-    total_loss = 0.0
-    all_preds: list[int] = []
-    all_probs: list[np.ndarray] = []
-    all_labels: list[int] = []
-    
-    with torch.no_grad():
-        for images, labels in tqdm(data_loader, desc='Validating', leave=False):
-            images = images.to(device)
-            labels = labels.to(device)
-            
-            outputs, _ = model(images, return_attention=True)
-            probs = torch.softmax(outputs, dim=1)
-            
-            loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=label_smoothing)
-            total_loss += loss.item()
-            
-            _, predicted = outputs.max(1)
-            all_preds.extend(predicted.cpu().numpy().tolist())
-            all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy().tolist())
-    
-    all_labels = np.array(all_labels)
-    all_probs_np = np.array(all_probs)
-    
-    accuracy = 100.0 * np.mean(np.array(all_preds) == all_labels)
-    
-    # Handle multi-class AUC
-    if len(all_labels) > 0:
-        labels_bin = label_binarize(all_labels, classes=list(range(len(class_weights))))
-        auc = roc_auc_score(labels_bin, all_probs_np, average='macro')
-    else:
-        auc = 0.0
-    
-    avg_loss = total_loss / len(data_loader)
-    return accuracy, auc, avg_loss, all_preds, all_probs_np, all_labels
-
-
-def save_checkpoint(
-    path: Path,
-    epoch: int,
-    model: nn.Module,
-    metrics: dict[str, float]
-) -> None:
-    """
-    Save model checkpoint with metadata.
-    
-    Args:
-        path: Save path
-        epoch: Current epoch number (1-indexed)
-        model: PyTorch model
-        metrics: Dict of validation metrics
-    """
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        **metrics
-    }, path)
-
-
-# ============================================================================
-# MAIN TRAINING FUNCTION
-# ============================================================================
-
-def train_single_fold(
-    test_plate: str,
-    args: argparse.Namespace,
-    device: torch.device,
-    script_dir: Path,
-    base_dir: Path,
-    plate_maps: dict[str, dict[str, str]],
-    gene_to_idx: dict[str, int],
-    num_classes: int
-) -> dict[str, Any]:
-    """
-    Train a single fold (test plate held out).
-    
-    Args:
-        test_plate: Plate to use as test set
-        args: Training arguments
-        device: Compute device
-        script_dir: Script directory
-        base_dir: Data directory
-        plate_maps: Well mapping
-        gene_to_idx: Gene name to index mapping
-        num_classes: Number of classes
-    
-    Returns:
-        Dict of training results
-    """
-    # Setup directories
-    output_dir = script_dir / f'fold_{test_plate}'
-    output_dir.mkdir(parents=True, exist_ok=True)
+def train_single_fold(test_plate):
+    OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     print(f"\n{'='*60}")
     print(f"Training fold: test_plate={test_plate}")
     print(f"{'='*60}")
     
-    # Split plates: 4 train, 1 val, 1 test
-    train_val_plates = [p for p in ALL_PLATES if p != test_plate]
+    train_val_plates = [p for p in all_plates if p != test_plate]
     train_plates = train_val_plates[:4]
-    val_plates = train_val_plates[4:5]
+    val_plates = train_val_plates[4:]
     
     print(f"Train plates: {train_plates}")
     print(f"Val plates: {val_plates}")
     
-    # Load data
     train_paths, train_labels = [], []
     val_paths, val_labels = [], []
     test_paths, test_labels = [], []
     
     for plate in train_plates:
-        for path in get_image_paths(base_dir, plate, plate_maps):
+        for path in get_image_paths_for_plate(plate):
             train_paths.append(path)
             train_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
     
     for plate in val_plates:
-        for path in get_image_paths(base_dir, plate, plate_maps):
+        for path in get_image_paths_for_plate(plate):
             val_paths.append(path)
             val_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
     
     for plate in [test_plate]:
-        for path in get_image_paths(base_dir, plate, plate_maps):
+        for path in get_image_paths_for_plate(plate):
             test_paths.append(path)
             test_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
     
@@ -471,643 +278,388 @@ def train_single_fold(
     
     print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
     
-    # Class weights (computed on training set)
-    class_weights = compute_class_weights(train_labels, num_classes, device)
+    class_counts = Counter(train_labels)
+    total = len(train_labels)
+    class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
+    class_weights = class_weights / class_weights.sum() * num_classes
     
-    # Create datasets
-    train_dataset = MultiCropDataset(
-        train_paths, train_labels, plate_maps,
-        neighborhood=args.neighborhood,
-        grid_size=args.grid_size,
-        augment=True,
-        seed=SEED
-    )
-    val_dataset = MultiCropDataset(
-        val_paths, val_labels, plate_maps,
-        neighborhood=args.neighborhood,
-        grid_size=args.grid_size,
-        augment=False,
-        seed=SEED
-    )
-    test_dataset = MultiCropDataset(
-        test_paths, test_labels, plate_maps,
-        neighborhood=args.neighborhood,
-        grid_size=args.grid_size,
-        augment=False,
-        seed=SEED
-    )
+    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED)
+    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED)
+    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED)
     
-    # Set initial epoch
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
     test_dataset.set_epoch(0)
     
-    # Determine workers
+    # Windows Python 3.14: MUST use 0 workers due to multiprocessing pickling changes
     if sys.platform.startswith('win'):
-        num_workers = 0
+        effective_workers = 0
+        print(f"Using {effective_workers} workers (Windows Python 3.14 - multiprocessing spawn required)")
     else:
-        num_workers = 8
+        effective_workers = NUM_WORKERS
+        print(f"Using {effective_workers} workers")
     
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=num_workers, worker_init_fn=worker_init_fn,
-        pin_memory=True, drop_last=True
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=num_workers, worker_init_fn=worker_init_fn,
-        pin_memory=True
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=num_workers, worker_init_fn=worker_init_fn,
-        pin_memory=True
-    )
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
     
-    print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2}")
+    print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2} crops")
     
-    # Create model
-    # Need MILEncoder for both SC-MIL and Stage 1 contrastive pre-training
-    # Use AttentionMILModel only when both stages are disabled
-    use_mil_encoder = args.use_sc_mil or args.contrastive_epochs > 0
-    
-    if use_mil_encoder:
-        model = MILEncoder(
-            num_classes=num_classes,
-            num_heads=args.num_heads,
-            dropout=args.dropout,
-            use_contrastive=True
-        )
+    # Use MILEncoder for SC-MIL (has get_mil_embeddings), AttentionMILModel for standard
+    if args.use_sc_mil:
+        print(f"Using MILEncoder with SC-MIL supervised contrastive...")
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True)
     else:
-        model = AttentionMILModel(
-            num_classes=num_classes,
-            num_heads=args.num_heads,
-            dropout=args.dropout
-        )
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
     model = model.to(device)
     
-    # Optimizer setup
-    backbone_params = [
-        p for n, p in model.named_parameters()
-        if 'attention_pool' not in n and 'classifier' not in n
-    ]
-    attention_params = [
-        p for n, p in model.named_parameters()
-        if 'attention_pool' in n or 'classifier' in n
-    ]
+    backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
+    attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
     
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': args.lr * 0.1},
         {'params': attention_params, 'lr': args.lr}
     ], weight_decay=args.weight_decay)
     
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs
-    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
-    # Initialize best metrics
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
+    
     best_val_auc = 0.0
     best_val_acc = 0.0
     best_val_loss = float('inf')
     
-    # =========================================================================
-    # STAGE 1: Contrastive Pre-training (optional)
-    # =========================================================================
-    # Stage 1 runs if contrastive_epochs > 0
-    if args.contrastive_epochs > 0:
+    # Stage 1: Patch-Level SimCLR Pre-training (proven in papers)
+    if args.use_contrastive:
         print(f"\n{'='*60}")
-        print(f"Stage 1: Patch-Level SimCLR Pre-training")
-        print(f"Epochs: {args.contrastive_epochs}, Batch size: {args.contrastive_batch_size}")
+        print(f"Stage 1: Patch-Level SimCLR Pre-training for {args.contrastive_epochs} epochs...")
+        print(f"Contrastive batch size: {args.contrastive_batch_size}")
         print(f"{'='*60}")
         
-        # Create contrastive datasets (single crop)
-        cont_dataset_1 = MultiCropDataset(
-            train_paths, train_labels, plate_maps,
-            neighborhood=1, grid_size=args.grid_size,
-            augment=True, seed=SEED
-        )
-        cont_dataset_2 = MultiCropDataset(
-            train_paths, train_labels, plate_maps,
-            neighborhood=1, grid_size=args.grid_size,
-            augment=True, seed=SEED + 1
-        )
+        # Create two augmented views for each image
+        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, plate_maps, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED)
+        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, plate_maps, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1)
         
-        # Initialize epoch centers for contrastive datasets
-        cont_dataset_1.set_epoch(0)
-        cont_dataset_2.set_epoch(0)
+        # Set initial epoch for both
+        crop_dataset_v1.set_epoch(0)
+        crop_dataset_v2.set_epoch(0)
         
-        cont_loader_1 = DataLoader(
-            cont_dataset_1, batch_size=args.contrastive_batch_size,
-            shuffle=True, num_workers=0,
-            worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True
-        )
-        cont_loader_2 = DataLoader(
-            cont_dataset_2, batch_size=args.contrastive_batch_size,
-            shuffle=True, num_workers=0,
-            worker_init_fn=worker_init_fn, pin_memory=True, drop_last=True
-        )
+        # Higher batch size for contrastive (more negatives = better learning)
+        crop_loader_v1 = DataLoader(crop_dataset_v1, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+        crop_loader_v2 = DataLoader(crop_dataset_v2, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         
-        # CSV logging for Stage 1
-        timestamp_c1 = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path_c1 = output_dir / f'training_contrastive_{timestamp_c1}.csv'
-        csv_file_c1 = open(csv_path_c1, 'w', newline='')
-        csv_writer_c1 = csv.writer(csv_file_c1)
-        csv_writer_c1.writerow(['epoch', 'loss', 'lr'])
-        csv_file_c1.flush()
-        
-        # Contrastive optimizer
-        cont_params = [
-            p for n, p in model.named_parameters()
-            if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n
-        ]
-        cont_optimizer = torch.optim.Adam(cont_params, lr=args.lr)
-        cont_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            cont_optimizer, T_max=args.contrastive_epochs
-        )
+        # Train encoder + projection head
+        contrastive_params = [p for n, p in model.named_parameters() if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n]
+        contrastive_optimizer = torch.optim.Adam(contrastive_params, lr=args.lr)
+        contrastive_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(contrastive_optimizer, T_max=args.contrastive_epochs)
         
         for epoch in range(args.contrastive_epochs):
             model.train()
             run_loss = 0.0
             n_batches = 0
             
-            iter_2 = iter(cont_loader_2)
-            for images_v1, _ in tqdm(cont_loader_1, desc=f'Contrastive {epoch}', leave=False):
+            iter_v2 = iter(crop_loader_v2)
+            for images_v1, _ in tqdm(crop_loader_v1, desc=f'Contrastive Epoch {epoch}', leave=False):
                 try:
-                    images_v2, _ = next(iter_2)
+                    images_v2, _ = next(iter_v2)
                 except StopIteration:
-                    iter_2 = iter(cont_loader_2)
-                    images_v2, _ = next(iter_2)
+                    iter_v2 = iter(crop_loader_v2)
+                    images_v2, _ = next(iter_v2)
                 
                 images_v1 = images_v1.to(device)
                 images_v2 = images_v2.to(device)
-                cont_optimizer.zero_grad()
+                contrastive_optimizer.zero_grad()
                 
-                # Get features
+                # Get features for both views
                 feat_v1 = model.get_projected_features(images_v1)
                 feat_v2 = model.get_projected_features(images_v2)
                 
-                # L2 normalize
+                # Normalize
                 feat_v1 = F.normalize(feat_v1, dim=1)
                 feat_v2 = F.normalize(feat_v2, dim=1)
                 
-                # InfoNCE loss
+                # SimCLR: z1*z2 for positives, z1*z_all for negatives
                 batch_size = feat_v1.shape[0]
                 temp = args.contrastive_temp
-                similarity = torch.matmul(feat_v1 / temp, feat_v2.T)
-                labels = torch.arange(batch_size, device=device)
                 
+                # Compute similarity matrix
+                z1 = feat_v1 / temp
+                z2 = feat_v2 / temp
+                
+                # Similarity between matching pairs
+                sim_pos = torch.sum(z1 * z2, dim=1)
+                
+                # All pairs (including negatives)
+                similarity = torch.matmul(z1, z2.T)
+                
+                # Labels: diagonal (matching indices)
+                labels = torch.arange(batch_size, device=feat_v1.device)
+                
+                # Compute InfoNCE loss
                 loss = F.cross_entropy(similarity, labels)
+                
                 loss.backward()
-                cont_optimizer.step()
+                contrastive_optimizer.step()
                 
                 run_loss += loss.item()
                 n_batches += 1
             
-            cont_scheduler.step()
+            contrastive_scheduler.step()
             avg_loss = run_loss / max(n_batches, 1)
-            lr = cont_optimizer.param_groups[0]['lr']
-            
-            # Save to CSV
-            csv_writer_c1.writerow([epoch + 1, avg_loss, lr])
-            csv_file_c1.flush()
-            
-            print(f"Epoch {epoch}: Loss={avg_loss:.4f}, LR={lr:.2e}")
+            print(f"Contrastive Epoch {epoch}: Loss={avg_loss:.4f}")
         
-        csv_file_c1.close()
-        print("Stage 1 complete!")
+        print(f"Stage 1 complete! Now training MIL classifier...")
         train_dataset.set_epoch(0)
     
-    # =========================================================================
-    # STAGE 2: SC-MIL Training (or Standard)
-    # =========================================================================
-    if args.use_sc_mil and args.sc_mil_epochs > 0:
-        _train_sc_mil(
-            model, train_loader, val_loader, test_loader,
-            class_weights, optimizer, device, args,
-            output_dir, best_val_auc, best_val_acc, best_val_loss
-        )
-    else:
-        _train_standard(
-            model, train_loader, val_loader, test_loader,
-            class_weights, optimizer, scheduler, device, args,
-            output_dir
-        )
-    
-    # =========================================================================
-    # Final Evaluation
-    # =========================================================================
-    print("\nTesting...")
-    checkpoint = torch.load(output_dir / 'best_model.pth', map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    
-    test_acc, test_auc, test_ap, _, all_probs, all_labels = _evaluate_full(
-        model, test_loader, class_weights, device
-    )
-    
-    print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.4f}")
-    
-    return {
-        'test_plate': test_plate,
-        'best_val_auc': float(best_val_auc),
-        'test_acc': float(test_acc),
-        'test_auc': float(test_auc),
-        'test_ap': float(test_ap)
-    }
-
-
-def _train_sc_mil(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    test_loader: DataLoader,
-    class_weights: torch.Tensor,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    args: argparse.Namespace,
-    output_dir: Path,
-    best_val_auc: float,
-    best_val_acc: float,
-    best_val_loss: float
-) -> None:
-    """SC-MIL training with supervised contrastive loss."""
-    
-    print(f"\n{'='*60}")
-    print(f"SC-MIL: Supervised Contrastive + Classification")
-    print(f"Epochs: {args.sc_mil_epochs}")
-    if args.sc_mil_curriculum:
-        print(f"Curriculum: ON (β transitions 1→{args.sc_mil_weight})")
-    else:
-        print(f"Weight: {args.sc_mil_weight}")
-    print(f"Temperature: {args.sc_mil_temp} (paper: τ=1)")
-    print(f"{'='*60}")
-    
-    # SC-MIL optimizer (train all parameters)
-    sc_optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
-    sc_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        sc_optimizer, T_max=args.sc_mil_epochs
-    )
-    
-    # CSV logging
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = output_dir / f'training_sc_mil_{timestamp}.csv'
-    csv_file = open(csv_path, 'w', newline='')
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(['epoch', 'train_ce', 'train_cl', 'train_acc',
-                     'val_ce', 'val_acc', 'val_auc', 'lr', 'beta'])
-    csv_file.flush()
-    
-    best_auc, best_acc, best_loss = best_val_auc, best_val_acc, best_val_loss
-    
-    for epoch in range(args.sc_mil_epochs):
-        epoch_start = time.time()
-        model.train()
-        
-        train_ce, train_cl, correct, total = 0.0, 0.0, 0, 0
-        
-        for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-            images = images.to(device)
-            labels = labels.to(device)
-            sc_optimizer.zero_grad()
-            
-            # Forward pass with all outputs
-            outputs, attn, bag_emb = model(images, return_attention=True, return_crop_embeddings=True)
-            
-            # L2 normalize for SupCon
-            bag_emb = F.normalize(bag_emb, p=2, dim=-1)
-            
-            # Supervised contrastive loss
-            sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
-            sc_loss = sc_criterion(bag_emb, labels)
-            
-            # Classification loss
-            ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
-            
-            # Combined loss with curriculum (beta transitions from 1 to target weight)
-            # Paper: "with a linear curriculum ... with βt = 1 at the start of training"
-            if args.sc_mil_curriculum:
-                beta = 1.0 - (epoch / args.sc_mil_epochs) * (1.0 - args.sc_mil_weight)
-            else:
-                beta = args.sc_mil_weight
-            
-            loss = (1 - beta) * ce_loss + beta * sc_loss
-            loss.backward()
-            sc_optimizer.step()
-            
-            train_ce += ce_loss.item()
-            train_cl += sc_loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-        
-        sc_scheduler.step()
-        
-        train_acc = 100.0 * correct / total
-        avg_ce = train_ce / len(train_loader)
-        avg_cl = train_cl / len(train_loader)
-        lr = sc_optimizer.param_groups[0]['lr']
-        
-# Validation
-        val_acc, val_auc, val_loss, _, _, _ = evaluate_model(
-            model, val_loader, class_weights, device
-        )
-        
-        # Curriculum learning: beta transitions from 1 to target weight
-        # Paper: "with a linear curriculum as described in Section 2.2, with βt = 1 at the start of training"
-        if args.sc_mil_curriculum:
-            # Beta = 1 at start, transitions to target sc_mil_weight by end of training
-            beta = 1.0 - (epoch / args.sc_mil_epochs) * (1.0 - args.sc_mil_weight)
-        else:
-            beta = args.sc_mil_weight
-        
-        # Save to CSV
-        csv_writer.writerow([epoch + 1, avg_ce, avg_cl, train_acc,
-                          val_loss, val_acc, val_auc, lr, beta])
-        csv_file.flush()
-        
+    # SC-MIL: Supervised Bag-Level Contrastive + Classification Joint Training
+    if args.use_sc_mil:
         print(f"\n{'='*60}")
-        print(f"Epoch: {epoch+1}/{args.sc_mil_epochs}")
-        print(f"TRAIN - CE: {avg_ce:.4f}, Cl: {avg_cl:.4f}, Acc: {train_acc:.2f}%")
-        print(f"VAL   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%, AUC: {val_auc:.4f}")
-        print(f"LR: {lr:.2e}, β: {beta:.3f}, Time: {time.time()-epoch_start:.1f}s")
+        print(f"SC-MIL: Supervised Bag-Level Contrastive Joint Training")
+        print(f"SC-MIL epochs: {args.sc_mil_epochs}, Temp: {args.sc_mil_temp}")
+        print(f"Contrastive weight: {args.sc_mil_weight}")
         print(f"{'='*60}")
         
-        # Save best models
-        if val_auc > best_auc:
-            best_auc = val_auc
-            save_checkpoint(output_dir / 'best_model.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
-            save_checkpoint(output_dir / 'best_model_auc.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+        # Batch size for SC-MIL
+        effective_batch_size = args.batch_size  # Use full batch size (16)
+        print(f"Using batch size: {effective_batch_size}")
         
-        if val_acc > best_acc:
-            best_acc = val_acc
-            save_checkpoint(output_dir / 'best_model_acc.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+        # Recreate data loaders with smaller batch size
+        train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
         
-        if val_loss < best_loss:
-            best_loss = val_loss
-            save_checkpoint(output_dir / 'best_model_loss.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
-    
-    csv_file.close()
-
-
-def _train_standard(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    test_loader: DataLoader,
-    class_weights: torch.Tensor,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
-    device: torch.device,
-    args: argparse.Namespace,
-    output_dir: Path
-) -> None:
-    """Standard training without contrastive loss."""
-    
-    print(f"\n{'='*60}")
-    print(f"Standard Training: {args.epochs} epochs")
-    print(f"{'='*60}")
-    
-    # CSV logging for standard training
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = output_dir / f'training_standard_{timestamp}.csv'
-    csv_file = open(csv_path, 'w', newline='')
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'])
-    csv_file.flush()
-    
-    best_auc, best_acc, best_loss = 0.0, 0.0, float('inf')
-    
-    for epoch in range(args.epochs):
-        epoch_start = time.time()
-        model.train()
+        # Train encoder + attention + classifier jointly
+        sc_mil_params = [p for n, p in model.named_parameters()]
+        sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay)
+        sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         
-        train_loss = 0.0
-        correct, total = 0, 0
+        for epoch in range(args.sc_mil_epochs):
+            train_dataset.set_epoch(epoch)
+            model.train()
+            run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
+            
+            for images, labels in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
+                images, labels = images.to(device), labels.to(device)
+                sc_mil_optimizer.zero_grad()
+                
+                # Get bag embeddings (after attention pooling)
+                outputs, attn_weights = model(images, return_attention=True)
+                
+                # Get crop embeddings for SupCon: [batch, n_crops, feature_dim]
+                bag_embeddings = model.get_supcon_embeddings(images)
+                
+                # L2 normalize for SupCon (IMPORTANT!)
+                bag_embeddings = F.normalize(bag_embeddings, p=2, dim=-1)
+                
+                # Use official SupConLoss from supcon_loss.py
+                sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
+                sc_loss = sc_criterion(bag_embeddings, labels)
+                
+                # Classification loss
+                ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                
+                # Combined loss
+                loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
+                
+                loss.backward()
+                sc_mil_optimizer.step()
+                
+                run_cl_loss += sc_loss.item()
+                run_ce_loss += ce_loss.item()
+                _, predicted = outputs.max(1)
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
+            
+            sc_mil_scheduler.step()
+            
+            train_acc = 100. * correct / total
+            avg_cl_loss = run_cl_loss / len(train_loader)
+            avg_ce_loss = run_ce_loss / len(train_loader)
+            
+            # VALIDATION after each SC-MIL epoch
+            model.eval()
+            val_cl_loss, val_ce_loss = 0.0, 0.0
+            val_correct, val_total = 0, 0
+            all_val_preds, all_val_probs, all_val_labels = [], [], []
+            
+            with torch.no_grad():
+                for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+                    images, labels = images.to(device), labels.to(device)
+                    outputs, _ = model(images, return_attention=True)
+                    probs = torch.softmax(outputs, dim=1)
+                    _, predicted = outputs.max(1)
+                    all_val_preds.extend(predicted.cpu().numpy())
+                    all_val_probs.extend(probs.cpu().numpy())
+                    all_val_labels.extend(labels.cpu().numpy())
+                    val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                    val_ce_loss += val_loss.item()
+                    val_correct += predicted.eq(labels).sum().item()
+                    val_total += labels.size(0)
+            
+            val_acc = 100. * val_correct / val_total
+            all_val_labels_bin = label_binarize(all_val_labels, classes=list(range(num_classes)))
+            val_auc = roc_auc_score(all_val_labels_bin, np.array(all_val_probs), average='macro')
+            avg_val_ce_loss = val_ce_loss / len(val_loader)
+            
+            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}")
+            
+            # Save best model based on validation AUC
+            if val_auc > best_val_auc:
+                best_val_auc = val_auc
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+            
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+            
+            if avg_val_ce_loss < best_val_loss:
+                best_val_loss = avg_val_ce_loss
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
-        for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-            images = images.to(device)
-            labels = labels.to(device)
-            optimizer.zero_grad()
+        print(f"SC-MIL training complete!")
+        # Skip standard training, go directly to evaluation
+        epoch = args.sc_mil_epochs  # Mark as complete
+    
+    else:
+        print("Training...")
+        epoch = None  # Means standard training
+    
+    # Standard or SC-MIL training loop
+    if epoch is None:
+        for epoch in range(args.epochs):
+            epoch_start = time.time()
+            train_dataset.set_epoch(epoch)
+            model.train()
+            run_loss, correct, total = 0.0, 0, 0
             
-            outputs, attn = model(images, return_attention=True)
-            
-            main_loss = weighted_focal_loss(outputs, labels, class_weights[labels],
-                                    label_smoothing=args.label_smoothing)
-            ent_loss = attention_entropy_loss(attn)
-            loss = main_loss + 0.01 * ent_loss
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            
-            train_loss += main_loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+            for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+                images, labels = images.to(device), labels.to(device)
+                optimizer.zero_grad()
+                
+                outputs, attn_weights = model(images, return_attention=True)
+                
+                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                ent_loss = attention_entropy_loss(attn_weights)
+                loss = main_loss + 0.01 * ent_loss
+                
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                
+                run_loss += main_loss.item()
+                _, predicted = outputs.max(1)
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
         
         scheduler.step()
         
-        train_acc = 100.0 * correct / total
-        avg_loss = train_loss / len(train_loader)
+        train_acc = 100. * correct / total
+        avg_train_loss = run_loss / len(train_loader)
         
-        # Validation
-        val_acc, val_auc, val_loss, _, _, _ = evaluate_model(
-            model, val_loader, class_weights, device,
-            label_smoothing=args.label_smoothing
-        )
+        model.eval()
+        val_loss_total = 0.0
+        all_preds, all_probs, all_labels = [], [], []
         
-        lr = optimizer.param_groups[0]['lr']
+        with torch.no_grad():
+            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+                images, labels = images.to(device), labels.to(device)
+                outputs, _ = model(images, return_attention=True)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+                all_preds.extend(predicted.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                val_loss_total += val_loss.item()
         
-        # Save to CSV
-        csv_writer.writerow([epoch + 1, avg_loss, train_acc, val_loss, val_acc, val_auc, lr])
-        csv_file.flush()
+        val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+        all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+        val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
+        avg_val_loss = val_loss_total / len(val_loader)
         
-        print(f"\nEpoch: {epoch+1}/{args.epochs}")
-        print(f"TRAIN - Loss: {avg_loss:.4f}, Acc: {train_acc:.2f}%")
-        print(f"VAL   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%, AUC: {val_auc:.4f}")
-        print(f"LR: {lr:.2e}, Time: {time.time()-epoch_start:.1f}s")
+        backbone_lr = optimizer.param_groups[0]['lr']
+        classifier_lr = optimizer.param_groups[1]['lr']
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
-        # Save best
-        if val_auc > best_auc:
-            best_auc = val_auc
-            save_checkpoint(output_dir / 'best_model.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
-            save_checkpoint(output_dir / 'best_model_auc.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
         
-        if val_acc > best_acc:
-            best_acc = val_acc
-            save_checkpoint(output_dir / 'best_model_acc.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
         
-        if val_loss < best_loss:
-            best_loss = val_loss
-            save_checkpoint(output_dir / 'best_model_loss.pth', epoch + 1, model,
-                          {'best_val_auc': val_auc, 'best_val_acc': val_acc, 'best_val_loss': val_loss})
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
+        
+        if (epoch + 1) % 10 == 0:
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
     
-    csv_file.close()
-
-
-def _evaluate_full(
-    model: nn.Module,
-    data_loader: DataLoader,
-    class_weights: torch.Tensor,
-    device: torch.device
-) -> tuple[float, float, float, list, list, list]:
-    """Full evaluation with all metrics."""
+    print("Testing...")
+    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    all_preds: list[int] = []
-    all_probs: list[np.ndarray] = []
-    all_labels: list[int] = []
-    total_loss = 0.0
     
+    all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad():
-        for images, labels in data_loader:
+        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
-            labels = labels.to(device)
-            
             outputs, _ = model(images, return_attention=True)
             probs = torch.softmax(outputs, dim=1)
-            
-            loss = F.cross_entropy(outputs, labels)
-            total_loss += loss.item()
-            
             _, predicted = outputs.max(1)
-            all_preds.extend(predicted.cpu().numpy().tolist())
+            all_preds.extend(predicted.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy().tolist())
+            all_labels.extend(labels.numpy())
     
-    all_labels = np.array(all_labels)
-    all_probs = np.array(all_probs)
+    test_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
+    test_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+    test_auc = roc_auc_score(test_labels_bin, np.array(all_probs), average='macro')
+    test_ap = average_precision_score(test_labels_bin, np.array(all_probs), average='macro')
     
-    accuracy = 100.0 * np.mean(np.array(all_preds) == all_labels)
+    print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.4f}")
     
-    labels_bin = label_binarize(all_labels, classes=list(range(len(class_weights))))
-    auc = roc_auc_score(labels_bin, all_probs, average='macro')
-    ap = average_precision_score(labels_bin, all_probs, average='macro')
+    results = {
+        'timestamp': timestamp,
+        'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': test_plate, 'dropout': args.dropout, 'weight_decay': args.weight_decay, 'neighborhood': args.neighborhood},
+        'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
+    }
     
-    avg_loss = total_loss / len(data_loader)
-    return accuracy, auc, ap, all_preds, all_probs, all_labels
-
-
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
-
-def main() -> None:
-    """Main entry point."""
-    # Parse arguments
-    parser = argparse.ArgumentParser(description='MIL Training for CRISPRi')
-    parser.add_argument('--epochs', type=int, default=200)
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--num_heads', type=int, default=4)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--test_plate', type=str, default='P6')
-    parser.add_argument('--data_root', type=str, default=None)
-    parser.add_argument('--run_all_folds', action='store_true')
-    parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11])
-    parser.add_argument('--grid_size', type=int, default=12)
-    parser.add_argument('--dropout', type=float, default=0.5)
-    parser.add_argument('--weight_decay', type=float, default=0.05)
-    parser.add_argument('--label_smoothing', type=float, default=0.1)
+    with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
+        json.dump(results, f, indent=2)
     
-    # Stage 1: Contrastive pre-training
-    parser.add_argument('--contrastive_epochs', type=int, default=50,
-                        help='Epochs for Stage 1 (0 to skip)')
-    parser.add_argument('--contrastive_batch_size', type=int, default=128)
-    parser.add_argument('--contrastive_temp', type=float, default=0.1,
-                        help='Temperature for SimCLR loss')
-    
-# Stage 2: SC-MIL
-    parser.add_argument('--sc_mil', action='store_true', default=True,
-                      help='Use SC-MIL (default: enabled)')
-    parser.add_argument('--no_sc_mil', action='store_true',
-                      help='Disable SC-MIL, use standard training')
-    parser.add_argument('--sc_mil_epochs', type=int, default=200,
-                      help='SC-MIL epochs')
-    parser.add_argument('--sc_mil_temp', type=float, default=1.0,
-                      help='Temperature for SupCon loss (paper: τ=1)')
-    parser.add_argument('--sc_mil_weight', type=float, default=0.3,
-                      help='Weight for contrastive loss (paper: 0.3)')
-    parser.add_argument('--sc_mil_curriculum', action='store_true', default=True,
-                      help='Use linear curriculum (paper: β 1→0.3, default: ON')
-    args = parser.parse_args()
-    
-    # Handle toggles
-    args.use_sc_mil = not args.no_sc_mil
-    
-    # Print configuration
-    print(f"\n{'='*60}")
-    print("CONFIGURATION:")
-    print(f"  test_plate: {args.test_plate}")
-    print(f"  epochs: {args.epochs}")
-    print(f"  batch_size: {args.batch_size}")
-    print(f"  lr: {args.lr}")
-    print(f"  neighborhood: {args.neighborhood}")
-    print(f"  dropout: {args.dropout}")
-    print(f"  weight_decay: {args.weight_decay}")
-    print(f"  Stage 1 (Contrastive): epochs={args.contrastive_epochs}")
-    print(f"  Stage 2 (SC-MIL): epochs={args.sc_mil_epochs}, temp={args.sc_mil_temp}, weight={args.sc_mil_weight}, curriculum={args.sc_mil_curriculum}")
-    print(f"{'='*60}\n")
-    
-    # Setup
-    setup_seeds(args.seed)
-    device = get_device()
-    script_dir = Path(__file__).parent.resolve()
-    
-    # base_dir: look next to script_dir (siblings P1-P6), OR use explicit data_root
-    # Structure: /workspace/P1/, /workspace/P2/, ..., /workspace/final_mutant_model/
-    base_dir = Path(args.data_root) if args.data_root else script_dir.parent
-    
-    # Debug info
-    print(f"Script dir: {script_dir}")
-    print(f"Data dir: {base_dir}")
-    print(f"P1 exists: {(base_dir / 'P1').exists()}")
-    
-    # Load configuration
-    plate_data = load_plate_config(script_dir)
-    plate_maps = build_plate_maps(plate_data)
-    
-    # Build gene mapping
-    all_genes = sorted(set(
-        gene for pm in plate_maps.values() for gene in pm.values()
-    ))
-    gene_to_idx = {gene: idx for idx, gene in enumerate(all_genes)}
-    num_classes = len(all_genes)
-    print(f"Classes: {num_classes}")
-    
-    # Run training
-    if args.run_all_folds:
-        for test_plate in ALL_PLATES:
-            fold_dir = script_dir / f'fold_{test_plate}'
-            checkpoints = [
-                fold_dir / 'best_model.pth',
-                fold_dir / 'best_model_acc.pth',
-                fold_dir / 'best_model_auc.pth',
-                fold_dir / 'best_model_loss.pth',
-            ]
-            if any(cp.exists() for cp in checkpoints):
-                print(f"\nSkipping {test_plate}: already trained")
-                continue
-            
-            train_single_fold(test_plate, args, device, script_dir, base_dir,
-                        plate_maps, gene_to_idx, num_classes)
-        
-        print("All folds complete!")
-    else:
-        train_single_fold(args.test_plate, args, device, script_dir, base_dir,
-                       plate_maps, gene_to_idx, num_classes)
-    
-    print("Done!")
+    print(f"Results saved to {OUTPUT_DIR}")
 
 
 if __name__ == '__main__':
-    main()
+    if args.run_all_folds:
+        for test_plate in all_plates:
+            fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+            
+            # Check for any checkpoint files to skip trained folds
+            checkpoints = [
+                os.path.join(fold_dir, 'best_model.pth'),
+                os.path.join(fold_dir, 'best_model_acc.pth'),
+                os.path.join(fold_dir, 'best_model_auc.pth'),
+                os.path.join(fold_dir, 'best_model_loss.pth'),
+            ]
+            
+            if any(os.path.exists(cp) for cp in checkpoints):
+                print(f"\nSkipping {test_plate}: already trained (checkpoint exists)")
+                continue
+            
+            train_single_fold(test_plate)
+        
+        print("All folds completed!")
+    else:
+        train_single_fold(args.test_plate)
+    
+    print("Done!")
