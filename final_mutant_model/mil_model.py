@@ -64,20 +64,24 @@ class MultiScaleMILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_crop_embeddings=False):
+def forward(self, x, return_attention=False, return_crop_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         
+        # Early features - process original input, then pool
         early = self.early_stages(x)
         early = self.early_pool(early).flatten(1)
         
-        mid = self.mid_stages(early)
+        # Mid features - process original input, then pool
+        mid = self.mid_stages(x)  # Use original x, not early
         mid = self.mid_pool(mid).flatten(1)
         
-        late = self.late_stages(mid)
+        # Late features - process original input, then pool  
+        late = self.late_stages(x)  # Use original x, not mid
         late = self.late_pool(late).flatten(1)
         
+        # Concatenate multi-scale features
         multi_scale = torch.cat([early, mid, late], dim=1)
         multi_scale = F.relu(self.feature_proj(multi_scale))
         
