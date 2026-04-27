@@ -270,11 +270,12 @@ class MultiCropDataset(Dataset):
         
         if augment:
             # ImageNet normalization (model pretrained on ImageNet)
-            # Geometric augmentations only (no color changes in albumentations 2.0.8)
+            # Use brightness_only (contrast_limit=0) to avoid color changes
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.5, contrast_limit=0, p=0.5),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),
             ])
