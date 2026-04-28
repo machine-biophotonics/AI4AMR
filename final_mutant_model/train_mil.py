@@ -335,7 +335,7 @@ def train_single_fold(test_plate):
 
     # AMP scaler for mixed precision training
     use_amp = torch.cuda.is_available()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -372,7 +372,7 @@ def train_single_fold(test_plate):
         contrastive_params = [p for n, p in model.named_parameters() if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n]
         contrastive_optimizer = torch.optim.Adam(contrastive_params, lr=args.lr, fused=True if torch.cuda.is_available() else False)
         contrastive_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(contrastive_optimizer, T_max=args.contrastive_epochs)
-        contrastive_scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        contrastive_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
         
         for epoch in range(args.contrastive_epochs):
             model.train()
@@ -453,7 +453,7 @@ def train_single_fold(test_plate):
         sc_mil_params = [p for n, p in model.named_parameters()]
         sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
-        sc_mil_scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
         
         # Create CSV file for SC-MIL metrics
         timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
