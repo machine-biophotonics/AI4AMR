@@ -29,6 +29,7 @@ import csv
 from datetime import datetime
 from collections import Counter
 import multiprocessing
+from functools import partial
 
 from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 from supcon_loss import SupConLoss, SupConLossMIL
@@ -40,6 +41,7 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
+torch.use_deterministic_algorithms(True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
@@ -235,7 +237,9 @@ def attention_entropy_loss(attn_weights):
 
 def worker_init_fn(worker_id, seed=42):
     """Module-level worker init function for multiprocessing compatibility"""
+    import numpy as np
     random.seed(seed + worker_id)
+    np.random.seed(seed + worker_id)
 
 
 def train_single_fold(test_plate):
@@ -299,9 +303,12 @@ def train_single_fold(test_plate):
         effective_workers = NUM_WORKERS
         print(f"Using {effective_workers} workers")
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, drop_last=True,
+                              worker_init_fn=partial(worker_init_fn, seed=SEED))
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True,
+                            worker_init_fn=partial(worker_init_fn, seed=SEED))
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True,
+                             worker_init_fn=partial(worker_init_fn, seed=SEED))
     
     print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2} crops")
     
@@ -313,13 +320,22 @@ def train_single_fold(test_plate):
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
     model = model.to(device)
     
+    # Compile model for faster execution (PyTorch 2.0+)
+    if hasattr(torch, 'compile') and torch.cuda.is_available():
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model, mode='max-autotune')
+    
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
     attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
     
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': args.lr * 0.1},
         {'params': attention_params, 'lr': args.lr}
-    ], weight_decay=args.weight_decay)
+    ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+
+    # AMP scaler for mixed precision training
+    use_amp = torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -354,8 +370,9 @@ def train_single_fold(test_plate):
         
         # Train encoder + projection head
         contrastive_params = [p for n, p in model.named_parameters() if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n]
-        contrastive_optimizer = torch.optim.Adam(contrastive_params, lr=args.lr)
+        contrastive_optimizer = torch.optim.Adam(contrastive_params, lr=args.lr, fused=True if torch.cuda.is_available() else False)
         contrastive_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(contrastive_optimizer, T_max=args.contrastive_epochs)
+        contrastive_scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
         
         for epoch in range(args.contrastive_epochs):
             model.train()
@@ -374,36 +391,38 @@ def train_single_fold(test_plate):
                 images_v2 = images_v2.to(device)
                 contrastive_optimizer.zero_grad()
                 
-                # Get features for both views
-                feat_v1 = model.get_projected_features(images_v1)
-                feat_v2 = model.get_projected_features(images_v2)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    # Get features for both views
+                    feat_v1 = model.get_projected_features(images_v1)
+                    feat_v2 = model.get_projected_features(images_v2)
+                    
+                    # Normalize
+                    feat_v1 = F.normalize(feat_v1, dim=1)
+                    feat_v2 = F.normalize(feat_v2, dim=1)
+                    
+                    # SimCLR: z1*z2 for positives, z1*z_all for negatives
+                    batch_size = feat_v1.shape[0]
+                    temp = args.contrastive_temp
+                    
+                    # Compute similarity matrix
+                    z1 = feat_v1 / temp
+                    z2 = feat_v2 / temp
+                    
+                    # Similarity between matching pairs
+                    sim_pos = torch.sum(z1 * z2, dim=1)
+                    
+                    # All pairs (including negatives)
+                    similarity = torch.matmul(z1, z2.T)
+                    
+                    # Labels: diagonal (matching indices)
+                    labels = torch.arange(batch_size, device=feat_v1.device)
+                    
+                    # Compute InfoNCE loss
+                    loss = F.cross_entropy(similarity, labels)
                 
-                # Normalize
-                feat_v1 = F.normalize(feat_v1, dim=1)
-                feat_v2 = F.normalize(feat_v2, dim=1)
-                
-                # SimCLR: z1*z2 for positives, z1*z_all for negatives
-                batch_size = feat_v1.shape[0]
-                temp = args.contrastive_temp
-                
-                # Compute similarity matrix
-                z1 = feat_v1 / temp
-                z2 = feat_v2 / temp
-                
-                # Similarity between matching pairs
-                sim_pos = torch.sum(z1 * z2, dim=1)
-                
-                # All pairs (including negatives)
-                similarity = torch.matmul(z1, z2.T)
-                
-                # Labels: diagonal (matching indices)
-                labels = torch.arange(batch_size, device=feat_v1.device)
-                
-                # Compute InfoNCE loss
-                loss = F.cross_entropy(similarity, labels)
-                
-                loss.backward()
-                contrastive_optimizer.step()
+                contrastive_scaler.scale(loss).backward()
+                contrastive_scaler.step(contrastive_optimizer)
+                contrastive_scaler.update()
                 
                 run_loss += loss.item()
                 n_batches += 1
@@ -432,8 +451,9 @@ def train_single_fold(test_plate):
         
         # Train encoder + attention + classifier jointly
         sc_mil_params = [p for n, p in model.named_parameters()]
-        sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay)
+        sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
+        sc_mil_scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
         
         # Create CSV file for SC-MIL metrics
         timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -451,21 +471,23 @@ def train_single_fold(test_plate):
                 images, labels = images.to(device), labels.to(device)
                 sc_mil_optimizer.zero_grad()
                 
-                # Get bag embeddings (after attention pooling)
-                outputs, attn_weights, crop_embeddings = model(images, return_attention=True, return_crop_embeddings=True)
-                bag_embeddings = F.normalize(crop_embeddings, p=2, dim=-1)
-                # Use official SupConLoss from supcon_loss.py
-                sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
-                sc_loss = sc_criterion(bag_embeddings, labels)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    # Get bag embeddings (after attention pooling)
+                    outputs, attn_weights, crop_embeddings = model(images, return_attention=True, return_crop_embeddings=True)
+                    bag_embeddings = F.normalize(crop_embeddings, p=2, dim=-1)
+                    # Use official SupConLoss from supcon_loss.py
+                    sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
+                    sc_loss = sc_criterion(bag_embeddings, labels)
+                    
+                    # Classification loss
+                    ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                    
+                    # Combined loss
+                    loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
                 
-                # Classification loss
-                ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
-                
-                # Combined loss
-                loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
-                
-                loss.backward()
-                sc_mil_optimizer.step()
+                sc_mil_scaler.scale(loss).backward()
+                sc_mil_scaler.step(sc_mil_optimizer)
+                sc_mil_scaler.update()
                 
                 run_cl_loss += sc_loss.item()
                 run_ce_loss += ce_loss.item()
@@ -485,7 +507,7 @@ def train_single_fold(test_plate):
             val_correct, val_total = 0, 0
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             
-            with torch.no_grad():
+            with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
                 for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                     images, labels = images.to(device), labels.to(device)
                     outputs, _ = model(images, return_attention=True)
@@ -545,15 +567,18 @@ def train_single_fold(test_plate):
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
                 
-                outputs, attn_weights = model(images, return_attention=True)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    outputs, attn_weights = model(images, return_attention=True)
+                    
+                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    ent_loss = attention_entropy_loss(attn_weights)
+                    loss = main_loss + 0.01 * ent_loss
                 
-                main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                ent_loss = attention_entropy_loss(attn_weights)
-                loss = main_loss + 0.01 * ent_loss
-                
-                loss.backward()
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 
                 run_loss += main_loss.item()
                 _, predicted = outputs.max(1)
@@ -569,7 +594,7 @@ def train_single_fold(test_plate):
         val_loss_total = 0.0
         all_preds, all_probs, all_labels = [], [], []
         
-        with torch.no_grad():
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
             for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
@@ -616,7 +641,7 @@ def train_single_fold(test_plate):
     model.eval()
     
     all_preds, all_probs, all_labels = [], [], []
-    with torch.no_grad():
+    with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
         for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
             outputs, _ = model(images, return_attention=True)
