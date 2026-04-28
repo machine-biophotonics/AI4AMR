@@ -6,6 +6,8 @@ warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_
 import os
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM"] = "0"
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS"] = "ATEN,CPP"
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+os.environ["TORCH_CUDNN_DETERMINISTIC"] = "1"
 
 """
 MIL training with cycle-based crop extraction + neighbors
