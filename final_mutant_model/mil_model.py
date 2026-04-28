@@ -42,8 +42,14 @@ class DropBlock2D(nn.Module):
         if not self.training or self.drop_prob == 0:
             return x
         
+        if x.dim() != 4:
+            return x
+        
         self.iter_cnt += 1
         N, C, H, W = list(x.shape)
+        
+        if H < self.block_size or W < self.block_size:
+            return x
         
         gamma = self._compute_gamma((H, W))
         
@@ -121,8 +127,8 @@ class MILEncoder(nn.Module):
                  dropblock_prob=0.1, dropblock_size=3, dropblock_warmup=1000):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
-        self.backbone = nn.Sequential(
-            base_model.features,
+        self.backbone_features = base_model.features
+        self.backbone_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
@@ -156,10 +162,12 @@ class MILEncoder(nn.Module):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
+        x = self.backbone_features(x)
         
         if self.dropblock is not None and self.use_dropblock:
             x = self.dropblock(x)
+        
+        x = self.backbone_pool(x)
         
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
@@ -260,8 +268,8 @@ class AttentionMILModel(nn.Module):
                  use_dropblock=False, dropblock_prob=0.1, dropblock_size=3, dropblock_warmup=1000):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
-        self.backbone = nn.Sequential(
-            base_model.features,
+        self.backbone_features = base_model.features
+        self.backbone_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
@@ -291,10 +299,12 @@ class AttentionMILModel(nn.Module):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
-        x = self.backbone(x)
+        x = self.backbone_features(x)
         
         if self.dropblock is not None and self.use_dropblock:
             x = self.dropblock(x)
+        
+        x = self.backbone_pool(x)
         
         x = x.view(batch_size, num_crops, -1)
         

@@ -423,8 +423,8 @@ def train_single_fold(test_plate):
     if args.use_dropblock:
         print(f"DropBlock enabled: prob={args.dropblock_prob}, block_size={args.dropblock_size}, warmup={args.dropblock_warmup}")
     
-    backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
-    attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+    backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n and 'backbone_pool' not in n]
+    attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n or 'backbone_pool' in n]
     
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': args.lr * 0.1},
