@@ -90,6 +90,8 @@ parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
+parser.add_argument('--contrastive_level', type=str, default='bag', choices=['instance', 'bag', 'both'],
+                    help='Contrastive level: instance (crop), bag (pooled), or both')
 parser.add_argument('--instance_weight', type=float, default=0.5,
                     help='Weight for instance-level loss vs bag-level (0.0-1.0)')
 parser.add_argument('--warmup_epochs', type=int, default=None,
@@ -274,7 +276,7 @@ def train_single_fold(test_plate):
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
         )
-        scheduler = torch.optim.lr_scheduler.ChainedScheduler(warmup_scheduler, scheduler)
+        scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup_scheduler, scheduler])
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
@@ -394,7 +396,7 @@ def train_single_fold(test_plate):
             sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
                 sc_mil_optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
             )
-            sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler(sc_mil_warmup, sc_mil_scheduler)
+            sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler([sc_mil_warmup, sc_mil_scheduler])
         sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
         
         # Create CSV file for SC-MIL metrics
@@ -421,33 +423,47 @@ def train_single_fold(test_plate):
                         return_pooled_embeddings=True, return_instance_logits=True
                     )
                     
-                    # ============ INSTANCE-LEVEL LOSSES ============
-                    # Instance-level focal loss only (more stable than contrastive)
+                    # ============ CONTRASTIVE LOSSES ============
+                    num_crops = crop_embeddings.shape[1]
+                    
+                    # Instance-level contrastive
+                    if args.contrastive_level in ['instance', 'both']:
+                        crop_emb_flat = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
+                        crop_emb_flat = F.normalize(crop_emb_flat, p=2, dim=-1)
+                        instance_labels_exp = labels.repeat_interleave(num_crops)
+                        inst_temp = max(args.sc_mil_temp, 0.1)  # Higher temp for stability
+                        criterion_inst = SupConLoss(temperature=inst_temp, contrast_mode='one')
+                        instance_sc_loss = criterion_inst(crop_emb_flat, instance_labels_exp)
+                    else:
+                        instance_sc_loss = 0.0
+                    
+                    # Bag-level contrastive
+                    if args.contrastive_level in ['bag', 'both']:
+                        bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
+                        sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
+                        bag_sc_loss = sc_criterion(bag_embeddings, labels)
+                    else:
+                        bag_sc_loss = 0.0
+                    
+                    # ============ CLASSIFICATION LOSSES ============
                     num_crops = crop_embeddings.shape[1]
                     instance_labels = labels.repeat_interleave(num_crops)
                     instance_weights = class_weights[instance_labels]
+                    # Instance-level focal
                     instance_focal = weighted_focal_loss(
                         instance_logits.view(-1, num_classes),
                         instance_labels,
                         instance_weights
                     )
-                    # Instance-level contrastive disabled due to numerical instability
-                    instance_sc_loss = 0.0
-                    
-                    # ============ BAG-LEVEL LOSSES ============
-                    bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
-                    sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
-                    bag_sc_loss = sc_criterion(bag_embeddings, labels)
-                    # Bag-level focal loss (classification)
+                    # Bag-level focal
                     bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
                     
                     # ============ COMBINE LOSSES ============
-                    # Weight between instance and bag level
                     w = args.instance_weight
                     
                     # Combined focal: instance + bag
                     total_focal = w * instance_focal + (1 - w) * bag_focal
-                    # Combined contrastive: instance + bag
+                    # Combined contrastive: based on contrastive_level
                     total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
                     
                     # Combined with classification vs contrastive weight
