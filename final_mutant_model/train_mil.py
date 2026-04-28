@@ -92,6 +92,10 @@ parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
 parser.add_argument('--contrastive_level', type=str, default='bag', choices=['instance', 'bag', 'both'],
                     help='Contrastive level: instance (crop), bag (pooled), or both')
+parser.add_argument('--use_consistency', action='store_true',
+                    help='Add consistency loss between instance and bag level')
+parser.add_argument('--consistency_weight', type=float, default=0.1,
+                    help='Weight for consistency loss (default 0.1)')
 parser.add_argument('--instance_weight', type=float, default=0.5,
                     help='Weight for instance-level loss vs bag-level (0.0-1.0)')
 parser.add_argument('--warmup_epochs', type=int, default=None,
@@ -458,6 +462,20 @@ def train_single_fold(test_plate):
                     # Bag-level focal
                     bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
                     
+                    # ============ CONSISTENCY LOSS ============
+                    if args.use_consistency:
+                        # Instance features (reconstructed bag from attention weights)
+                        attn_probs = torch.softmax(attn_weights, dim=1)  # [B, num_crops, num_heads]
+                        attn_probs = attn_probs.mean(dim=-1)  # [B, num_crops]
+                        # Reconstruct bag from instance features using attention
+                        inst_recon = torch.einsum('bn,bnf->bf', attn_probs, crop_embeddings)  # [B, 1280]
+                        inst_recon = F.normalize(inst_recon, p=2, dim=-1)
+                        bag_emb_norm = F.normalize(pooled_embeddings, p=2, dim=-1)
+                        # L2 distance between reconstructed instance bag and actual bag
+                        consistency_loss = F.mse_loss(inst_recon, bag_emb_norm)
+                    else:
+                        consistency_loss = 0.0
+                    
                     # ============ COMBINE LOSSES ============
                     w = args.instance_weight
                     
@@ -468,6 +486,9 @@ def train_single_fold(test_plate):
                     
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                    # Add consistency loss
+                    if args.use_consistency:
+                        loss = loss + args.consistency_weight * consistency_loss
                 
                 sc_mil_scaler.scale(loss).backward()
                 sc_mil_scaler.step(sc_mil_optimizer)
