@@ -14,6 +14,67 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
 import re
 import os
+import math
+
+
+class DropBlock2D(nn.Module):
+    """
+    DropBlock: A regularization technique for convolutional networks.
+    Based on: https://arxiv.org/abs/1810.12890
+    
+    Drops contiguous regions of feature maps instead of individual pixels,
+    which is more effective for convolutional layers than standard dropout.
+    
+    Args:
+        drop_prob: Probability of dropping a block
+        block_size: Size of the block to drop
+        warmup_iters: Number of warmup iterations before applying dropblock
+    """
+    
+    def __init__(self, drop_prob=0.1, block_size=3, warmup_iters=1000):
+        super().__init__()
+        self.drop_prob = drop_prob
+        self.block_size = block_size
+        self.warmup_iters = warmup_iters
+        self.iter_cnt = 0
+    
+    def forward(self, x):
+        if not self.training or self.drop_prob == 0:
+            return x
+        
+        self.iter_cnt += 1
+        N, C, H, W = list(x.shape)
+        
+        gamma = self._compute_gamma((H, W))
+        
+        mask_shape = (N, C, H - self.block_size + 1, W - self.block_size + 1)
+        mask = torch.bernoulli(torch.full(mask_shape, gamma, device=x.device))
+        
+        mask = F.pad(mask, [self.block_size // 2] * 4, value=0)
+        mask = F.max_pool2d(
+            input=mask,
+            stride=(1, 1),
+            kernel_size=(self.block_size, self.block_size),
+            padding=self.block_size // 2
+        )
+        mask = 1 - mask
+        
+        eps = 1e-6
+        x = x * mask * mask.numel() / (eps + mask.sum())
+        
+        return x
+    
+    def _compute_gamma(self, feat_size):
+        gamma = (self.drop_prob * feat_size[0] * feat_size[1])
+        gamma /= ((feat_size[0] - self.block_size + 1) *
+                  (feat_size[1] - self.block_size + 1))
+        gamma /= (self.block_size ** 2)
+        
+        factor = (1.0 if self.iter_cnt > self.warmup_iters else self.iter_cnt / self.warmup_iters)
+        return gamma * factor
+    
+    def extra_repr(self):
+        return f'drop_prob={self.drop_prob}, block_size={self.block_size}, warmup_iters={self.warmup_iters}'
 
 
 class AttentionPooling(nn.Module):
@@ -54,8 +115,10 @@ class ContrastiveEncoder(nn.Module):
 
 
 class MILEncoder(nn.Module):
-    """MIL encoder with optional contrastive head"""
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256):
+    """MIL encoder with optional contrastive head and DropBlock"""
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, 
+                 use_contrastive=False, projection_dim=256, use_dropblock=False, 
+                 dropblock_prob=0.1, dropblock_size=3, dropblock_warmup=1000):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -65,6 +128,16 @@ class MILEncoder(nn.Module):
         )
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
+        self.use_dropblock = use_dropblock
+        
+        if use_dropblock:
+            self.dropblock = DropBlock2D(
+                drop_prob=dropblock_prob, 
+                block_size=dropblock_size,
+                warmup_iters=dropblock_warmup
+            )
+        else:
+            self.dropblock = None
         
         self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
         self.attention_temp = attention_temp
@@ -84,6 +157,10 @@ class MILEncoder(nn.Module):
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
+        
+        if self.dropblock is not None and self.use_dropblock:
+            x = self.dropblock(x)
+        
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
@@ -179,7 +256,8 @@ class MILEncoder(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2,
+                 use_dropblock=False, dropblock_prob=0.1, dropblock_size=3, dropblock_warmup=1000):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -188,6 +266,16 @@ class AttentionMILModel(nn.Module):
             nn.Flatten()
         )
         feature_dim = 1280
+        
+        self.use_dropblock = use_dropblock
+        if use_dropblock:
+            self.dropblock = DropBlock2D(
+                drop_prob=dropblock_prob,
+                block_size=dropblock_size,
+                warmup_iters=dropblock_warmup
+            )
+        else:
+            self.dropblock = None
         
         self.attention_pool = AttentionPooling(feature_dim, num_heads)
         self.attention_temp = attention_temp
@@ -204,6 +292,10 @@ class AttentionMILModel(nn.Module):
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
+        
+        if self.dropblock is not None and self.use_dropblock:
+            x = self.dropblock(x)
+        
         x = x.view(batch_size, num_crops, -1)
         
         pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)

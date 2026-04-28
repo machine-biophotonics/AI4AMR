@@ -122,6 +122,14 @@ parser.add_argument('--use_snr', action='store_true',
                     help='Enable Spectral Norm Regularization (SNR) for weight matrices')
 parser.add_argument('--snr_lambda', type=float, default=0.1,
                     help='SNR penalty weight (default: 0.1)')
+parser.add_argument('--use_dropblock', action='store_true',
+                    help='Enable DropBlock regularization for backbone')
+parser.add_argument('--dropblock_prob', type=float, default=0.1,
+                    help='DropBlock probability (default: 0.1)')
+parser.add_argument('--dropblock_size', type=int, default=3,
+                    help='DropBlock block size (default: 3)')
+parser.add_argument('--dropblock_warmup', type=int, default=1000,
+                    help='DropBlock warmup iterations (default: 1000)')
 args = parser.parse_args()
 
 if args.warmup_epochs is None:
@@ -390,10 +398,30 @@ def train_single_fold(test_plate):
     # Model selection based on flags
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True)
+        model = MILEncoder(
+            num_classes=num_classes, 
+            num_heads=args.num_heads, 
+            dropout=args.dropout, 
+            use_contrastive=True,
+            use_dropblock=args.use_dropblock,
+            dropblock_prob=args.dropblock_prob,
+            dropblock_size=args.dropblock_size,
+            dropblock_warmup=args.dropblock_warmup
+        )
     else:
-        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
+        model = AttentionMILModel(
+            num_classes=num_classes, 
+            num_heads=args.num_heads, 
+            dropout=args.dropout,
+            use_dropblock=args.use_dropblock,
+            dropblock_prob=args.dropblock_prob,
+            dropblock_size=args.dropblock_size,
+            dropblock_warmup=args.dropblock_warmup
+        )
     model = model.to(device)
+    
+    if args.use_dropblock:
+        print(f"DropBlock enabled: prob={args.dropblock_prob}, block_size={args.dropblock_size}, warmup={args.dropblock_warmup}")
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
     attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
