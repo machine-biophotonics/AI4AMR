@@ -2,6 +2,7 @@
 # Must be set before torch import to suppress inductor SM check at import time
 import os
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM"] = "0"
+os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS"] = "ATEN,CPP"
 
 """
 MIL training with cycle-based crop extraction + neighbors
@@ -46,6 +47,11 @@ torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
 torch.use_deterministic_algorithms(True)
+
+# Disable inductor max_autotune_gemm at runtime to avoid SM warning on small GPUs
+import torch._inductor.config as inductor_config
+inductor_config.max_autotune_gemm = False
+inductor_config.max_autotune_gemm_backends = "ATEN,CPP"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
