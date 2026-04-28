@@ -431,10 +431,13 @@ def train_single_fold(test_plate):
                         instance_labels,
                         instance_weights
                     )
-                    # Instance-level contrastive: each crop is a "view"
-                    crop_emb_norm = F.normalize(crop_embeddings, p=2, dim=-1)
-                    sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
-                    instance_sc_loss = sc_criterion(crop_emb_norm, instance_labels)
+                    # Instance-level contrastive: each crop becomes a separate sample
+                    # Reshape: [B, num_crops, D] -> [B*num_crops, 1, D] (SupConLoss format)
+                    crop_emb_flat = crop_embeddings.view(-1, num_crops, crop_embeddings.shape[-1])
+                    # Expand labels for each crop
+                    instance_labels_expanded = labels.repeat_interleave(num_crops)
+                    criterion_instance = SupConLoss(temperature=args.sc_mil_temp, contrast_mode='one')
+                    instance_sc_loss = criterion_instance(crop_emb_flat, instance_labels_expanded)
                     
                     # ============ BAG-LEVEL LOSSES ============
                     # Bag-level contrastive
