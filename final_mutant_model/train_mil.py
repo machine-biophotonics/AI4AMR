@@ -425,7 +425,7 @@ def train_single_fold(test_plate):
                     # Instance-level focal loss: apply focal to each crop
                     num_crops = crop_embeddings.shape[1]
                     instance_labels = labels.repeat_interleave(num_crops)
-                    instance_weights = class_weights.repeat(num_crops)
+                    instance_weights = class_weights[instance_labels]
                     instance_focal = weighted_focal_loss(
                         instance_logits.view(-1, num_classes),
                         instance_labels,
