@@ -272,7 +272,7 @@ def train_single_fold(test_plate):
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
         )
-        scheduler = torch.optim.lr_scheduler.ChainedScheduler(warmup_scheduler, scheduler)
+        scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup_scheduler, scheduler])
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
@@ -392,7 +392,7 @@ def train_single_fold(test_plate):
             sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
                 sc_mil_optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
             )
-            sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler(sc_mil_warmup, sc_mil_scheduler)
+            sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler([sc_mil_warmup, sc_mil_scheduler])
         sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
         
         # Create CSV file for SC-MIL metrics
