@@ -422,7 +422,7 @@ def train_single_fold(test_plate):
                     )
                     
                     # ============ INSTANCE-LEVEL LOSSES ============
-                    # Instance-level focal loss: apply focal to each crop
+                    # Instance-level focal loss only (more stable than contrastive)
                     num_crops = crop_embeddings.shape[1]
                     instance_labels = labels.repeat_interleave(num_crops)
                     instance_weights = class_weights[instance_labels]
@@ -431,13 +431,8 @@ def train_single_fold(test_plate):
                         instance_labels,
                         instance_weights
                     )
-                    # Instance-level contrastive: reshape crops to be independent samples
-                    # [B, num_crops, D] -> [B*num_crops, 1, D]
-                    crop_emb_2view = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
-                    instance_labels_expanded = labels.repeat_interleave(num_crops)
-                    
-                    criterion_instance = SupConLoss(temperature=args.sc_mil_temp, contrast_mode='one')
-                    instance_sc_loss = criterion_instance(crop_emb_2view, instance_labels_expanded)
+                    # Instance-level contrastive disabled due to numerical instability
+                    instance_sc_loss = 0.0
                     
                     # ============ BAG-LEVEL LOSSES ============
                     bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
