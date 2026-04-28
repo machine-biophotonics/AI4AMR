@@ -431,17 +431,21 @@ def train_single_fold(test_plate):
                         instance_labels,
                         instance_weights
                     )
-                    # Instance-level contrastive: each crop becomes a separate sample
-                    # Reshape: [B, num_crops, D] -> [B*num_crops, 1, D] (SupConLoss format)
-                    crop_emb_flat = crop_embeddings.view(-1, num_crops, crop_embeddings.shape[-1])
-                    # Expand labels for each crop
+                    # Instance-level contrastive: reshape crops to be independent samples
+                    # [B, num_crops, D] -> [B*num_crops, 1, D]
+                    crop_emb_2view = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
                     instance_labels_expanded = labels.repeat_interleave(num_crops)
+                    
+                    # DEBUG: Print shapes
+                    print(f"DEBUG crop_emb_2view: {crop_emb_2view.shape} labels: {instance_labels_expanded.shape}")
+                    print(f"DEBUG labels[0]: {instance_labels_expanded[0]}")
+                    
                     criterion_instance = SupConLoss(temperature=args.sc_mil_temp, contrast_mode='one')
-                    instance_sc_loss = criterion_instance(crop_emb_flat, instance_labels_expanded)
+                    instance_sc_loss = criterion_instance(crop_emb_2view, instance_labels_expanded)
                     
                     # ============ BAG-LEVEL LOSSES ============
-                    # Bag-level contrastive
                     bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
+                    sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
                     bag_sc_loss = sc_criterion(bag_embeddings, labels)
                     # Bag-level focal loss (classification)
                     bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
