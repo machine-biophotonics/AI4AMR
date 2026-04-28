@@ -413,9 +413,10 @@ def train_single_fold(test_plate):
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    # Get bag embeddings (after attention pooling)
-                    outputs, attn_weights, crop_embeddings = model(images, return_attention=True, return_crop_embeddings=True)
-                    pooled_embeddings = model.get_mil_embeddings(images)
+                    # Single forward pass: get outputs, attn, crop, and pooled embeddings
+                    outputs, attn_weights, crop_embeddings, pooled_embeddings = model(
+                        images, return_attention=True, return_crop_embeddings=True, return_pooled_embeddings=True
+                    )
                     bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
                     # Use official SupConLoss from supcon_loss.py (bag-level)
                     sc_criterion = SupConLoss(temperature=args.sc_mil_temp)

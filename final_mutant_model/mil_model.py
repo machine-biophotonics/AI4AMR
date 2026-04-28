@@ -79,7 +79,7 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False):
+    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False, return_pooled_embeddings=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -103,6 +103,8 @@ class MILEncoder(nn.Module):
             results.append(attn_weights)
         if return_crop_embeddings:
             results.append(crop_embeddings)
+        if return_pooled_embeddings:
+            results.append(pooled)
         
         return results[0] if len(results) == 1 else tuple(results)
     
