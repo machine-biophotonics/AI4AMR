@@ -89,13 +89,19 @@ parser.add_argument('--sc_mil_epochs', type=int, default=100,
 parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
-                    help='Temperature for SC-MIL contrastive loss')
+                    help='Final temperature for SC-MIL contrastive loss (after schedule)')
+parser.add_argument('--use_temp_schedule', action='store_true',
+                    help='Enable temperature oscillation schedule (cosine with warmup)')
+parser.add_argument('--temp_warmup_epochs', type=int, default=10,
+                    help='Temperature warmup epochs (default: 10)')
+parser.add_argument('--temp_schedule_min', type=float, default=0.07,
+                    help='Minimum temperature in schedule (default: 0.07)')
+parser.add_argument('--temp_schedule_max', type=float, default=0.5,
+                    help='Maximum temperature in schedule (default: 0.5)')
+parser.add_argument('--temp_schedule_period', type=int, default=0,
+                    help='Temperature oscillation period in epochs (0=cosine decay without oscillation)')
 parser.add_argument('--contrastive_level', type=str, default='bag', choices=['instance', 'bag', 'both'],
                     help='Contrastive level: instance (crop), bag (pooled), or both')
-parser.add_argument('--use_consistency', action='store_true',
-                    help='Add consistency loss between instance and bag level')
-parser.add_argument('--consistency_weight', type=float, default=0.1,
-                    help='Weight for consistency loss (default 0.1)')
 parser.add_argument('--instance_weight', type=float, default=0.5,
                     help='Weight for instance-level loss vs bag-level (0.0-1.0)')
 parser.add_argument('--warmup_epochs', type=int, default=None,
@@ -377,11 +383,38 @@ def train_single_fold(test_plate):
         print(f"Stage 1 complete! Now training MIL classifier...")
         train_dataset.set_epoch(0)
     
-    # SC-MIL: Supervised Bag-Level Contrastive + Classification Joint Training
+    def get_temperature(epoch, total_epochs):
+        if not args.use_temp_schedule:
+            return args.sc_mil_temp
+        
+        warmup_epochs = args.temp_warmup_epochs
+        temp_min = args.temp_schedule_min
+        temp_max = args.temp_schedule_max
+        period = args.temp_schedule_period
+        
+        if epoch < warmup_epochs:
+            return temp_max
+        
+        progress = (epoch - warmup_epochs) / max(total_epochs - warmup_epochs, 1)
+        
+        if period > 0:
+            phase = (epoch - warmup_epochs) / period
+            tau = temp_min + 0.5 * (temp_max - temp_min) * (1 + np.cos(2 * np.pi * phase))
+        else:
+            tau = temp_min + 0.5 * (temp_max - temp_min) * (1 + np.cos(np.pi * progress))
+        
+        return max(tau, temp_min)
+    
+    if args.use_temp_schedule:
+        print(f"Temperature schedule enabled!")
+        print(f"  Min: {args.temp_schedule_min}, Max: {args.temp_schedule_max}")
+        print(f"  Warmup: {args.temp_warmup_epochs} epochs")
+        print(f"  Period: {args.temp_schedule_period if args.temp_schedule_period > 0 else 'cosine decay'}")
+    
     if args.use_sc_mil:
         print(f"\n{'='*60}")
         print(f"SC-MIL: Supervised Bag-Level Contrastive Joint Training")
-        print(f"SC-MIL epochs: {args.sc_mil_epochs}, Temp: {args.sc_mil_temp}")
+        print(f"SC-MIL epochs: {args.sc_mil_epochs}, Base Temp: {args.sc_mil_temp}")
         print(f"Contrastive weight: {args.sc_mil_weight}")
         print(f"{'='*60}")
         
@@ -408,7 +441,10 @@ def train_single_fold(test_plate):
         csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
         with open(csv_path_sc_mil, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
+            if args.use_temp_schedule:
+                writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr', 'temperature'])
+            else:
+                writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
         
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
@@ -427,6 +463,8 @@ def train_single_fold(test_plate):
                         return_pooled_embeddings=True, return_instance_logits=True
                     )
                     
+                    current_temp = get_temperature(epoch, args.sc_mil_epochs)
+                    
                     # ============ CONTRASTIVE LOSSES ============
                     num_crops = crop_embeddings.shape[1]
                     
@@ -435,7 +473,7 @@ def train_single_fold(test_plate):
                         crop_emb_flat = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
                         crop_emb_flat = F.normalize(crop_emb_flat, p=2, dim=-1)
                         instance_labels_exp = labels.repeat_interleave(num_crops)
-                        inst_temp = max(args.sc_mil_temp, 0.1)  # Higher temp for stability
+                        inst_temp = max(current_temp, 0.1)
                         criterion_inst = SupConLoss(temperature=inst_temp, contrast_mode='one')
                         instance_sc_loss = criterion_inst(crop_emb_flat, instance_labels_exp)
                     else:
@@ -444,7 +482,7 @@ def train_single_fold(test_plate):
                     # Bag-level contrastive
                     if args.contrastive_level in ['bag', 'both']:
                         bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
-                        sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
+                        sc_criterion = SupConLoss(temperature=current_temp)
                         bag_sc_loss = sc_criterion(bag_embeddings, labels)
                     else:
                         bag_sc_loss = 0.0
@@ -462,20 +500,6 @@ def train_single_fold(test_plate):
                     # Bag-level focal
                     bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
                     
-                    # ============ CONSISTENCY LOSS ============
-                    if args.use_consistency:
-                        # Instance features (reconstructed bag from attention weights)
-                        attn_probs = torch.softmax(attn_weights, dim=1)  # [B, num_crops, num_heads]
-                        attn_probs = attn_probs.mean(dim=-1)  # [B, num_crops]
-                        # Reconstruct bag from instance features using attention
-                        inst_recon = torch.einsum('bn,bnf->bf', attn_probs, crop_embeddings)  # [B, 1280]
-                        inst_recon = F.normalize(inst_recon, p=2, dim=-1)
-                        bag_emb_norm = F.normalize(pooled_embeddings, p=2, dim=-1)
-                        # L2 distance between reconstructed instance bag and actual bag
-                        consistency_loss = F.mse_loss(inst_recon, bag_emb_norm)
-                    else:
-                        consistency_loss = 0.0
-                    
                     # ============ COMBINE LOSSES ============
                     w = args.instance_weight
                     
@@ -486,9 +510,6 @@ def train_single_fold(test_plate):
                     
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
-                    # Add consistency loss
-                    if args.use_consistency:
-                        loss = loss + args.consistency_weight * consistency_loss
                 
                 sc_mil_scaler.scale(loss).backward()
                 sc_mil_scaler.step(sc_mil_optimizer)
@@ -531,7 +552,8 @@ def train_single_fold(test_plate):
             val_auc = roc_auc_score(all_val_labels_bin, np.array(all_val_probs), average='macro')
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+            temp_info = f", Temp={current_temp:.3f}" if args.use_temp_schedule else ""
+            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}{temp_info}, Time={time.time()-epoch_start:.1f}s")
             
             # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
@@ -539,7 +561,10 @@ def train_single_fold(test_plate):
             # Save metrics to CSV
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                if args.use_temp_schedule:
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr'], current_temp])
+                else:
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
             
             # Save best model based on validation AUC
             if val_auc > best_val_auc:
