@@ -436,10 +436,6 @@ def train_single_fold(test_plate):
                     crop_emb_2view = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
                     instance_labels_expanded = labels.repeat_interleave(num_crops)
                     
-                    # DEBUG: Print shapes
-                    print(f"DEBUG crop_emb_2view: {crop_emb_2view.shape} labels: {instance_labels_expanded.shape}")
-                    print(f"DEBUG labels[0]: {instance_labels_expanded[0]}")
-                    
                     criterion_instance = SupConLoss(temperature=args.sc_mil_temp, contrast_mode='one')
                     instance_sc_loss = criterion_instance(crop_emb_2view, instance_labels_expanded)
                     
