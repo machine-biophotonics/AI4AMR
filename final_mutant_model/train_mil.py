@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-# Must be set before torch import to suppress inductor SM check
+# Must be set before any imports to suppress inductor SM warning
+import warnings
+warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_gemm.*")
+
 import os
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM"] = "0"
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS"] = "ATEN,CPP"
@@ -22,7 +25,6 @@ from torch import nn
 import torch.nn.functional as F
 import torchvision
 from torch.utils.data import DataLoader
-import os
 import glob
 import json
 import re
@@ -53,10 +55,6 @@ torch.use_deterministic_algorithms(True)
 import torch._inductor.config as inductor_config
 inductor_config.max_autotune_gemm = False
 inductor_config.max_autotune_gemm_backends = "ATEN,CPP"
-
-# Filter out the harmless inductor SM warning (GPU has <68 SMs, autotune disabled above)
-import warnings
-warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_gemm.*")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
