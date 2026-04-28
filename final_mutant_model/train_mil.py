@@ -30,7 +30,7 @@ from datetime import datetime
 from collections import Counter
 import multiprocessing
 
-from mil_model import AttentionMILModel, MILEncoder, MultiScaleMILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
+from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 from supcon_loss import SupConLoss, SupConLossMIL
 
 SEED = 42
@@ -65,8 +65,6 @@ parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
-parser.add_argument('--use_multiscale', action='store_true', default=False,
-                    help='Use multi-scale feature extraction (MultiScaleMILEncoder)')
 parser.add_argument('--use_sc_mil', action='store_true',
                     help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
 parser.add_argument('--sc_mil_epochs', type=int, default=100,
@@ -308,10 +306,7 @@ def train_single_fold(test_plate):
     print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2} crops")
     
     # Model selection based on flags
-    if args.use_multiscale:
-        print(f"Using MultiScaleMILEncoder with multi-scale feature extraction...")
-        model = MultiScaleMILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
-    elif args.use_sc_mil:
+    if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
         model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True)
     else:
