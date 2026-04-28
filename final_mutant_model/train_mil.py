@@ -90,7 +90,14 @@ parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
+parser.add_argument('--warmup_epochs', type=int, default=None,
+                    help='Warmup epochs (default: 5%% of epochs, i.e. 10 for 200)')
+parser.add_argument('--checkpoint_every', type=int, default=1,
+                    help='Save checkpoint every N epochs (default: 1)')
 args = parser.parse_args()
+
+if args.warmup_epochs is None:
+    args.warmup_epochs = int(args.epochs * 0.05)
 
 # Set num_workers based on OS
 if sys.platform.startswith('win'):
@@ -155,96 +162,6 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
-
-def contrastive_loss(embeddings1, embeddings2, labels, temperature=0.1):
-    """
-    InfoNCE contrastive loss for positive pairs.
-    Positive pairs: samples with same label
-    Negative pairs: samples with different labels
-    """
-    embeddings1 = F.normalize(embeddings1, dim=1)
-    embeddings2 = F.normalize(embeddings2, dim=1)
-
-def supervised_contrastive_loss(embeddings: torch.Tensor, labels: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
-    """
-    SupCon (Supervised Contrastive) Loss - Properly implemented for backprop
-    
-    For each sample i:
-    - Positive: all samples with same label
-    - Negative: all samples with different labels
-    
-    Loss = -log(exp(sim(i,j)) + sum(exp(i,k)))
-    """
-    # Normalize embeddings
-    embeddings = F.normalize(embeddings, dim=1)
-    batch_size: int = embeddings.shape[0]
-    
-    # Ensure labels is 1D
-    labels = labels.view(-1)
-    
-    # Create positive mask: samples with same label
-    mask_positive: torch.Tensor = labels.unsqueeze(0) == labels.unsqueeze(1)
-    mask_positive.fill_diagonal_(False)
-    
-    # Compute similarity matrix: (B, B) - no temperature yet
-    sim_matrix: torch.Tensor = torch.matmul(embeddings, embeddings.T)
-    
-    # For numerical stability
-    sim_matrix_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
-    sim_matrix = sim_matrix - sim_matrix_max.detach()
-    
-    # Apply temperature
-    sim_matrix = sim_matrix / temperature
-    
-    # Compute loss: for each sample, compute -log(positive_sum / all_sum)
-    exp_sim = torch.exp(sim_matrix)
-    
-    # Denominator: sum of all exp(sim)
-    denom = exp_sim.sum(dim=1, keepdim=True)
-    
-    # Numerator: sum of exp(sim) for positives only
-    # Create a tensor of zeros and fill in positive values
-    mask_exp = mask_positive.float()
-    numer = (exp_sim * mask_exp).sum(dim=1)
-    
-    # Compute loss
-    loss = -torch.log(numer / (denom.squeeze() + 1e-8))
-    
-    # Return mean loss
-    return loss.mean()
-    
-    batch_size = embeddings1.shape[0]
-    
-    # Compute similarity matrix
-    similarity = torch.matmul(embeddings1, embeddings2.T) / temperature
-    
-    # Create mask for positive pairs (same label)
-    labels = labels.view(-1)
-    mask = labels.unsqueeze(0) == labels.unsqueeze(1)
-    mask = mask.fill_diagonal_(False)
-    
-    # For InfoNCE, we need to identify which pairs are positive
-    # Since we're doing within-batch contrastive, use labels to find positives
-    loss = 0.0
-    for i in range(batch_size):
-        pos_indices = torch.where(mask[i])[0]
-        if len(pos_indices) == 0:
-            continue
-        
-        # Positive logits
-        pos_sim = similarity[i, pos_indices]
-        
-        # All logits (positive + negative)
-        neg_mask = ~mask[i]
-        neg_sim = similarity[i, neg_mask]
-        
-        # InfoNCE: -log(exp(pos) / sum(exp(all)))
-        logits = torch.cat([pos_sim, neg_sim])
-        labels_idx = torch.zeros(len(pos_indices), dtype=torch.long, device=embeddings1.device)
-        
-        loss += F.cross_entropy(logits, labels_idx)
-    
-    return loss / batch_size if batch_size > 0 else torch.tensor(0.0, device=embeddings1.device)
 
 def attention_entropy_loss(attn_weights):
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
@@ -350,6 +267,12 @@ def train_single_fold(test_plate):
     scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    
+    if args.warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
+        )
+        scheduler = torch.optim.lr_scheduler.ChainScheduler(warmup_scheduler, scheduler)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
@@ -465,6 +388,11 @@ def train_single_fold(test_plate):
         sc_mil_params = [p for n, p in model.named_parameters()]
         sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
+        if args.warmup_epochs > 0:
+            sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
+                sc_mil_optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
+            )
+            sc_mil_scheduler = torch.optim.lr_scheduler.ChainScheduler(sc_mil_warmup, sc_mil_scheduler)
         sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
         
         # Create CSV file for SC-MIL metrics
@@ -475,6 +403,7 @@ def train_single_fold(test_plate):
             writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
         
         for epoch in range(args.sc_mil_epochs):
+            epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
             run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
@@ -538,7 +467,10 @@ def train_single_fold(test_plate):
             val_auc = roc_auc_score(all_val_labels_bin, np.array(all_val_probs), average='macro')
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}")
+            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+            
+            # Save checkpoint every epoch
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
             
             # Save metrics to CSV
             with open(csv_path_sc_mil, 'a', newline='') as f:
@@ -644,8 +576,8 @@ def train_single_fold(test_plate):
             best_val_loss = avg_val_loss
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
-        if (epoch + 1) % 10 == 0:
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, f'checkpoint_epoch_{epoch+1}.pth'))
+        if (epoch + 1) % args.checkpoint_every == 0:
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
     
     print("Testing...")
     checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
