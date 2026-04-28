@@ -90,6 +90,8 @@ parser.add_argument('--sc_mil_weight', type=float, default=0.3,
                     help='Weight for SC-MIL contrastive loss vs classification (0.1-1.0)')
 parser.add_argument('--sc_mil_temp', type=float, default=0.07,
                     help='Temperature for SC-MIL contrastive loss')
+parser.add_argument('--instance_weight', type=float, default=0.5,
+                    help='Weight for instance-level loss vs bag-level (0.0-1.0)')
 parser.add_argument('--warmup_epochs', type=int, default=None,
                     help='Warmup epochs (default: 5%% of epochs, i.e. 10 for 200)')
 parser.add_argument('--checkpoint_every', type=int, default=1,
@@ -413,27 +415,52 @@ def train_single_fold(test_plate):
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    # Single forward pass: get outputs, attn, crop, and pooled embeddings
-                    outputs, attn_weights, crop_embeddings, pooled_embeddings = model(
-                        images, return_attention=True, return_crop_embeddings=True, return_pooled_embeddings=True
+                    # Single forward pass: get outputs, attn, crop, pooled embeddings, and instance logits
+                    outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
+                        images, return_attention=True, return_crop_embeddings=True, 
+                        return_pooled_embeddings=True, return_instance_logits=True
                     )
-                    bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
-                    # Use official SupConLoss from supcon_loss.py (bag-level)
+                    
+                    # ============ INSTANCE-LEVEL LOSSES ============
+                    # Instance-level focal loss: apply focal to each crop
+                    num_crops = crop_embeddings.shape[1]
+                    instance_labels = labels.repeat_interleave(num_crops)
+                    instance_weights = class_weights.repeat(num_crops)
+                    instance_focal = weighted_focal_loss(
+                        instance_logits.view(-1, num_classes),
+                        instance_labels,
+                        instance_weights
+                    )
+                    # Instance-level contrastive: each crop is a "view"
+                    crop_emb_norm = F.normalize(crop_embeddings, p=2, dim=-1)
                     sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
-                    sc_loss = sc_criterion(bag_embeddings, labels)
+                    instance_sc_loss = sc_criterion(crop_emb_norm, instance_labels)
                     
-                    # Classification loss
-                    ce_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                    # ============ BAG-LEVEL LOSSES ============
+                    # Bag-level contrastive
+                    bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
+                    bag_sc_loss = sc_criterion(bag_embeddings, labels)
+                    # Bag-level focal loss (classification)
+                    bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
                     
-                    # Combined loss
-                    loss = (1 - args.sc_mil_weight) * ce_loss + args.sc_mil_weight * sc_loss
+                    # ============ COMBINE LOSSES ============
+                    # Weight between instance and bag level
+                    w = args.instance_weight
+                    
+                    # Combined focal: instance + bag
+                    total_focal = w * instance_focal + (1 - w) * bag_focal
+                    # Combined contrastive: instance + bag
+                    total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
+                    
+                    # Combined with classification vs contrastive weight
+                    loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
                 
                 sc_mil_scaler.scale(loss).backward()
                 sc_mil_scaler.step(sc_mil_optimizer)
                 sc_mil_scaler.update()
                 
-                run_cl_loss += sc_loss.item()
-                run_ce_loss += ce_loss.item()
+                run_cl_loss += total_sc.item()
+                run_ce_loss += total_focal.item()
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()

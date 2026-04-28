@@ -79,7 +79,7 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False, return_pooled_embeddings=False):
+    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False, return_pooled_embeddings=False, return_instance_logits=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -105,6 +105,10 @@ class MILEncoder(nn.Module):
             results.append(crop_embeddings)
         if return_pooled_embeddings:
             results.append(pooled)
+        if return_instance_logits:
+            # Instance-level predictions: apply classifier to each crop
+            instance_logits = self.classifier(crop_embeddings)
+            results.append(instance_logits)
         
         return results[0] if len(results) == 1 else tuple(results)
     
