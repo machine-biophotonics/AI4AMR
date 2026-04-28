@@ -324,11 +324,6 @@ def train_single_fold(test_plate):
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
     model = model.to(device)
     
-    # Compile model for faster execution (PyTorch 2.0+)
-    if hasattr(torch, 'compile') and torch.cuda.is_available():
-        print("Compiling model with torch.compile...")
-        model = torch.compile(model, mode='default')
-    
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
     attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
     
