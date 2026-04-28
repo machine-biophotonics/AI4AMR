@@ -391,7 +391,7 @@ def train_single_fold(test_plate):
                 images_v2 = images_v2.to(device)
                 contrastive_optimizer.zero_grad()
                 
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast('cuda', enabled=use_amp):
                     # Get features for both views
                     feat_v1 = model.get_projected_features(images_v1)
                     feat_v2 = model.get_projected_features(images_v2)
@@ -471,7 +471,7 @@ def train_single_fold(test_plate):
                 images, labels = images.to(device), labels.to(device)
                 sc_mil_optimizer.zero_grad()
                 
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast('cuda', enabled=use_amp):
                     # Get bag embeddings (after attention pooling)
                     outputs, attn_weights, crop_embeddings = model(images, return_attention=True, return_crop_embeddings=True)
                     bag_embeddings = F.normalize(crop_embeddings, p=2, dim=-1)
@@ -507,7 +507,7 @@ def train_single_fold(test_plate):
             val_correct, val_total = 0, 0
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             
-            with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
                 for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                     images, labels = images.to(device), labels.to(device)
                     outputs, _ = model(images, return_attention=True)
@@ -567,7 +567,7 @@ def train_single_fold(test_plate):
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
                 
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast('cuda', enabled=use_amp):
                     outputs, attn_weights = model(images, return_attention=True)
                     
                     main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
@@ -594,7 +594,7 @@ def train_single_fold(test_plate):
         val_loss_total = 0.0
         all_preds, all_probs, all_labels = [], [], []
         
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
             for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 outputs, _ = model(images, return_attention=True)
@@ -641,7 +641,7 @@ def train_single_fold(test_plate):
     model.eval()
     
     all_preds, all_probs, all_labels = [], [], []
-    with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+    with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
         for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
             outputs, _ = model(images, return_attention=True)
