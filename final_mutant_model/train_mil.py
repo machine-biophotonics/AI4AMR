@@ -108,6 +108,20 @@ parser.add_argument('--warmup_epochs', type=int, default=None,
                     help='Warmup epochs (default: 5%% of epochs, i.e. 10 for 200)')
 parser.add_argument('--checkpoint_every', type=int, default=1,
                     help='Save checkpoint every N epochs (default: 1)')
+parser.add_argument('--use_tempbalance', action='store_true',
+                    help='Enable TempBalance layer-wise LR scheduling based on layer quality')
+parser.add_argument('--tb_lr_min_ratio', type=float, default=0.5,
+                    help='Min LR multiplier for TempBalance (default: 0.5)')
+parser.add_argument('--tb_lr_max_ratio', type=float, default=1.5,
+                    help='Max LR multiplier for TempBalance (default: 1.5)')
+parser.add_argument('--tb_interval', type=int, default=10,
+                    help='Update TempBalance LR every N epochs (default: 10)')
+parser.add_argument('--tb_window', type=int, default=5,
+                    help='Window for gradient smoothing in TempBalance (default: 5)')
+parser.add_argument('--use_snr', action='store_true',
+                    help='Enable Spectral Norm Regularization (SNR) for weight matrices')
+parser.add_argument('--snr_lambda', type=float, default=0.1,
+                    help='SNR penalty weight (default: 0.1)')
 args = parser.parse_args()
 
 if args.warmup_epochs is None:
@@ -180,6 +194,119 @@ def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_s
 def attention_entropy_loss(attn_weights):
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
     return entropy
+
+
+class TempBalanceScheduler:
+    """
+    TempBalance-style layer-wise learning rate scheduler.
+    Based on Heavy-Tailed Self-Regularization (HT-SR) Theory.
+    
+    Uses gradient statistics as proxy for layer quality:
+    - High gradient norm = undertrained (needs higher LR)
+    - Low gradient norm = overtrained (needs lower LR)
+    
+    Simplified implementation without full WeightWatcher.
+    """
+    
+    def __init__(self, model, lr_min_ratio=0.5, lr_max_ratio=1.5, window=5):
+        self.model = model
+        self.lr_min_ratio = lr_min_ratio
+        self.lr_max_ratio = lr_max_ratio
+        self.window = window
+        
+        print(f"TempBalance initialized: LR range [{lr_min_ratio}, {lr_max_ratio}]")
+    
+    def _get_layer_group(self, name):
+        """Identify which group a layer belongs to"""
+        if 'backbone' in name:
+            if 'features.0' in name or 'features.1' in name or 'features.2' in name:
+                return 'backbone'
+            elif 'features.6' in name or 'features.7' in name:
+                return 'backbone'
+            else:
+                return 'backbone'
+        elif 'attention' in name or 'attention_pool' in name:
+            return 'attention'
+        elif 'classifier' in name or 'head_proj' in name:
+            return 'classifier'
+        return 'other'
+    
+    def compute_layer_lrs(self, base_lr):
+        """Compute LR for each layer group based on gradient statistics"""
+        group_grad_norms = {'backbone': [], 'attention': [], 'classifier': []}
+        
+        for name, param in self.model.named_parameters():
+            if param.grad is None:
+                continue
+            
+            group = self._get_layer_group(name)
+            if group in group_grad_norms:
+                grad_norm = param.grad.norm().item()
+                param_norm = param.norm().item() + 1e-8
+                ratio = grad_norm / param_norm
+                group_grad_norms[group].append(ratio)
+        
+        lrs = {}
+        for group, ratios in group_grad_norms.items():
+            if ratios:
+                avg_ratio = np.mean(ratios)
+                normalized = np.clip(avg_ratio / 5.0, 0.0, 1.0)
+            else:
+                normalized = 0.5
+            
+            lr_mult = self.lr_min_ratio + (self.lr_max_ratio - self.lr_min_ratio) * normalized
+            lrs[group] = base_lr * lr_mult
+        
+        for group in ['backbone', 'attention', 'classifier']:
+            if group not in lrs:
+                lrs[group] = base_lr
+        
+        return lrs
+
+
+def compute_snr_penalty(model, layers=None):
+    """
+    Compute Spectral Norm Regularization (SNR) penalty.
+    Based on spectral norm of weight matrices.
+    
+    SNR penalizes the largest singular value of weight matrices,
+    which helps with training stability and generalization.
+    
+    Args:
+        model: Neural network model
+        layers: Optional list of layer names to apply SNR (None = all layers)
+    
+    Returns:
+        SNR penalty value
+    """
+    snr_loss = 0.0
+    count = 0
+    
+    for name, param in model.named_parameters():
+        if param.dim() >= 2:
+            if layers is not None and not any(layer in name for layer in layers):
+                continue
+            
+            weight = param.data
+            if weight.numel() < 16:
+                continue
+            
+            try:
+                if weight.dim() == 4:
+                    weight_2d = weight.view(weight.size(0), -1)
+                else:
+                    weight_2d = weight
+                
+                spectral_norm = torch.linalg.svd(weight_2d, full=False).singular_values[0]
+                snr_loss += spectral_norm
+                count += 1
+            except:
+                continue
+    
+    if count > 0:
+        return snr_loss / count
+    return 0.0
+
 
 def worker_init_fn(worker_id, seed=42):
     """Module-level worker init function for multiprocessing compatibility"""
@@ -428,6 +555,10 @@ def train_single_fold(test_plate):
         # Train encoder + attention + classifier jointly
         sc_mil_params = [p for n, p in model.named_parameters()]
         sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        
+        for pg in sc_mil_optimizer.param_groups:
+            pg['base_lr'] = pg['lr']
+        
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         if args.warmup_epochs > 0:
             sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
@@ -436,15 +567,28 @@ def train_single_fold(test_plate):
             sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler([sc_mil_warmup, sc_mil_scheduler])
         sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
         
+        tb_scheduler = None
+        if args.use_tempbalance:
+            print(f"TempBalance enabled: lr_ratio=[{args.tb_lr_min_ratio}, {args.tb_lr_max_ratio}], interval={args.tb_interval}")
+            tb_scheduler = TempBalanceScheduler(
+                model, 
+                lr_min_ratio=args.tb_lr_min_ratio,
+                lr_max_ratio=args.tb_lr_max_ratio,
+                window=args.tb_window
+            )
+        
         # Create CSV file for SC-MIL metrics
         timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
         csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
+        csv_header = ['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr']
+        if args.use_temp_schedule:
+            csv_header.append('temperature')
+        if args.use_tempbalance:
+            csv_header.extend(['lr_backbone', 'lr_attention', 'lr_classifier'])
+        
         with open(csv_path_sc_mil, 'w', newline='') as f:
             writer = csv.writer(f)
-            if args.use_temp_schedule:
-                writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr', 'temperature'])
-            else:
-                writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
+            writer.writerow(csv_header)
         
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
@@ -510,10 +654,34 @@ def train_single_fold(test_plate):
                     
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                    
+                    # Add SNR penalty if enabled
+                    if args.use_snr:
+                        snr_penalty = compute_snr_penalty(model)
+                        loss = loss + args.snr_lambda * snr_penalty
                 
                 sc_mil_scaler.scale(loss).backward()
+                
+                if tb_scheduler is not None and (epoch + 1) % args.tb_interval == 0:
+                    with torch.no_grad():
+                        layer_lrs = tb_scheduler.compute_layer_lrs(1.0)
+                        for pg_idx, pg in enumerate(sc_mil_optimizer.param_groups):
+                            base_lr = pg.get('base_lr', args.lr)
+                            lr_mult = 1.0
+                            for name in pg.get('params', []):
+                                for layer_name, layer_lr in layer_lrs.items():
+                                    if any(layer_name in str(p) for p in pg['params']):
+                                        lr_mult = layer_lr / args.lr
+                                        break
+                            pg['lr'] = base_lr * lr_mult
+                
                 sc_mil_scaler.step(sc_mil_optimizer)
                 sc_mil_scaler.update()
+                
+                if tb_scheduler is not None and (epoch + 1) % args.tb_interval == 0:
+                    for pg in sc_mil_optimizer.param_groups:
+                        if 'base_lr' not in pg:
+                            pg['base_lr'] = pg['lr']
                 
                 run_cl_loss += total_sc.item()
                 run_ce_loss += total_focal.item()
@@ -553,7 +721,12 @@ def train_single_fold(test_plate):
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
             temp_info = f", Temp={current_temp:.3f}" if args.use_temp_schedule else ""
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}{temp_info}, Time={time.time()-epoch_start:.1f}s")
+            tb_info = ""
+            if tb_scheduler is not None and (epoch + 1) % args.tb_interval == 0:
+                layer_lrs = tb_scheduler.compute_layer_lrs(1.0)
+                tb_info = f", TB={','.join([f'{k.split('_')[0]}:{v:.2e}' for k, v in list(layer_lrs.items())[:3]])}"
+            
+            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}{temp_info}{tb_info}, Time={time.time()-epoch_start:.1f}s")
             
             # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
@@ -561,10 +734,14 @@ def train_single_fold(test_plate):
             # Save metrics to CSV
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
+                row = [epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']]
                 if args.use_temp_schedule:
-                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr'], current_temp])
-                else:
-                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                    row.append(current_temp)
+                if tb_scheduler is not None and (epoch + 1) % args.tb_interval == 0:
+                    layer_lrs = tb_scheduler.compute_layer_lrs(1.0)
+                    for k in sorted(layer_lrs.keys()):
+                        row.append(layer_lrs[k])
+                writer.writerow(row)
             
             # Save best model based on validation AUC
             if val_auc > best_val_auc:
