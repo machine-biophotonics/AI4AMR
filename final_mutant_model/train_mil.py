@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Must be set before torch import to suppress inductor SM check at import time
+import os
+os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM"] = "0"
+
 """
 MIL training with cycle-based crop extraction + neighbors
 Training: configurable crops (3x3, 5x5, 7x7, 9x9, 11x11 neighborhood)
