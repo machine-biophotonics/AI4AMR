@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Must be set before torch import to suppress inductor SM check at import time
+# Must be set before torch import to suppress inductor SM check
 import os
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM"] = "0"
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS"] = "ATEN,CPP"
@@ -46,12 +46,17 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 torch.use_deterministic_algorithms(True)
 
 # Disable inductor max_autotune_gemm at runtime to avoid SM warning on small GPUs
 import torch._inductor.config as inductor_config
 inductor_config.max_autotune_gemm = False
 inductor_config.max_autotune_gemm_backends = "ATEN,CPP"
+
+# Filter out the harmless inductor SM warning (GPU has <68 SMs, autotune disabled above)
+import warnings
+warnings.filterwarnings("ignore", message=".*Not enough SMs to use max_autotune_gemm.*")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
@@ -247,9 +252,11 @@ def attention_entropy_loss(attn_weights):
 
 def worker_init_fn(worker_id, seed=42):
     """Module-level worker init function for multiprocessing compatibility"""
+    import random
     import numpy as np
     random.seed(seed + worker_id)
     np.random.seed(seed + worker_id)
+    torch.manual_seed(seed + worker_id)
 
 
 def train_single_fold(test_plate):
