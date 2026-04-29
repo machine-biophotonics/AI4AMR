@@ -69,8 +69,8 @@ parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='P6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
-parser.add_argument('--run_all_folds', action='store_true', default=True, help='Run all 6 folds')
-parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
+parser.add_argument('--run_all_folds', action='store_true', help='Run all 6 folds')
+parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
                     help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops)')
 parser.add_argument('--grid_size', type=int, default=12,
                     help='Grid size for crop positions')
@@ -82,7 +82,7 @@ parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
-parser.add_argument('--use_sc_mil', action='store_true', default=True,
+parser.add_argument('--use_sc_mil', action='store_true',
                     help='Use SC-MIL: supervised contrastive + classification joint training (recommended)')
 parser.add_argument('--sc_mil_epochs', type=int, default=100,
                     help='Epochs for SC-MIL joint training (default 100)')

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Predict all 144 crops for each test image in final_mutant_model experiment.
+Predict all crops for each test image in final_mutant_model experiment.
 Uses MILEncoder model with attention pooling for prediction.
 Supports both standard MIL and SC-MIL trained models.
+Supports configurable crop neighborhood: 3x3, 5x5, 7x7, 9x9, 11x11
 """
 
 import os
@@ -29,10 +30,12 @@ def main() -> None:
                         help='Fold to predict (e.g., P6). If not specified, uses P6.')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
+    parser.add_argument('--crop_neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
+                        help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops), 9=(9x9=81 crops), 11=(11x11=121 crops)')
     parser.add_argument('--no_mil_mode', action='store_true',
-                        help='Disable MIL mode (use single crops instead of 3x3 neighborhoods)')
+                        help='Disable MIL mode (use single crops instead of neighborhoods)')
     parser.add_argument('--mil_mode', dest='mil_mode', action='store_true', default=True,
-                        help='Use MIL mode: 100 positions with 9 crops each (default: True)')
+                        help='Use MIL mode with configurable neighborhood (default: True)')
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
     parser.add_argument('--max_images', type=int, default=None,
                         help='Maximum number of images to process')
@@ -48,9 +51,6 @@ def main() -> None:
                         help='Dropout for inference (default: 0.0, set to 0 to disable)')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads (default: 4)')
-    parser.add_argument('--attention_mode', type=str, default='softmax',
-                        choices=['softmax', 'sigmoid'],
-                        help='Attention type: softmax or sigmoid (default: softmax)')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -65,9 +65,12 @@ def main() -> None:
     
     crop_size: int = args.crop_size
     grid_size: int = args.grid_size
+    neighborhood: int = args.crop_neighborhood
     mil_mode: bool = args.mil_mode
     
-    print(f"Config: crop_size={crop_size}, grid_size={grid_size}, mil_mode={mil_mode}")
+    num_crops_per_position: int = neighborhood * neighborhood
+    
+    print(f"Config: crop_size={crop_size}, grid_size={grid_size}, mil_mode={mil_mode}, neighborhood={neighborhood}x{neighborhood} ({num_crops_per_position} crops)")
     
     classes: dict[int, str] = {}
     with open(os.path.join(SCRIPT_DIR, 'classes.txt'), 'r') as f:
@@ -97,6 +100,7 @@ def main() -> None:
     print(f'  checkpoint: {checkpoint_path}')
     print(f'  image_dir: {image_dir}')
     print(f'  mil_mode: {mil_mode}')
+    print(f'  neighborhood: {neighborhood}x{neighborhood} ({num_crops_per_position} crops per position)')
     print(f'{"="*60}')
     
     if not os.path.exists(checkpoint_path):
@@ -119,8 +123,7 @@ def main() -> None:
         num_heads=args.num_heads, 
         attention_temp=0.5, 
         dropout=args.dropout,
-        use_contrastive=has_contrastive or args.use_sc_mil,
-        attention_mode=args.attention_mode
+        use_contrastive=has_contrastive or args.use_sc_mil
     )
     model = model.to(device)
     
@@ -162,8 +165,20 @@ def main() -> None:
         
         return crops
 
-    def extract_mil_crops(img_path: str, crop_size: int, grid_size: int) -> list[tuple[torch.Tensor, int, int, int]]:
-        """Extract 100 positions (with 9 crops each) matching training: center + 3x3 neighborhood."""
+    def extract_mil_crops(img_path: str, crop_size: int, grid_size: int, neighborhood: int) -> list[tuple[torch.Tensor, int, int, int]]:
+        """
+        Extract positions with configurable neighborhood crops.
+        
+        Args:
+            img_path: Path to image
+            crop_size: Size of each crop
+            grid_size: Grid size for positions
+            neighborhood: Neighborhood size (3, 5, 7, 9, 11)
+        
+        Returns:
+            List of (crop_tensor, position_idx, local_row, local_col)
+            with num_crops = neighborhood * neighborhood crops per position
+        """
         img: Image.Image = Image.open(img_path).convert('RGB')
         w: int
         h: int
@@ -172,24 +187,28 @@ def main() -> None:
         stride_x: int = (w - crop_size) // (grid_size - 1) if grid_size > 1 else 0
         stride_y: int = (h - crop_size) // (grid_size - 1) if grid_size > 1 else 0
         
+        half_n: int = neighborhood // 2
+        
+        # Find valid center positions that can accommodate the full neighborhood
         valid_positions: list[tuple[int, int]] = []
         for i in range(grid_size):
             for j in range(grid_size):
                 left = j * stride_x
                 top = i * stride_y
                 if left + crop_size <= w and top + crop_size <= h:
-                    can_left = left - stride_x >= 0
-                    can_right = left + stride_x + crop_size <= w
-                    can_top = top - stride_y >= 0
-                    can_bottom = top + stride_y + crop_size <= h
+                    # Check if we can extract full neighborhood around this position
+                    can_left = left - half_n * stride_x >= 0
+                    can_right = left + half_n * stride_x + crop_size <= w
+                    can_top = top - half_n * stride_y >= 0
+                    can_bottom = top + half_n * stride_y + crop_size <= h
                     if can_left and can_right and can_top and can_bottom:
                         valid_positions.append((left, top))
         
         crops: list[tuple[torch.Tensor, int, int, int]] = []
         
         for pos_idx, (center_x, center_y) in enumerate(valid_positions):
-            for dy in range(-1, 2):
-                for dx in range(-1, 2):
+            for dy in range(-half_n, half_n + 1):
+                for dx in range(-half_n, half_n + 1):
                     left = center_x + dx * stride_x
                     top = center_y + dy * stride_y
                     
@@ -201,7 +220,11 @@ def main() -> None:
                     crop_np = (crop_np - mean) / std
                     crop_tensor: torch.Tensor = torch.from_numpy(crop_np).float()
                     
-                    crops.append((crop_tensor, pos_idx, dy + 1, dx + 1))
+                    # Normalize local position to 0-based index within neighborhood
+                    local_row = dy + half_n
+                    local_col = dx + half_n
+                    
+                    crops.append((crop_tensor, pos_idx, local_row, local_col))
         
         return crops
 
@@ -232,12 +255,9 @@ def main() -> None:
 
     def predict_image(model: MILEncoder, img_path: str, plate: str, batch_size: int) -> list[dict]:
         """Predict all crops for a single image using MIL attention."""
-        if 'A01' in img_path:
-            print(f"DEBUG: mil_mode={mil_mode}")
-        
         if mil_mode:
-            all_crops = extract_mil_crops(img_path, crop_size, grid_size)
-            n_positions = len(all_crops) // 9
+            all_crops = extract_mil_crops(img_path, crop_size, grid_size, neighborhood)
+            n_positions = len(all_crops) // num_crops_per_position
         else:
             all_crops = extract_all_crops(img_path, crop_size, grid_size)
             n_positions = len(all_crops)
@@ -245,8 +265,11 @@ def main() -> None:
         results: list[dict] = []
         
         if mil_mode:
+            # Calculate center index for extracting center crop info
+            center_idx = num_crops_per_position // 2
+            
             for pos_idx in range(n_positions):
-                pos_crops = all_crops[pos_idx * 9:(pos_idx + 1) * 9]
+                pos_crops = all_crops[pos_idx * num_crops_per_position:(pos_idx + 1) * num_crops_per_position]
                 batch_tensors = torch.stack([c[0] for c in pos_crops]).unsqueeze(0).to(device)
                 
                 with torch.no_grad():
@@ -258,7 +281,7 @@ def main() -> None:
                 pooled_probs_np = probs[0].cpu().numpy().tolist()
                 pooled_attn_np = attn_weights[0].cpu().numpy().tolist()
                 
-                center_crop = pos_crops[4]
+                center_crop = pos_crops[center_idx]
                 crop_tensor, pos_id, local_row, local_col = center_crop
                 
                 well = parse_well_from_filename(img_path)
@@ -273,6 +296,8 @@ def main() -> None:
                     'ground_truth_label': gt_label,
                     'ground_truth_idx': gt_idx,
                     'position_index': pos_idx,
+                    'neighborhood_size': neighborhood,
+                    'num_crops_per_position': num_crops_per_position,
                     'local_row': local_row,
                     'local_col': local_col,
                     'predicted_class_idx': pooled_pred_idx,
@@ -346,7 +371,7 @@ def main() -> None:
             y_probs: np.ndarray = np.array(df_with_gt['probs'].tolist())
             
             results_weighted = precision_recall_fscore_support(
-                y_true, y_pred, average='weighted', zero_division='warn'
+                y_true, y_pred, average='weighted', zero_division=0
             )
             
             precision_mean, recall_mean, f1_mean, _ = results_weighted
@@ -356,12 +381,20 @@ def main() -> None:
             
             try:
                 y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
-                metrics['roc_auc'] = float(roc_auc_score(y_true_bin, y_probs, average='weighted', multi_class='ovr'))
+                # Check if we have multiple classes before computing ROC AUC
+                if y_true_bin.shape[1] > 1 and len(np.unique(y_true)) > 1:
+                    metrics['roc_auc'] = float(roc_auc_score(y_true_bin, y_probs, average='weighted', multi_class='ovr'))
+                else:
+                    metrics['roc_auc'] = None
             except Exception:
                 metrics['roc_auc'] = None
             
             try:
-                metrics['avg_precision'] = float(average_precision_score(y_true_bin, y_probs, average='weighted'))
+                # Check if we have multiple classes before computing average precision
+                if y_true_bin.shape[1] > 1 and len(np.unique(y_true)) > 1:
+                    metrics['avg_precision'] = float(average_precision_score(y_true_bin, y_probs, average='weighted'))
+                else:
+                    metrics['avg_precision'] = None
             except Exception:
                 metrics['avg_precision'] = None
         else:
@@ -393,7 +426,7 @@ def main() -> None:
     
     print(f"\nPrediction summary:")
     print(f"  - Images processed: {len(image_paths)}")
-    print(f"  - Crops per image: {len(all_results) // len(image_paths) if image_paths else 0}")
+    print(f"  - Crops per position: {num_crops_per_position} ({neighborhood}x{neighborhood})")
     print(f"  - Total crop predictions: {len(all_results)}")
     
     df: pd.DataFrame = pd.DataFrame(all_results)
@@ -406,10 +439,12 @@ def main() -> None:
     output_csv: str = os.path.join(output_dir, f'predictions_all_crops_mil.csv')
     checkpoint_name = args.checkpoint.replace('.pth', '')
     if mil_mode:
-        suffix = f"_{checkpoint_name}"
+        suffix = f"_{checkpoint_name}_n{neighborhood}"
         if args.use_sc_mil:
             suffix += "_scmil"
         output_csv = os.path.join(output_dir, f'predictions_all_crops_mil{suffix}.csv')
+    else:
+        output_csv = os.path.join(output_dir, f'predictions_all_crops{suffix}.csv')
     df.to_csv(output_csv, index=False)
     print(f"\nSaved predictions to {output_csv}")
     
@@ -421,6 +456,8 @@ def main() -> None:
         print(f"  F1: {metrics['f1']:.4f}")
         if metrics.get('roc_auc') is not None:
             print(f"  ROC-AUC: {metrics['roc_auc']:.4f}")
+        if metrics.get('avg_precision') is not None:
+            print(f"  Avg Precision: {metrics['avg_precision']:.4f}")
     
     print(f"\n{'='*60}")
     print(f"Done! Fold {test_plate}")
