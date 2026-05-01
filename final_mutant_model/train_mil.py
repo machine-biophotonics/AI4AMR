@@ -40,7 +40,7 @@ from collections import Counter
 import multiprocessing
 from functools import partial
 
-from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
+from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, get_drug_from_path, extract_well_from_filename
 from supcon_loss import SupConLoss, SupConLossMIL
 
 SEED = 42
@@ -67,9 +67,9 @@ parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
-parser.add_argument('--test_plate', type=str, default='P6')
+parser.add_argument('--test_plate', type=str, default='Plate_6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
-parser.add_argument('--run_all_folds', action='store_true', default=True, help='Run all 6 folds')
+parser.add_argument('--run_all_folds', action='store_true', default=False, help='Run all 6 folds')
 parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
                     help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops)')
 parser.add_argument('--grid_size', type=int, default=12,
@@ -98,6 +98,8 @@ parser.add_argument('--warmup_epochs', type=int, default=None,
                     help='Warmup epochs (default: 5%% of epochs, i.e. 10 for 200)')
 parser.add_argument('--checkpoint_every', type=int, default=1,
                     help='Save checkpoint every N epochs (default: 1)')
+parser.add_argument('--num_channels', type=int, default=3,
+                    help='Number of input channels (1 for grayscale, 3 for RGB)')
 args = parser.parse_args()
 
 if args.warmup_epochs is None:
@@ -119,18 +121,26 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if args.data_root:
     BASE_DIR = args.data_root
 else:
-    BASE_DIR = os.path.dirname(SCRIPT_DIR)
+    BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
-with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
-    plate_data = json.load(f)
+IC50_MAPPING_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'plate_well_ic50_mapping_complete.json')
+
+with open(IC50_MAPPING_PATH, 'r') as f:
+    ic50_data = json.load(f)
 
 plate_maps = {}
 for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
     plate_maps[plate] = {}
-    for row, wells in plate_data[plate].items():
-        for col, info in wells.items():
-            well = f"{row}{int(col):02d}"
-            plate_maps[plate][well] = info['id']
+    if plate in ic50_data:
+        for well, info in ic50_data[plate].items():
+            antibiotic = info.get('antibiotic', '')
+            ic50_multiple = info.get('ic50_multiple', '')
+            if antibiotic and ic50_multiple:
+                ic50_str = ic50_multiple if 'x' in ic50_multiple else f"{ic50_multiple}x"
+                # Replace spaces with underscores to match folder names
+                antibiotic_clean = antibiotic.replace(' ', '_')
+                drug_class = f"{antibiotic_clean}_{ic50_str}"
+                plate_maps[plate][well] = drug_class
 
 def extract_gene(label):
     return label
@@ -140,9 +150,32 @@ gene_to_idx = {gene: idx for idx, gene in enumerate(all_genes)}
 num_classes = len(all_genes)
 print(f"Classes: {num_classes}")
 
-all_plates = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
+
+def get_all_drug_classes():
+    """Get all drug_concentration combinations from plate_maps and folders."""
+    drug_classes = set()
+    for pm in plate_maps.values():
+        for label in pm.values():
+            drug_classes.add(label)
+    # Also check for DMSO_control folder
+    for plate in all_plates:
+        plate_dir = os.path.join(BASE_DIR, plate)
+        if os.path.exists(plate_dir):
+            for subdir in os.listdir(plate_dir):
+                subdir_path = os.path.join(plate_dir, subdir)
+                if os.path.isdir(subdir_path):
+                    drug_classes.add(subdir)
+    return sorted(drug_classes)
+
+all_drugs = get_all_drug_classes()
+drug_to_idx = {drug: idx for idx, drug in enumerate(all_drugs)}
+num_classes = len(all_drugs)
+print(f"Drug classes: {num_classes}")
+print(f"Classes: {all_drugs}")
 
 def get_image_paths_for_plate(plate):
+    plate_key = f"P{plate.split('_')[-1]}"
     plate_dir = os.path.join(BASE_DIR, plate)
     if not os.path.exists(plate_dir):
         return []
@@ -151,8 +184,12 @@ def get_image_paths_for_plate(plate):
         paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
     valid_paths = []
     for path in paths:
+        # Check if it's in a drug folder (check plate_maps)
         well = extract_well_from_filename(os.path.basename(path))
-        if well and well in plate_maps.get(plate, {}):
+        if well and well in plate_maps.get(plate_key, {}):
+            valid_paths.append(path)
+        # Also check for DMSO_control folder (any well in that folder)
+        elif 'DMSO_control' in path:
             valid_paths.append(path)
     return valid_paths
 
@@ -202,17 +239,17 @@ def train_single_fold(test_plate):
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
             train_paths.append(path)
-            train_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
+            train_labels.append(drug_to_idx[get_drug_from_path(path)])
     
     for plate in val_plates:
         for path in get_image_paths_for_plate(plate):
             val_paths.append(path)
-            val_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
+            val_labels.append(drug_to_idx[get_drug_from_path(path)])
     
     for plate in [test_plate]:
         for path in get_image_paths_for_plate(plate):
             test_paths.append(path)
-            test_labels.append(gene_to_idx[get_gene_from_path(path, plate_maps)])
+            test_labels.append(drug_to_idx[get_drug_from_path(path)])
     
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
@@ -225,9 +262,9 @@ def train_single_fold(test_plate):
     class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, plate_maps, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED)
-    val_dataset = MultiCropDataset(val_paths, val_labels, plate_maps, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED)
-    test_dataset = MultiCropDataset(test_paths, test_labels, plate_maps, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED)
+    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels)
+    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels)
+    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -253,7 +290,7 @@ def train_single_fold(test_plate):
     # Model selection based on flags
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True)
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels)
     else:
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
     model = model.to(device)
@@ -296,8 +333,8 @@ def train_single_fold(test_plate):
         print(f"{'='*60}")
         
         # Create two augmented views for each image
-        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, plate_maps, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED)
-        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, plate_maps, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1)
+        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels)
+        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1, num_channels=args.num_channels)
         
         # Set initial epoch for both
         crop_dataset_v1.set_epoch(0)

@@ -55,7 +55,7 @@ class ContrastiveEncoder(nn.Module):
 
 class MILEncoder(nn.Module):
     """MIL encoder with optional contrastive head"""
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256, num_channels=3):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -63,6 +63,9 @@ class MILEncoder(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
+        # Modify first conv layer for num_channels (1 for grayscale, 3 for RGB)
+        self.backbone[0][0] = nn.Conv2d(num_channels, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
@@ -221,7 +224,7 @@ class AttentionMILModel(nn.Module):
 class MultiCropDataset(Dataset):
     """Cycle-based crop extraction with configurable neighborhood for MIL"""
     
-    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, neighborhood=3, augment=True, seed=42, epoch=0):
+    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, neighborhood=3, augment=True, seed=42, epoch=0, num_channels=1):
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
@@ -231,8 +234,14 @@ class MultiCropDataset(Dataset):
         self.seed = seed
         self.epoch = epoch
         self.single_crop = False
+        self.num_channels = num_channels
         
-        sample_img = Image.open(image_paths[0]).convert('RGB')
+        sample_img = Image.open(image_paths[0])
+        # Convert to grayscale ('L') for 1-channel, or RGB for 3-channel
+        if num_channels == 1:
+            sample_img = sample_img.convert('L')
+        else:
+            sample_img = sample_img.convert('RGB')
         w, h = sample_img.size
         self.image_size = w
         
@@ -256,18 +265,26 @@ class MultiCropDataset(Dataset):
         self.positions = positions
         self.num_neighbors = neighborhood * neighborhood - 1
         
+        # Normalization for 1-channel vs 3-channel
+        if num_channels == 1:
+            norm_mean = [0.5]
+            norm_std = [0.5]
+        else:
+            norm_mean = [0.485, 0.456, 0.406]
+            norm_std = [0.229, 0.224, 0.225]
+        
         if augment:
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomBrightnessContrast(brightness_limit=0.5, contrast_limit=0.5, p=0.3),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                A.Normalize(mean=norm_mean, std=norm_std),
                 ToTensorV2(),
             ])
         else:
             self.transform = A.Compose([
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                A.Normalize(mean=norm_mean, std=norm_std),
                 ToTensorV2(),
             ])
         
@@ -303,7 +320,11 @@ class MultiCropDataset(Dataset):
     
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert('RGB')
+        # Convert based on num_channels: 'L' for grayscale (1 channel), 'RGB' for color (3 channels)
+        if self.num_channels == 1:
+            image = Image.open(img_path).convert('L')
+        else:
+            image = Image.open(img_path).convert('RGB')
         
         center_left, center_top = self.epoch_centers[idx]
         
@@ -348,6 +369,16 @@ class MultiCropDataset(Dataset):
 def extract_well_from_filename(filename):
     match = re.search(r'Well(\w\d+)_', filename)
     return match.group(1) if match else None
+
+
+def get_drug_from_path(img_path, plate_maps=None):
+    """Extract drug_concentration from image path.
+    Path format: .../Plate_X/Drug_Concentration/image.tiff
+    Returns: Drug_Concentration (e.g., 'Avibactam_1x')
+    """
+    dirname = os.path.dirname(img_path)
+    drug_conc = os.path.basename(dirname)
+    return drug_conc
 
 
 def get_gene_from_path(img_path, plate_maps):
