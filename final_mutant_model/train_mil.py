@@ -171,30 +171,34 @@ def get_image_paths_for_plate(plate):
     # Convert Plate_1 -> P1 for directory lookup
     plate_key = f"P{plate.split('_')[-1]}"  # Plate_1 -> P1, P6 -> P6
     
+    # Determine which directories to search based on data_mode
+    search_dirs = []
     if args.data_mode == 'drug':
-        plate_dir = os.path.join(BASE_DIR, plate_key)  # Drugs_Data/P1
-    else:
-        plate_dir = os.path.join(BASE_DIR, plate_key)  # Mutants_Data/P1
-    
-    if not os.path.exists(plate_dir):
-        return []
-    
-    paths = []
-    for pattern in ['*.tif', '*.tiff', '*.png']:
-        paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
+        base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Drugs_Data')
+        search_dirs.append((os.path.join(base, plate_key), 'drug'))
+    elif args.data_mode == 'mutant':
+        base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
+        search_dirs.append((os.path.join(base, plate_key), 'mutant'))
+    else:  # both - search both directories
+        drug_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Drugs_Data')
+        mutant_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
+        search_dirs.append((os.path.join(drug_base, plate_key), 'drug'))
+        search_dirs.append((os.path.join(mutant_base, plate_key), 'mutant'))
     
     valid_paths = []
-    for path in paths:
-        well = extract_well_from_filename(os.path.basename(path))
-        if well:
-            # Check if well is in plate_maps for drug/mutant classification
-            if well in plate_maps.get(plate_key, {}):
+    for plate_dir, source_type in search_dirs:
+        if not os.path.exists(plate_dir):
+            continue
+        
+        paths = []
+        for pattern in ['*.tif', '*.tiff', '*.png']:
+            paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
+        
+        for path in paths:
+            well = extract_well_from_filename(os.path.basename(path))
+            if well and well in plate_maps.get(plate_key, {}):
                 valid_paths.append(path)
-            # Also include control wells (ic50_multiple == 'control')
-            elif plate_key in plate_maps and well in plate_maps[plate_key]:
-                label = plate_maps[plate_key][well]
-                if label == 'control':
-                    valid_paths.append(path)
+    
     return valid_paths
 
 def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
