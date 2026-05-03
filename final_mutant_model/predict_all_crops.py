@@ -547,20 +547,29 @@ def main() -> None:
             metrics['recall'] = float(recall_mean)
             metrics['f1'] = float(f1_mean)
             
+            # Check if we have multiple unique classes in ground truth
+            unique_classes = len(np.unique(y_true))
+            
             try:
-                y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
-                # Check if we have multiple classes before computing ROC AUC
-                if y_true_bin.shape[1] > 1 and len(np.unique(y_true)) > 1:
-                    metrics['roc_auc'] = float(roc_auc_score(y_true_bin, y_probs, average='weighted', multi_class='ovr'))
+                if unique_classes > 1:
+                    y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
+                    # Only compute ROC AUC if we have multiple classes AND probabilities
+                    if y_true_bin.shape[1] > 1 and y_probs.shape[1] > 1:
+                        metrics['roc_auc'] = float(roc_auc_score(y_true_bin, y_probs, average='weighted', multi_class='ovr'))
+                    else:
+                        metrics['roc_auc'] = None
                 else:
                     metrics['roc_auc'] = None
             except Exception:
                 metrics['roc_auc'] = None
             
             try:
-                # Check if we have multiple classes before computing average precision
-                if y_true_bin.shape[1] > 1 and len(np.unique(y_true)) > 1:
-                    metrics['avg_precision'] = float(average_precision_score(y_true_bin, y_probs, average='weighted'))
+                if unique_classes > 1:
+                    y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
+                    if y_true_bin.shape[1] > 1 and y_probs.shape[1] > 1:
+                        metrics['avg_precision'] = float(average_precision_score(y_true_bin, y_probs, average='weighted'))
+                    else:
+                        metrics['avg_precision'] = None
                 else:
                     metrics['avg_precision'] = None
             except Exception:
