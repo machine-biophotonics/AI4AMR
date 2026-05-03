@@ -125,7 +125,7 @@ if args.data_root:
 else:
     BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
-IC50_MAPPING_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'plate_well_ic50_mapping_complete.json')
+IC50_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_ic50_mapping.json')
 
 with open(IC50_MAPPING_PATH, 'r') as f:
     ic50_data = json.load(f)
