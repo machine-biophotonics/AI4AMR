@@ -315,16 +315,59 @@ class MultiCropDataset(Dataset):
         
         self.single_crop = False
     
+    def _load_image(self, img_path):
+        """Load image with proper handling for 16-bit microscopy images.
+        
+        Standard approach from research papers:
+        1. Load as numpy array (preserves 16-bit precision)
+        2. Percentile-based normalization (robust to outliers, recommended for microscopy)
+        3. Clip to [0, 1]
+        4. Convert to 8-bit for PIL transforms
+        """
+        # Try tifffile first for 16-bit TIFF, fallback to PIL
+        try:
+            import tifffile
+            img_array = tifffile.imread(img_path)
+        except ImportError:
+            img_array = np.array(Image.open(img_path))
+        except Exception:
+            img_array = np.array(Image.open(img_path))
+        
+        # Handle multi-channel or single-channel
+        if len(img_array.shape) == 3:
+            img_array = img_array[:, :, 0]  # Take first channel if multi-channel
+        
+        if img_array.dtype == np.uint16:
+            # Percentile-based normalization (robust to outliers)
+            p1 = np.percentile(img_array, 0.1)
+            p99 = np.percentile(img_array, 99.9)
+            if p99 > p1:
+                img_array = (img_array - p1) / (p99 - p1)
+            else:
+                img_array = img_array / img_array.max() if img_array.max() > 0 else img_array
+            img_array = np.clip(img_array, 0, 1)
+            # Convert to 8-bit for PIL transforms
+            img_array = (img_array * 255).astype(np.uint8)
+        elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+            # Already normalized float
+            img_array = np.clip(img_array, 0, 1)
+            img_array = (img_array * 255).astype(np.uint8)
+        
+        # Convert to PIL Image
+        if self.num_channels == 1:
+            image = Image.fromarray(img_array, mode='L')
+        else:
+            image = Image.fromarray(img_array, mode='RGB')
+        
+        return image
+    
     def __len__(self):
         return len(self.image_paths)
     
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        # Convert based on num_channels: 'L' for grayscale (1 channel), 'RGB' for color (3 channels)
-        if self.num_channels == 1:
-            image = Image.open(img_path).convert('L')
-        else:
-            image = Image.open(img_path).convert('RGB')
+        # Load image with proper handling for 16-bit microscopy images
+        image = self._load_image(img_path)
         
         center_left, center_top = self.epoch_centers[idx]
         
