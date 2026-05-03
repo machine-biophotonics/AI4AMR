@@ -316,13 +316,16 @@ class MultiCropDataset(Dataset):
         self.single_crop = False
     
     def _load_image(self, img_path):
-        """Load image with proper handling for 16-bit microscopy images.
+        """Load image with proper handling for microscopy images.
         
         Standard approach from research papers:
-        1. Load as numpy array (preserves 16-bit precision)
-        2. Percentile-based normalization (robust to outliers, recommended for microscopy)
-        3. Clip to [0, 1]
-        4. Convert to 8-bit for PIL transforms
+        1. Load as numpy array (preserves bit depth)
+        2. Apply appropriate normalization based on dtype:
+           - uint16: Percentile-based normalization (robust to outliers)
+           - uint8: Min-max normalization to [0,1]
+           - float: Clip to [0,1]
+        3. Scale to [0, 255] and convert to 8-bit for PIL transforms
+        4. Output as grayscale (mode='L') for num_channels=1
         """
         # Try tifffile first for 16-bit TIFF, fallback to PIL
         try:
@@ -337,27 +340,36 @@ class MultiCropDataset(Dataset):
         if len(img_array.shape) == 3:
             img_array = img_array[:, :, 0]  # Take first channel if multi-channel
         
+        # Normalize based on dtype (standard approach from research papers)
         if img_array.dtype == np.uint16:
-            # Percentile-based normalization (robust to outliers)
-            p1 = np.percentile(img_array, 0.1)
-            p99 = np.percentile(img_array, 99.9)
+            # Percentile-based normalization (robust to outliers, recommended for microscopy)
+            # Use 1st and 99th percentile to handle outliers better than min-max
+            p1 = np.percentile(img_array, 1)
+            p99 = np.percentile(img_array, 99)
             if p99 > p1:
                 img_array = (img_array - p1) / (p99 - p1)
             else:
-                img_array = img_array / img_array.max() if img_array.max() > 0 else img_array
+                img_array = img_array / (img_array.max() + 1e-8)
             img_array = np.clip(img_array, 0, 1)
-            # Convert to 8-bit for PIL transforms
-            img_array = (img_array * 255).astype(np.uint8)
+            
+        elif img_array.dtype == np.uint8:
+            # Min-max normalization for 8-bit images
+            # Standard approach: scale to [0, 1] uniformly
+            img_array = img_array.astype(np.float32) / 255.0
+            
         elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
-            # Already normalized float
+            # Already float - clip to [0, 1]
             img_array = np.clip(img_array, 0, 1)
-            img_array = (img_array * 255).astype(np.uint8)
         
-        # Convert to PIL Image
+        # Scale to [0, 255] for PIL
+        img_array = (img_array * 255).astype(np.uint8)
+        
+        # Convert to PIL Image - use L for grayscale (1 channel), RGB for 3 channels
         if self.num_channels == 1:
             image = Image.fromarray(img_array, mode='L')
         else:
-            image = Image.fromarray(img_array, mode='RGB')
+            # Convert grayscale to RGB by stacking
+            image = Image.fromarray(img_array, mode='L').convert('RGB')
         
         return image
     
