@@ -103,11 +103,51 @@ def main() -> None:
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    from mil_model import MILEncoder, MultiCropDataset
+    from mil_model import MILEncoder
     
-    # Create a dummy dataset to access the _load_image method
-    _dummy_dataset = MultiCropDataset([], [], None, num_channels=args.num_channels)
-    _load_image = _dummy_dataset._load_image
+    # Define _load_image function with proper 16-bit handling (same as training)
+    def _load_image(img_path: str) -> Image.Image:
+        """Load image with proper handling for microscopy images (same as training)."""
+        import numpy as np
+        try:
+            import tifffile
+            img_array = tifffile.imread(img_path)
+        except ImportError:
+            img_array = np.array(Image.open(img_path))
+        except Exception:
+            img_array = np.array(Image.open(img_path))
+        
+        # Handle multi-channel or single-channel
+        if len(img_array.shape) == 3:
+            img_array = img_array[:, :, 0]
+        
+        # Normalize based on dtype - exact approach from training
+        try:
+            from skimage import exposure
+            if img_array.dtype == np.uint16:
+                p_bot, p_top = np.percentile(img_array, 0.1), np.percentile(img_array, 99.9)
+                img_array = np.clip(img_array, p_bot, p_top)
+                img_array = exposure.rescale_intensity(img_array, out_range='uint8')
+            elif img_array.dtype == np.uint8:
+                img_array = exposure.rescale_intensity(img_array, out_range='uint8')
+            elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+                img_array = np.clip(img_array, 0, 1)
+                img_array = (img_array * 255).astype(np.uint8)
+        except ImportError:
+            if img_array.dtype == np.uint16:
+                p1 = np.percentile(img_array, 0.1)
+                p99 = np.percentile(img_array, 99.9)
+                img_array = np.clip(img_array, p1, p99)
+                img_array = ((img_array - p1) / (p99 - p1 + 1e-8) * 255).astype(np.uint8)
+            elif img_array.dtype in [np.float32, np.float64]:
+                img_array = np.clip(img_array, 0, 1)
+                img_array = (img_array * 255).astype(np.uint8)
+        
+        # Convert to PIL Image
+        if args.num_channels == 1:
+            return Image.fromarray(img_array, mode='L')
+        else:
+            return Image.fromarray(img_array, mode='L').convert('RGB')
     
     test_plate: str = args.fold if args.fold else 'P6'
     fold_dir: str = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
