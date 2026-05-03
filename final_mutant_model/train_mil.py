@@ -125,7 +125,7 @@ if args.data_root:
 elif args.data_mode == 'drug':
     BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Drugs_Data')
 else:
-    BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+    BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
 
 IC50_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_ic50_mapping.json')
 
