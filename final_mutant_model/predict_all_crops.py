@@ -32,7 +32,7 @@ def main() -> None:
                         help='Data mode: drug (Drugs_Data), mutant (Mutants_Data), both')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
-    parser.add_argument('--crop_neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
+    parser.add_argument('--crop_neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
                         help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops), 9=(9x9=81 crops), 11=(11x11=121 crops)')
     parser.add_argument('--no_mil_mode', action='store_true',
                         help='Disable MIL mode (use single crops instead of neighborhoods)')
