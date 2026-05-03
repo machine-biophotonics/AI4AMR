@@ -59,6 +59,8 @@ def main() -> None:
                         help='Number of attention heads (default: 4)')
     parser.add_argument('--num_channels', type=int, default=1,
                         help='Number of input channels (1 for grayscale, 3 for RGB)')
+    parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'],
+                        help='Pretrained weights: imagenet (default) or micronet')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -228,7 +230,8 @@ def main() -> None:
         attention_temp=0.5, 
         dropout=args.dropout,
         use_contrastive=has_contrastive or args.use_sc_mil,
-        num_channels=args.num_channels
+        num_channels=args.num_channels,
+        pretrained=args.pretrained
     )
     model = model.to(device)
     

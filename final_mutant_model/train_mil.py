@@ -376,7 +376,7 @@ def train_single_fold(test_plate: str) -> None:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
         model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained)
     else:
-        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]

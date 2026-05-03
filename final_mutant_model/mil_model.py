@@ -229,7 +229,7 @@ class MILEncoder(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, num_channels=1, pretrained="imagenet"):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -237,6 +237,38 @@ class AttentionMILModel(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
+        
+        # Modify first conv layer for num_channels with proper weight transfer
+        if num_channels == 1 and pretrained == 'imagenet':
+            # Transfer ImageNet RGB weights to single channel (sum over channels)
+            original_conv = base_model.features[0][0]
+            original_weights = original_conv.weight.data  # [32, 3, 3, 3]
+            new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
+            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+            self.backbone[0][0].weight.data = new_weights
+        elif num_channels == 1 and pretrained == 'micronet':
+            # Load NASA MicroNet pretrained weights (ImageNet -> MicroNet)
+            print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet) for AttentionMILModel...")
+            url = pmm.util.get_pretrained_microscopynet_url('efficientnet-b0', 'image-micronet')
+            state_dict = model_zoo.load_url(url)
+            # Remove module. prefix if present and features. prefix
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('features.'):
+                    new_key = k.replace('features.', '')
+                    new_state_dict[new_key] = v
+            # Load weights into base model
+            base_model.load_state_dict(new_state_dict, strict=False)
+            # Transfer first conv layer weights
+            original_conv = base_model.features[0][0]
+            original_weights = original_conv.weight.data
+            new_weights = original_weights.sum(dim=1, keepdim=True)
+            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+            self.backbone[0][0].weight.data = new_weights
+            print("MicroNet weights loaded and transferred successfully for AttentionMILModel!")
+        else:
+            self.backbone[0][0] = nn.Conv2d(num_channels, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        
         feature_dim = 1280
         
         self.attention_pool = AttentionPooling(feature_dim, num_heads)
