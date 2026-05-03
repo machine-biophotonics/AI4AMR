@@ -88,17 +88,57 @@ def main() -> None:
     
     print(f"Config: crop_size={crop_size}, grid_size={grid_size}, mil_mode={mil_mode}, neighborhood={neighborhood}x{neighborhood} ({num_crops_per_position} crops)")
     
-    classes: dict[int, str] = {}
-    with open(os.path.join(SCRIPT_DIR, 'classes.txt'), 'r') as f:
-        for line in f:
-            idx, name = line.strip().split(',', 1)
-            classes[int(idx)] = name
-
-    idx_to_label: dict[int, str] = classes
-    label_to_idx: dict[str, int] = {v: k for k, v in classes.items()}
+    # Build classes based on data_mode (same logic as training)
+    all_classes: list[str] = []
+    if args.data_mode == 'drug':
+        drug_classes: set = set()
+        for plate, wells in IC50_DATA.items():
+            for well, info in wells.items():
+                antibiotic = info.get('antibiotic', '')
+                ic50_multiple = info.get('ic50_multiple', '')
+                if antibiotic and ic50_multiple:
+                    if ic50_multiple == 'control':
+                        drug_classes.add('control')
+                    else:
+                        ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                        antibiotic_clean = antibiotic.replace(' ', '_')
+                        drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
+        all_classes = sorted(drug_classes)
+    elif args.data_mode == 'mutant':
+        mutant_classes: set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        mutant_classes.add(info['id'])
+        all_classes = sorted(mutant_classes)
+    else:  # both
+        drug_classes: set = set()
+        for plate, wells in IC50_DATA.items():
+            for well, info in wells.items():
+                antibiotic = info.get('antibiotic', '')
+                ic50_multiple = info.get('ic50_multiple', '')
+                if antibiotic and ic50_multiple:
+                    if ic50_multiple == 'control':
+                        drug_classes.add('control')
+                    else:
+                        ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                        antibiotic_clean = antibiotic.replace(' ', '_')
+                        drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
+        mutant_classes: set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        mutant_classes.add(info['id'])
+        all_classes = sorted(drug_classes | mutant_classes)
+    
+    classes = {i: name for i, name in enumerate(all_classes)}
+    idx_to_label = classes
+    label_to_idx = {v: k for k, v in classes.items()}
     
     num_classes: int = args.num_classes if args.num_classes is not None else len(classes)
-    print(f"Loaded {num_classes} classes")
+    print(f"Loaded {num_classes} classes from data_mode={args.data_mode}")
 
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
