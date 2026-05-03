@@ -28,6 +28,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Predict all crops for final_mutant_model')
     parser.add_argument('--fold', type=str, default=None,
                         help='Fold to predict (e.g., P6). If not specified, uses P6.')
+    parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
+                        help='Data mode: drug (Drugs_Data), mutant (Mutants_Data), both')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--crop_neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
@@ -41,8 +43,8 @@ def main() -> None:
                         help='Maximum number of images to process')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='Batch size for inference')
-    parser.add_argument('--checkpoint', type=str, default='best_model_auc.pth',
-                        help='Checkpoint filename to use (best_model_auc.pth, best_model_acc.pth, best_model_loss.pth)')
+    parser.add_argument('--checkpoint', type=str, default='best_model_acc.pth',
+                        help='Checkpoint filename to use (best_model_acc.pth, best_model_auc.pth, best_model_loss.pth)')
     parser.add_argument('--data_root', type=str, default=None,
                         help='Path to parent folder containing P1-P6 (default: parent of script dir)')
     parser.add_argument('--use_sc_mil', action='store_true',
@@ -51,17 +53,31 @@ def main() -> None:
                         help='Dropout for inference (default: 0.0, set to 0 to disable)')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads (default: 4)')
+    parser.add_argument('--num_channels', type=int, default=1,
+                        help='Number of input channels (1 for grayscale, 3 for RGB)')
     
     args: argparse.Namespace = parser.parse_args()
     
-    with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
-        PLATE_WELL_ID: dict = json.load(f)
+    # Load JSON mappings based on data_mode
+    if args.data_mode in ['drug', 'both']:
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json'), 'r') as f:
+            IC50_DATA: dict = json.load(f)
+    else:
+        IC50_DATA = {}
     
-    # Set BASE_DIR based on data_root argument
+    if args.data_mode in ['mutant', 'both']:
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+            MUTANT_DATA: dict = json.load(f)
+    else:
+        MUTANT_DATA = {}
+    
+    # Set BASE_DIR based on data_root and data_mode
     if args.data_root:
         BASE_DIR: str = args.data_root
+    elif args.data_mode == 'drug':
+        BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data')
     else:
-        BASE_DIR: str = os.path.dirname(SCRIPT_DIR)
+        BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data')
     
     crop_size: int = args.crop_size
     grid_size: int = args.grid_size
@@ -87,10 +103,14 @@ def main() -> None:
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    from mil_model import MILEncoder
+    from mil_model import MILEncoder, MultiCropDataset
+    
+    # Create a dummy dataset to access the _load_image method
+    _dummy_dataset = MultiCropDataset([], [], None, num_channels=args.num_channels)
+    _load_image = _dummy_dataset._load_image
     
     test_plate: str = args.fold if args.fold else 'P6'
-    fold_dir: str = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+    fold_dir: str = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
     checkpoint_path: str = os.path.join(fold_dir, args.checkpoint)
     image_dir: str = os.path.join(BASE_DIR, test_plate)
     output_dir: str = fold_dir
@@ -123,7 +143,8 @@ def main() -> None:
         num_heads=args.num_heads, 
         attention_temp=0.5, 
         dropout=args.dropout,
-        use_contrastive=has_contrastive or args.use_sc_mil
+        use_contrastive=has_contrastive or args.use_sc_mil,
+        num_channels=args.num_channels
     )
     model = model.to(device)
     
@@ -132,11 +153,24 @@ def main() -> None:
     print(f"MILEncoder model loaded successfully (SC-MIL: {has_contrastive or args.use_sc_mil})")
 
     def extract_all_crops(img_path: str, crop_size: int, grid_size: int) -> list[tuple[torch.Tensor, int, int, int]]:
-        """Extract all crops from an image in deterministic order."""
-        img: Image.Image = Image.open(img_path).convert('RGB')
-        w: int
-        h: int
-        w, h = img.size
+        """Extract all crops from an image in deterministic order using proper image loading."""
+        # Use _load_image for proper 16-bit handling (percentile normalization like training)
+        img: Image.Image = _load_image(img_path)
+        
+        # Convert to numpy for processing
+        if args.num_channels == 1:
+            img_np: np.ndarray = np.array(img)
+            # Add channel dimension if needed
+            if len(img_np.shape) == 2:
+                img_np = img_np[np.newaxis, ...]
+            else:
+                img_np = np.transpose(img_np, (2, 0, 1))
+        else:
+            img_np = np.array(img)
+            img_np = np.transpose(img_np, (2, 0, 1))
+        
+        w: int = img_np.shape[2] if len(img_np.shape) == 3 else img_np.shape[1]
+        h: int = img_np.shape[1]
         
         stride: int = (w - crop_size) // (grid_size - 1) if grid_size > 1 else 0
         positions: list[tuple[int, int]] = []
@@ -153,11 +187,21 @@ def main() -> None:
             row = idx // grid_size
             col = idx % grid_size
             
-            crop: Image.Image = img.crop((left, top, left + crop_size, top + crop_size))
-            crop_np: np.ndarray = np.array(crop).astype(np.float32) / 255.0
-            crop_np = np.transpose(crop_np, (2, 0, 1))
-            mean: np.ndarray = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
-            std: np.ndarray = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+            # Extract crop from numpy array
+            if args.num_channels == 1:
+                crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
+            else:
+                crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
+            
+            # Normalize using ImageNet stats
+            if args.num_channels == 1:
+                mean: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
+                std: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
+            else:
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+            
+            crop_np = crop_np.astype(np.float32) / 255.0
             crop_np = (crop_np - mean) / std
             crop_tensor: torch.Tensor = torch.from_numpy(crop_np).float()
             
@@ -167,7 +211,7 @@ def main() -> None:
 
     def extract_mil_crops(img_path: str, crop_size: int, grid_size: int, neighborhood: int) -> list[tuple[torch.Tensor, int, int, int]]:
         """
-        Extract positions with configurable neighborhood crops.
+        Extract positions with configurable neighborhood crops using proper image loading.
         
         Args:
             img_path: Path to image
@@ -179,10 +223,22 @@ def main() -> None:
             List of (crop_tensor, position_idx, local_row, local_col)
             with num_crops = neighborhood * neighborhood crops per position
         """
-        img: Image.Image = Image.open(img_path).convert('RGB')
-        w: int
-        h: int
-        w, h = img.size
+        # Use _load_image for proper 16-bit handling (percentile normalization like training)
+        img: Image.Image = _load_image(img_path)
+        
+        # Convert to numpy for processing
+        if args.num_channels == 1:
+            img_np: np.ndarray = np.array(img)
+            if len(img_np.shape) == 2:
+                img_np = img_np[np.newaxis, ...]
+            else:
+                img_np = np.transpose(img_np, (2, 0, 1))
+        else:
+            img_np = np.array(img)
+            img_np = np.transpose(img_np, (2, 0, 1))
+        
+        w: int = img_np.shape[2] if len(img_np.shape) == 3 else img_np.shape[1]
+        h: int = img_np.shape[1]
         
         stride_x: int = (w - crop_size) // (grid_size - 1) if grid_size > 1 else 0
         stride_y: int = (h - crop_size) // (grid_size - 1) if grid_size > 1 else 0
@@ -212,11 +268,21 @@ def main() -> None:
                     left = center_x + dx * stride_x
                     top = center_y + dy * stride_y
                     
-                    crop: Image.Image = img.crop((left, top, left + crop_size, top + crop_size))
-                    crop_np: np.ndarray = np.array(crop).astype(np.float32) / 255.0
-                    crop_np = np.transpose(crop_np, (2, 0, 1))
-                    mean: np.ndarray = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
-                    std: np.ndarray = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+                    # Extract crop from numpy array
+                    if args.num_channels == 1:
+                        crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
+                    else:
+                        crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
+                    
+                    # Normalize using ImageNet stats
+                    if args.num_channels == 1:
+                        mean: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
+                        std: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
+                    else:
+                        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+                        std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+                    
+                    crop_np = crop_np.astype(np.float32) / 255.0
                     crop_np = (crop_np - mean) / std
                     crop_tensor: torch.Tensor = torch.from_numpy(crop_np).float()
                     
@@ -244,13 +310,31 @@ def main() -> None:
         return None
 
     def get_ground_truth_label(plate: str, well: Optional[str]) -> Optional[str]:
-        """Get ground truth label from plate_well_id_path.json."""
-        if plate in PLATE_WELL_ID and well:
+        """Get ground truth label from appropriate JSON based on data_mode."""
+        if not well:
+            return None
+        
+        # For mutant mode, use MUTANT_DATA
+        if args.data_mode in ['mutant', 'both'] and plate in MUTANT_DATA:
             row: str = well[0]
             col: str = well[1:]
-            if row in PLATE_WELL_ID[plate]:
-                if col in PLATE_WELL_ID[plate][row]:
-                    return PLATE_WELL_ID[plate][row][col].get('id', None)
+            if row in MUTANT_DATA[plate]:
+                if col in MUTANT_DATA[plate][row]:
+                    return MUTANT_DATA[plate][row][col].get('id', None)
+        
+        # For drug mode, use IC50_DATA
+        if args.data_mode in ['drug', 'both'] and plate in IC50_DATA:
+            if well in IC50_DATA[plate]:
+                info = IC50_DATA[plate][well]
+                antibiotic = info.get('antibiotic', '')
+                ic50_multiple = info.get('ic50_multiple', '')
+                if antibiotic and ic50_multiple:
+                    if ic50_multiple == 'control':
+                        return 'control'
+                    ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                    antibiotic_clean = antibiotic.replace(' ', '_')
+                    return f"{antibiotic_clean}_{ic50_str}"
+        
         return None
 
     def predict_image(model: MILEncoder, img_path: str, plate: str, batch_size: int) -> list[dict]:
