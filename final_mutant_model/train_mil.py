@@ -253,11 +253,11 @@ def train_single_fold(test_plate):
         # Map Plate_1 -> P1, Plate_2 -> P2, etc.
         plate_key_map = {f'Plate_{i}': f'P{i}' for i in range(1, 7)}
         
-        # Collect all drug classes from plate_maps
+        # Collect all drug classes from plate_maps (including control)
         drug_classes = set()
         for pm_key, label in plate_maps.items():
             for well, drug_label in label.items():
-                if drug_label and drug_label != 'control':
+                if drug_label:  # Include all including 'control'
                     drug_classes.add(drug_label)
         all_classes = sorted(drug_classes)
         
