@@ -425,10 +425,27 @@ def get_drug_from_path(img_path, plate_maps=None):
 
 
 def get_gene_from_path(img_path, plate_maps):
-    dirname = os.path.dirname(img_path)
-    plate = os.path.basename(dirname)
+    """Extract gene/mutant label from image path using plate_maps.
+    Handles both mutant mode (data/Plate_X) and drug mode (Drugs_Data/PX).
+    """
+    path_lower = img_path.lower()
+    
+    # Determine plate key (P1, P2, etc.)
+    for plate_num in range(1, 7):
+        if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\ ' in path_lower:
+            plate_key = f'P{plate_num}'
+            break
+    else:
+        # Try old format: .../Plate_X/...
+        dirname = os.path.dirname(img_path)
+        plate = os.path.basename(dirname)
+        if 'plate' in plate.lower():
+            plate_key = f"P{plate.split('_')[-1]}"
+        else:
+            return 'WT'
+    
     filename = os.path.basename(img_path)
     well = extract_well_from_filename(filename)
-    if plate in plate_maps and well in plate_maps[plate]:
-        return plate_maps[plate][well]
+    if well and plate_key in plate_maps and well in plate_maps[plate_key]:
+        return plate_maps[plate_key][well]
     return 'WT'

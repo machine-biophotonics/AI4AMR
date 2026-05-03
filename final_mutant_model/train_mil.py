@@ -122,6 +122,8 @@ torch.cuda.manual_seed(SEED)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if args.data_root:
     BASE_DIR = args.data_root
+elif args.data_mode == 'drug':
+    BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Drugs_Data')
 else:
     BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
@@ -146,23 +148,36 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
 
 all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
 
+# For drug mode, plates are P1, P2, etc. in Drugs_Data folder
 def get_image_paths_for_plate(plate):
-    plate_key = f"P{plate.split('_')[-1]}"
-    plate_dir = os.path.join(BASE_DIR, plate)
+    # For drug mode: P1 -> Drugs_Data/P1
+    # For mutant mode: Plate_1 -> data/Plate_1
+    if args.data_mode == 'drug':
+        plate_key = plate  # Already P1, P2, etc.
+        plate_dir = os.path.join(BASE_DIR, plate_key)
+    else:
+        plate_key = f"P{plate.split('_')[-1]}"
+        plate_dir = os.path.join(BASE_DIR, plate)
+    
     if not os.path.exists(plate_dir):
         return []
+    
     paths = []
     for pattern in ['*.tif', '*.tiff', '*.png']:
         paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
+    
     valid_paths = []
     for path in paths:
-        # Check if it's in a drug folder (check plate_maps)
         well = extract_well_from_filename(os.path.basename(path))
-        if well and well in plate_maps.get(plate_key, {}):
-            valid_paths.append(path)
-        # Also check for DMSO_control folder (any well in that folder)
-        elif 'DMSO_control' in path:
-            valid_paths.append(path)
+        if well:
+            # Check if well is in plate_maps for drug/mutant classification
+            if well in plate_maps.get(plate_key, {}):
+                valid_paths.append(path)
+            # Also include control wells (ic50_multiple == 'control')
+            elif plate_key in plate_maps and well in plate_maps[plate_key]:
+                label = plate_maps[plate_key][well]
+                if label == 'control':
+                    valid_paths.append(path)
     return valid_paths
 
 def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
@@ -199,7 +214,7 @@ def train_single_fold(test_plate):
     
     train_val_plates = [p for p in all_plates if p != test_plate]
     train_plates = train_val_plates[:4]
-    val_plates = train_val_plates[4:]
+    val_plates = train_val_plates[4:5]  # Only first plate for validation
     
     print(f"Train plates: {train_plates}")
     print(f"Val plates: {val_plates}")
@@ -207,39 +222,62 @@ def train_single_fold(test_plate):
     
     # Build classes based on data_mode
     if args.data_mode == 'drug':
-        # Use drug+concentration from folder names
+        # Use drug+concentration from plate_maps (well -> antibiotic + ic50_multiple)
+        # Map Plate_1 -> P1, Plate_2 -> P2, etc.
+        plate_key_map = {f'Plate_{i}': f'P{i}' for i in range(1, 7)}
+        
+        # Collect all drug classes from plate_maps
         drug_classes = set()
-        for plate in all_plates:
-            plate_dir = os.path.join(BASE_DIR, plate)
-            if os.path.exists(plate_dir):
-                for subdir in os.listdir(plate_dir):
-                    subdir_path = os.path.join(plate_dir, subdir)
-                    if os.path.isdir(subdir_path):
-                        drug_classes.add(subdir)
+        for pm_key, label in plate_maps.items():
+            for well, drug_label in label.items():
+                if drug_label and drug_label != 'control':
+                    drug_classes.add(drug_label)
         all_classes = sorted(drug_classes)
-        label_extractor = lambda path: get_drug_from_path(path)
+        
+        def drug_label_extractor(path, pm=plate_maps, pmap=plate_key_map):
+            # Extract plate and well from path
+            path_lower = path.lower()
+            for plate_num in range(1, 7):
+                if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\' in path_lower:
+                    plate_key = f'P{plate_num}'
+                    break
+            else:
+                return None
+            well = extract_well_from_filename(os.path.basename(path))
+            if well and plate_key in pm and well in pm[plate_key]:
+                return pm[plate_key][well]
+            return None
+        
+        label_extractor = drug_label_extractor
     elif args.data_mode == 'mutant':
         # Use gene/mutant from plate_maps
         all_classes = sorted(set(label for pm in plate_maps.values() for label in pm.values() if label))
         label_extractor = lambda path: get_gene_from_path(path, plate_maps)
-    else:  # both
-        # Combine drug classes and mutant classes
-        drug_classes = set()
-        for plate in all_plates:
-            plate_dir = os.path.join(BASE_DIR, plate)
-            if os.path.exists(plate_dir):
-                for subdir in os.listdir(plate_dir):
-                    subdir_path = os.path.join(plate_dir, subdir)
-                    if os.path.isdir(subdir_path):
-                        drug_classes.add(subdir)
-        mutant_classes = set(label for pm in plate_maps.values() for label in pm.values() if label)
-        all_classes = sorted(drug_classes | mutant_classes)
-        def combined_extractor(path):
-            drug_label = get_drug_from_path(path)
-            if drug_label in all_classes:
-                return drug_label
-            return get_gene_from_path(path, plate_maps)
-        label_extractor = combined_extractor
+    else:  # both - use plate_maps for both drug and mutant
+        plate_key_map = {f'Plate_{i}': f'P{i}' for i in range(1, 7)}
+        
+        # Get all labels from plate_maps (both drug and control)
+        all_labels = set()
+        for pm in plate_maps.values():
+            for label in pm.values():
+                if label:
+                    all_labels.add(label)
+        all_classes = sorted(all_labels)
+        
+        def both_extractor(path, pm=plate_maps, pmap=plate_key_map):
+            path_lower = path.lower()
+            for plate_num in range(1, 7):
+                if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\' in path_lower:
+                    plate_key = f'P{plate_num}'
+                    break
+            else:
+                return None
+            well = extract_well_from_filename(os.path.basename(path))
+            if well and plate_key in pm and well in pm[plate_key]:
+                return pm[plate_key][well]
+            return None
+        
+        label_extractor = both_extractor
     
     class_to_idx = {cls: idx for idx, cls in enumerate(all_classes)}
     num_classes = len(all_classes)
