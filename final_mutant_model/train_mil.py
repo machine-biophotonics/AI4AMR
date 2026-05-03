@@ -128,36 +128,53 @@ else:
     BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
 
 IC50_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_ic50_mapping.json')
+MUTANT_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_id_path.json')
 
+# Load drug mapping (antibiotic + concentration)
 with open(IC50_MAPPING_PATH, 'r') as f:
     ic50_data = json.load(f)
 
+# Load mutant mapping (gene IDs)
+with open(MUTANT_MAPPING_PATH, 'r') as f:
+    mutant_data = json.load(f)
+
+# Build plate_maps based on data_mode
 plate_maps = {}
 for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
     plate_maps[plate] = {}
-    if plate in ic50_data:
-        for well, info in ic50_data[plate].items():
-            antibiotic = info.get('antibiotic', '')
-            ic50_multiple = info.get('ic50_multiple', '')
-            if antibiotic and ic50_multiple:
-                ic50_str = ic50_multiple if 'x' in ic50_multiple else f"{ic50_multiple}x"
-                # Replace spaces with underscores to match folder names
-                antibiotic_clean = antibiotic.replace(' ', '_')
-                drug_class = f"{antibiotic_clean}_{ic50_str}"
-                plate_maps[plate][well] = drug_class
+    if args.data_mode in ['drug', 'both']:
+        if plate in ic50_data:
+            for well, info in ic50_data[plate].items():
+                antibiotic = info.get('antibiotic', '')
+                ic50_multiple = info.get('ic50_multiple', '')
+                if antibiotic and ic50_multiple:
+                    if ic50_multiple == 'control':
+                        drug_class = 'control'
+                    else:
+                        ic50_str = ic50_multiple if 'x' in ic50_multiple else f"{ic50_multiple}x"
+                        antibiotic_clean = antibiotic.replace(' ', '_')
+                        drug_class = f"{antibiotic_clean}_{ic50_str}"
+                    plate_maps[plate][well] = drug_class
+    
+    if args.data_mode in ['mutant', 'both']:
+        if plate in mutant_data:
+            for row, cols in mutant_data[plate].items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        well = f"{row}{col}"  # Convert A, 1 -> A01
+                        plate_maps[plate][well] = info['id']
 
 all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
 
 # For drug mode, plates are P1, P2, etc. in Drugs_Data folder
 def get_image_paths_for_plate(plate):
-    # For drug mode: Plate_1 -> Drugs_Data/P1 (map Plate_X to PX for directory and plate_maps)
-    # For mutant mode: Plate_1 -> data/Plate_1
+    # Convert Plate_1 -> P1 for directory lookup
+    plate_key = f"P{plate.split('_')[-1]}"  # Plate_1 -> P1, P6 -> P6
+    
     if args.data_mode == 'drug':
-        plate_key = f"P{plate.split('_')[-1]}"  # Plate_1 -> P1
         plate_dir = os.path.join(BASE_DIR, plate_key)  # Drugs_Data/P1
     else:
-        plate_key = f"P{plate.split('_')[-1]}"
-        plate_dir = os.path.join(BASE_DIR, plate)
+        plate_dir = os.path.join(BASE_DIR, plate_key)  # Mutants_Data/P1
     
     if not os.path.exists(plate_dir):
         return []
