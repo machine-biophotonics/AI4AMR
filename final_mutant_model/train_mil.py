@@ -190,7 +190,7 @@ def worker_init_fn(worker_id, seed=42):
 
 
 def train_single_fold(test_plate):
-    OUTPUT_DIR = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+    OUTPUT_DIR = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     print(f"\n{'='*60}")
@@ -717,7 +717,7 @@ def train_single_fold(test_plate):
 if __name__ == '__main__':
     if args.run_all_folds:
         for test_plate in all_plates:
-            fold_dir = os.path.join(SCRIPT_DIR, f'fold_{test_plate}')
+            fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
             
             # Check for any checkpoint files to skip trained folds
             checkpoints = [
