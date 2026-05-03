@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+import pretrained_microscopy_models as pmm
+import torch.utils.model_zoo as model_zoo
 import random
 import numpy as np
 from PIL import Image
@@ -63,7 +65,7 @@ class MILEncoder(nn.Module):
         dropout: float = 0.2,
         use_contrastive: bool = False,
         projection_dim: int = 256,
-        num_channels: int = 3
+        num_channels: int = 3, pretrained: str = "imagenet"
     ) -> None:
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
@@ -72,8 +74,36 @@ class MILEncoder(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten()
         )
-        # Modify first conv layer for num_channels (1 for grayscale, 3 for RGB)
-        self.backbone[0][0] = nn.Conv2d(num_channels, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        # Modify first conv layer for num_channels with proper weight transfer
+        if num_channels == 1 and pretrained == 'imagenet':
+            # Transfer ImageNet RGB weights to single channel (sum over channels)
+            original_conv = base_model.features[0][0]
+            original_weights = original_conv.weight.data  # [32, 3, 3, 3]
+            new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
+            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+            self.backbone[0][0].weight.data = new_weights
+        elif num_channels == 1 and pretrained == 'micronet':
+            # Load NASA MicroNet pretrained weights (ImageNet -> MicroNet)
+            print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet)...")
+            url = pmm.util.get_pretrained_microscopynet_url('efficientnet-b0', 'image-micronet')
+            state_dict = model_zoo.load_url(url)
+            # Remove module. prefix if present and features. prefix
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('features.'):
+                    new_key = k.replace('features.', '')
+                    new_state_dict[new_key] = v
+            # Load weights into base model
+            base_model.load_state_dict(new_state_dict, strict=False)
+            # Transfer first conv layer weights
+            original_conv = base_model.features[0][0]
+            original_weights = original_conv.weight.data
+            new_weights = original_weights.sum(dim=1, keepdim=True)
+            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+            self.backbone[0][0].weight.data = new_weights
+            print("MicroNet weights loaded and transferred successfully!")
+        else:
+            self.backbone[0][0] = nn.Conv2d(num_channels, 32, kernel_size=3, stride=2, padding=1, bias=False)
         
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive

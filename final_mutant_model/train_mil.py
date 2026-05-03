@@ -98,8 +98,10 @@ parser.add_argument('--warmup_epochs', type=int, default=None,
                     help='Warmup epochs (default: 5%% of epochs, i.e. 10 for 200)')
 parser.add_argument('--checkpoint_every', type=int, default=1,
                     help='Save checkpoint every N epochs (default: 1)')
-parser.add_argument('--num_channels', type=int, default=3,
+parser.add_argument('--num_channels', type=int, default=1,
                     help='Number of input channels (1 for grayscale, 3 for RGB)')
+parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'], 
+                    help='Pretrained weights: imagenet (default) or micronet (NASA microscopy pretrained)')
 parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
 args = parser.parse_args()
@@ -372,7 +374,7 @@ def train_single_fold(test_plate: str) -> None:
     # Model selection based on flags
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels)
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained)
     else:
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout)
     model = model.to(device)
