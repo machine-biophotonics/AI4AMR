@@ -167,9 +167,9 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
 all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
 
 # For drug mode, plates are P1, P2, etc. in Drugs_Data folder
-def get_image_paths_for_plate(plate):
+def get_image_paths_for_plate(plate: str) -> list[str]:
     # Convert Plate_1 -> P1 for directory lookup
-    plate_key = f"P{plate.split('_')[-1]}"  # Plate_1 -> P1, P6 -> P6
+    plate_key: str = f"P{plate.split('_')[-1]}"  # Plate_1 -> P1, P6 -> P6
     
     # Determine which directories to search based on data_mode
     search_dirs = []
@@ -201,22 +201,22 @@ def get_image_paths_for_plate(plate):
     
     return valid_paths
 
-def focal_loss(logits, targets, alpha=0.25, gamma=2.0):
+def focal_loss(logits: torch.Tensor, targets: torch.Tensor, alpha: float = 0.25, gamma: float = 2.0) -> torch.Tensor:
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
     pt = torch.exp(-ce_loss)
     return (alpha * (1 - pt) ** gamma * ce_loss).mean()
 
-def weighted_focal_loss(logits, targets, weights, alpha=0.25, gamma=2.0, label_smoothing=0.0):
+def weighted_focal_loss(logits: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor, alpha: float = 0.25, gamma: float = 2.0, label_smoothing: float = 0.0) -> torch.Tensor:
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none', label_smoothing=label_smoothing)
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
 
-def attention_entropy_loss(attn_weights):
+def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
     entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
     return entropy
 
-def worker_init_fn(worker_id, seed=42):
+def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
     import random
     import numpy as np
@@ -225,7 +225,7 @@ def worker_init_fn(worker_id, seed=42):
     torch.manual_seed(seed + worker_id)
 
 
-def train_single_fold(test_plate):
+def train_single_fold(test_plate: str) -> None:
     OUTPUT_DIR = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     

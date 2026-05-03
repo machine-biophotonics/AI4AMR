@@ -18,7 +18,7 @@ import os
 
 class AttentionPooling(nn.Module):
     """Gated attention MIL pooling (Ilse et al. 2018)"""
-    def __init__(self, in_features, num_heads=4):
+    def __init__(self, in_features: int, num_heads: int = 4) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.hidden_dim = 256
@@ -27,7 +27,7 @@ class AttentionPooling(nn.Module):
         self.U = nn.Linear(in_features, self.hidden_dim)
         self.w = nn.Linear(self.hidden_dim, num_heads)
     
-    def forward(self, x, temperature=0.5):
+    def forward(self, x: torch.Tensor, temperature: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
         attn_weights = self.w(A)
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
@@ -37,7 +37,7 @@ class AttentionPooling(nn.Module):
 
 class ContrastiveEncoder(nn.Module):
     """Encoder for contrastive learning"""
-    def __init__(self, feature_dim=1280, projection_dim=256):
+    def __init__(self, feature_dim: int = 1280, projection_dim: int = 256) -> None:
         super().__init__()
         self.projection_head = nn.Sequential(
             nn.Linear(feature_dim, projection_dim),
@@ -45,17 +45,26 @@ class ContrastiveEncoder(nn.Module):
             nn.Linear(projection_dim, projection_dim)
         )
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.projection_head(x)
     
-    def get_embedding(self, x):
+    def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             return F.normalize(x, dim=1)
 
 
 class MILEncoder(nn.Module):
     """MIL encoder with optional contrastive head"""
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, use_contrastive=False, projection_dim=256, num_channels=3):
+    def __init__(
+        self,
+        num_classes: int,
+        num_heads: int = 4,
+        attention_temp: float = 0.5,
+        dropout: float = 0.2,
+        use_contrastive: bool = False,
+        projection_dim: int = 256,
+        num_channels: int = 3
+    ) -> None:
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -82,7 +91,15 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_embedding=False, return_crop_embeddings=False, return_pooled_embeddings=False, return_instance_logits=False):
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_attention: bool = False,
+        return_embedding: bool = False,
+        return_crop_embeddings: bool = False,
+        return_pooled_embeddings: bool = False,
+        return_instance_logits: bool = False
+    ) -> tuple | torch.Tensor:
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -224,7 +241,19 @@ class AttentionMILModel(nn.Module):
 class MultiCropDataset(Dataset):
     """Cycle-based crop extraction with configurable neighborhood for MIL"""
     
-    def __init__(self, image_paths, labels, plate_well_map, crop_size=224, grid_size=12, neighborhood=3, augment=True, seed=42, epoch=0, num_channels=1):
+    def __init__(
+        self,
+        image_paths: list[str],
+        labels: list[int],
+        plate_well_map: dict | None,
+        crop_size: int = 224,
+        grid_size: int = 12,
+        neighborhood: int = 3,
+        augment: bool = True,
+        seed: int = 42,
+        epoch: int = 0,
+        num_channels: int = 1
+    ) -> None:
         self.image_paths = image_paths
         self.labels = labels
         self.crop_size = crop_size
@@ -290,7 +319,7 @@ class MultiCropDataset(Dataset):
         
         print(f"MIL: {len(positions)} positions, {self.neighborhood}x{self.neighborhood}={self.num_neighbors + 1} crops/image")
     
-    def set_epoch(self, epoch):
+    def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
         num_pos = len(self.positions)
         num_images = len(self.image_paths)
@@ -315,7 +344,7 @@ class MultiCropDataset(Dataset):
         
         self.single_crop = False
     
-    def _load_image(self, img_path):
+    def _load_image(self, img_path: str) -> Image.Image:
         """Load image with proper handling for microscopy images.
         
         Exact approach from trial_daniel and research papers:
@@ -376,10 +405,10 @@ class MultiCropDataset(Dataset):
         
         return image
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.image_paths)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         img_path = self.image_paths[idx]
         # Load image with proper handling for 16-bit microscopy images
         image = self._load_image(img_path)
@@ -424,12 +453,12 @@ class MultiCropDataset(Dataset):
         return crops, self.labels[idx]
 
 
-def extract_well_from_filename(filename):
+def extract_well_from_filename(filename: str) -> str | None:
     match = re.search(r'Well(\w\d+)_', filename)
     return match.group(1) if match else None
 
 
-def get_drug_from_path(img_path, plate_maps=None):
+def get_drug_from_path(img_path: str, plate_maps: dict | None = None) -> str:
     """Extract drug_concentration from image path.
     Path format: .../Plate_X/Drug_Concentration/image.tiff
     Returns: Drug_Concentration (e.g., 'Avibactam_1x')
@@ -439,7 +468,7 @@ def get_drug_from_path(img_path, plate_maps=None):
     return drug_conc
 
 
-def get_gene_from_path(img_path, plate_maps):
+def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     """Extract gene/mutant label from image path using plate_maps.
     Handles both mutant mode (data/Plate_X) and drug mode (Drugs_Data/PX).
     """
