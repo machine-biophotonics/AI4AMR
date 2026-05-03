@@ -212,10 +212,6 @@ def weighted_focal_loss(logits: torch.Tensor, targets: torch.Tensor, weights: to
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
 
-def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
-    entropy = -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
-    return entropy
-
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
     import random
@@ -680,9 +676,8 @@ def train_single_fold(test_plate: str) -> None:
                 with torch.amp.autocast('cuda', enabled=use_amp):
                     outputs, attn_weights = model(images, return_attention=True)
                     
-                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                    ent_loss = attention_entropy_loss(attn_weights)
-                    loss = main_loss + 0.01 * ent_loss
+                    # SC-MIL loss: weighted focal loss (no entropy loss - not in original SC-MIL paper)
+                    loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
