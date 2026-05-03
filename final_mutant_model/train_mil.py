@@ -40,7 +40,7 @@ from collections import Counter
 import multiprocessing
 from functools import partial
 
-from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, get_drug_from_path, extract_well_from_filename
+from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 from supcon_loss import SupConLoss, SupConLossMIL
 
 SEED = 42

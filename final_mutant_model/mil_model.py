@@ -458,16 +458,6 @@ def extract_well_from_filename(filename: str) -> str | None:
     return match.group(1) if match else None
 
 
-def get_drug_from_path(img_path: str, plate_maps: dict | None = None) -> str:
-    """Extract drug_concentration from image path.
-    Path format: .../Plate_X/Drug_Concentration/image.tiff
-    Returns: Drug_Concentration (e.g., 'Avibactam_1x')
-    """
-    dirname = os.path.dirname(img_path)
-    drug_conc = os.path.basename(dirname)
-    return drug_conc
-
-
 def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     """Extract gene/mutant label from image path using plate_maps.
     Handles both mutant mode (data/Plate_X) and drug mode (Drugs_Data/PX).
