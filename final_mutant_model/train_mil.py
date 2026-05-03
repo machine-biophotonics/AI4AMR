@@ -100,6 +100,8 @@ parser.add_argument('--checkpoint_every', type=int, default=1,
                     help='Save checkpoint every N epochs (default: 1)')
 parser.add_argument('--num_channels', type=int, default=3,
                     help='Number of input channels (1 for grayscale, 3 for RGB)')
+parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
+                    help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
 args = parser.parse_args()
 
 if args.warmup_epochs is None:
@@ -142,37 +144,7 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
                 drug_class = f"{antibiotic_clean}_{ic50_str}"
                 plate_maps[plate][well] = drug_class
 
-def extract_gene(label):
-    return label
-
-all_genes = sorted(set(extract_gene(label) for pm in plate_maps.values() for label in pm.values()))
-gene_to_idx = {gene: idx for idx, gene in enumerate(all_genes)}
-num_classes = len(all_genes)
-print(f"Classes: {num_classes}")
-
 all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
-
-def get_all_drug_classes():
-    """Get all drug_concentration combinations from plate_maps and folders."""
-    drug_classes = set()
-    for pm in plate_maps.values():
-        for label in pm.values():
-            drug_classes.add(label)
-    # Also check for DMSO_control folder
-    for plate in all_plates:
-        plate_dir = os.path.join(BASE_DIR, plate)
-        if os.path.exists(plate_dir):
-            for subdir in os.listdir(plate_dir):
-                subdir_path = os.path.join(plate_dir, subdir)
-                if os.path.isdir(subdir_path):
-                    drug_classes.add(subdir)
-    return sorted(drug_classes)
-
-all_drugs = get_all_drug_classes()
-drug_to_idx = {drug: idx for idx, drug in enumerate(all_drugs)}
-num_classes = len(all_drugs)
-print(f"Drug classes: {num_classes}")
-print(f"Classes: {all_drugs}")
 
 def get_image_paths_for_plate(plate):
     plate_key = f"P{plate.split('_')[-1]}"
@@ -231,6 +203,48 @@ def train_single_fold(test_plate):
     
     print(f"Train plates: {train_plates}")
     print(f"Val plates: {val_plates}")
+    print(f"Data mode: {args.data_mode}")
+    
+    # Build classes based on data_mode
+    if args.data_mode == 'drug':
+        # Use drug+concentration from folder names
+        drug_classes = set()
+        for plate in all_plates:
+            plate_dir = os.path.join(BASE_DIR, plate)
+            if os.path.exists(plate_dir):
+                for subdir in os.listdir(plate_dir):
+                    subdir_path = os.path.join(plate_dir, subdir)
+                    if os.path.isdir(subdir_path):
+                        drug_classes.add(subdir)
+        all_classes = sorted(drug_classes)
+        label_extractor = lambda path: get_drug_from_path(path)
+    elif args.data_mode == 'mutant':
+        # Use gene/mutant from plate_maps
+        all_classes = sorted(set(label for pm in plate_maps.values() for label in pm.values() if label))
+        label_extractor = lambda path: get_gene_from_path(path, plate_maps)
+    else:  # both
+        # Combine drug classes and mutant classes
+        drug_classes = set()
+        for plate in all_plates:
+            plate_dir = os.path.join(BASE_DIR, plate)
+            if os.path.exists(plate_dir):
+                for subdir in os.listdir(plate_dir):
+                    subdir_path = os.path.join(plate_dir, subdir)
+                    if os.path.isdir(subdir_path):
+                        drug_classes.add(subdir)
+        mutant_classes = set(label for pm in plate_maps.values() for label in pm.values() if label)
+        all_classes = sorted(drug_classes | mutant_classes)
+        def combined_extractor(path):
+            drug_label = get_drug_from_path(path)
+            if drug_label in all_classes:
+                return drug_label
+            return get_gene_from_path(path, plate_maps)
+        label_extractor = combined_extractor
+    
+    class_to_idx = {cls: idx for idx, cls in enumerate(all_classes)}
+    num_classes = len(all_classes)
+    print(f"Number of classes: {num_classes}")
+    print(f"Classes: {all_classes}")
     
     train_paths, train_labels = [], []
     val_paths, val_labels = [], []
@@ -238,18 +252,24 @@ def train_single_fold(test_plate):
     
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
-            train_paths.append(path)
-            train_labels.append(drug_to_idx[get_drug_from_path(path)])
+            label = label_extractor(path)
+            if label in class_to_idx:
+                train_paths.append(path)
+                train_labels.append(class_to_idx[label])
     
     for plate in val_plates:
         for path in get_image_paths_for_plate(plate):
-            val_paths.append(path)
-            val_labels.append(drug_to_idx[get_drug_from_path(path)])
+            label = label_extractor(path)
+            if label in class_to_idx:
+                val_paths.append(path)
+                val_labels.append(class_to_idx[label])
     
     for plate in [test_plate]:
         for path in get_image_paths_for_plate(plate):
-            test_paths.append(path)
-            test_labels.append(drug_to_idx[get_drug_from_path(path)])
+            label = label_extractor(path)
+            if label in class_to_idx:
+                test_paths.append(path)
+                test_labels.append(class_to_idx[label])
     
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
