@@ -41,6 +41,10 @@ def main() -> None:
     parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
     parser.add_argument('--max_images', type=int, default=None,
                         help='Maximum number of images to process')
+    parser.add_argument('--sample_per_class', type=int, default=None,
+                        help='Sample N images per class (e.g., 1 for 1 per class)')
+    parser.add_argument('--random_seed', type=int, default=42,
+                        help='Random seed for sampling')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='Batch size for inference')
     parser.add_argument('--checkpoint', type=str, default='best_model_acc.pth',
@@ -576,6 +580,33 @@ def main() -> None:
     
     if args.max_images:
         image_paths = image_paths[:args.max_images]
+    
+    # Sample N images per class if requested
+    if args.sample_per_class:
+        import random
+        random.seed(args.random_seed)
+        
+        # Group images by their ground truth label
+        images_by_label: dict[str, list[Path]] = {}
+        for img_path in image_paths:
+            well = parse_well_from_filename(str(img_path))
+            label = get_ground_truth_label(test_plate, well)
+            if label:
+                if label not in images_by_label:
+                    images_by_label[label] = []
+                images_by_label[label].append(img_path)
+        
+        # Sample N per class
+        sampled_paths: list[Path] = []
+        for label, paths in images_by_label.items():
+            if len(paths) >= args.sample_per_class:
+                sampled = random.sample(paths, args.sample_per_class)
+            else:
+                sampled = paths  # Use all available if less than N
+            sampled_paths.extend(sampled)
+        
+        image_paths = sampled_paths
+        print(f"Sampled {len(image_paths)} images ({args.sample_per_class} per class)")
     
     print(f"Processing {len(image_paths)} images...")
     
