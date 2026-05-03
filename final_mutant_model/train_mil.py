@@ -746,7 +746,7 @@ def train_single_fold(test_plate: str) -> None:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
     
     print("Testing...")
-    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model.pth'), map_location=device)
+    checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model_acc.pth'), map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
