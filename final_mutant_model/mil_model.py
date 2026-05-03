@@ -318,13 +318,10 @@ class MultiCropDataset(Dataset):
     def _load_image(self, img_path):
         """Load image with proper handling for microscopy images.
         
-        Standard approach from research papers:
-        1. Load as numpy array (preserves bit depth)
-        2. Apply appropriate normalization based on dtype:
-           - uint16: Percentile-based normalization (robust to outliers)
-           - uint8: Min-max normalization to [0,1]
-           - float: Clip to [0,1]
-        3. Scale to [0, 255] and convert to 8-bit for PIL transforms
+        Exact approach from trial_daniel and research papers:
+        1. Load 16-bit TIFF with tifffile
+        2. Clip to 0.1-99.9 percentile to remove outliers
+        3. Use skimage.exposure.rescale_intensity to convert to uint8
         4. Output as grayscale (mode='L') for num_channels=1
         """
         # Try tifffile first for 16-bit TIFF, fallback to PIL
@@ -340,29 +337,35 @@ class MultiCropDataset(Dataset):
         if len(img_array.shape) == 3:
             img_array = img_array[:, :, 0]  # Take first channel if multi-channel
         
-        # Normalize based on dtype (standard approach from research papers)
-        if img_array.dtype == np.uint16:
-            # Percentile-based normalization (robust to outliers, recommended for microscopy)
-            # Use 1st and 99th percentile to handle outliers better than min-max
-            p1 = np.percentile(img_array, 1)
-            p99 = np.percentile(img_array, 99)
-            if p99 > p1:
-                img_array = (img_array - p1) / (p99 - p1)
-            else:
-                img_array = img_array / (img_array.max() + 1e-8)
-            img_array = np.clip(img_array, 0, 1)
-            
-        elif img_array.dtype == np.uint8:
-            # Min-max normalization for 8-bit images
-            # Standard approach: scale to [0, 1] uniformly
-            img_array = img_array.astype(np.float32) / 255.0
-            
-        elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
-            # Already float - clip to [0, 1]
-            img_array = np.clip(img_array, 0, 1)
-        
-        # Scale to [0, 255] for PIL
-        img_array = (img_array * 255).astype(np.uint8)
+        # Normalize based on dtype - exact approach from trial_daniel
+        try:
+            from skimage import exposure
+            clip = True
+            if img_array.dtype == np.uint16:
+                # Exact trial_daniel approach: clip to 0.1-99.9 percentile
+                p_bot, p_top = np.percentile(img_array, 0.1), np.percentile(img_array, 99.9)
+                img_array = np.clip(img_array, p_bot, p_top)
+                # Use skimage.exposure.rescale_intensity to convert to uint8
+                img_array = exposure.rescale_intensity(img_array, out_range='uint8')
+            elif img_array.dtype == np.uint8:
+                # Already uint8 - just ensure proper range
+                img_array = exposure.rescale_intensity(img_array, out_range='uint8')
+            elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+                # Float - clip to [0,1] then convert to uint8
+                img_array = np.clip(img_array, 0, 1)
+                img_array = (img_array * 255).astype(np.uint8)
+        except ImportError:
+            # Fallback if skimage not available - manual normalization
+            if img_array.dtype == np.uint16:
+                p1 = np.percentile(img_array, 0.1)
+                p99 = np.percentile(img_array, 99.9)
+                img_array = np.clip(img_array, p1, p99)
+                img_array = ((img_array - p1) / (p99 - p1 + 1e-8) * 255).astype(np.uint8)
+            elif img_array.dtype == np.uint8:
+                pass  # Already uint8
+            elif img_array.dtype in [np.float32, np.float64]:
+                img_array = np.clip(img_array, 0, 1)
+                img_array = (img_array * 255).astype(np.uint8)
         
         # Convert to PIL Image - use L for grayscale (1 channel), RGB for 3 channels
         if self.num_channels == 1:
