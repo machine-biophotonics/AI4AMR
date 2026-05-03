@@ -212,7 +212,13 @@ def train_single_fold(test_plate):
     print(f"Training fold: test_plate={test_plate}")
     print(f"{'='*60}")
     
-    train_val_plates = [p for p in all_plates if p != test_plate]
+    # Convert test_plate to Plate_X format for comparison (P6 -> Plate_6)
+    if 'P' in test_plate.upper() and test_plate[-1].isdigit():
+        test_plate_normalized = f"Plate_{test_plate[-1]}"
+    else:
+        test_plate_normalized = test_plate
+    
+    train_val_plates = [p for p in all_plates if p != test_plate_normalized]
     train_plates = train_val_plates[:4]
     val_plates = train_val_plates[4:5]  # Only first plate for validation
     
@@ -302,7 +308,7 @@ def train_single_fold(test_plate):
                 val_paths.append(path)
                 val_labels.append(class_to_idx[label])
     
-    for plate in [test_plate]:
+    for plate in [test_plate_normalized]:
         for path in get_image_paths_for_plate(plate):
             label = label_extractor(path)
             if label in class_to_idx:
