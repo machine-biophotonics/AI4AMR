@@ -105,7 +105,7 @@ parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 
 args = parser.parse_args()
 
 if args.warmup_epochs is None:
-    args.warmup_epochs = int(args.epochs * 0.05)
+    args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
 
 # Set num_workers based on OS
 if sys.platform.startswith('win'):
