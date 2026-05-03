@@ -1,0 +1,2318 @@
+{
+  "P1": {
+    "A01": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "1x"
+    },
+    "A02": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "A03": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.5x"
+    },
+    "A04": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.5x"
+    },
+    "A05": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.25x"
+    },
+    "A06": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "2x"
+    },
+    "A07": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "1x"
+    },
+    "A08": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "1x"
+    },
+    "A09": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.5x"
+    },
+    "A10": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.25x"
+    },
+    "A11": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "A12": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "2x"
+    },
+    "B01": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.25x"
+    },
+    "B02": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.5x"
+    },
+    "B03": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.5x"
+    },
+    "B04": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "1x"
+    },
+    "B05": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "1x"
+    },
+    "B06": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B07": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.5x"
+    },
+    "B08": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B09": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "1x"
+    },
+    "B10": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "2x"
+    },
+    "B11": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.5x"
+    },
+    "B12": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.25x"
+    },
+    "C01": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "C02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.25x"
+    },
+    "C03": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.5x"
+    },
+    "C04": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "C05": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "2x"
+    },
+    "C06": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.5x"
+    },
+    "C07": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "2x"
+    },
+    "C08": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "2x"
+    },
+    "C09": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "C10": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.25x"
+    },
+    "C11": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "2x"
+    },
+    "C12": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.5x"
+    },
+    "D01": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "1x"
+    },
+    "D02": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "2x"
+    },
+    "D03": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "D04": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "1x"
+    },
+    "D05": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "2x"
+    },
+    "D06": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.25x"
+    },
+    "D07": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "2x"
+    },
+    "D08": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "1x"
+    },
+    "D09": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.5x"
+    },
+    "D10": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "1x"
+    },
+    "D11": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "2x"
+    },
+    "D12": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.25x"
+    },
+    "E01": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "1x"
+    },
+    "E02": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "2x"
+    },
+    "E03": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "1x"
+    },
+    "E04": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.5x"
+    },
+    "E05": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.25x"
+    },
+    "E06": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "E07": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.25x"
+    },
+    "E08": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "1x"
+    },
+    "E09": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "2x"
+    },
+    "E10": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "1x"
+    },
+    "E11": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.25x"
+    },
+    "E12": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "F01": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "F02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "1x"
+    },
+    "F03": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.5x"
+    },
+    "F04": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.25x"
+    },
+    "F05": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "F06": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.25x"
+    },
+    "F07": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.25x"
+    },
+    "F08": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "2x"
+    },
+    "F09": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.25x"
+    },
+    "F10": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "F11": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "2x"
+    },
+    "F12": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "2x"
+    },
+    "G01": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G02": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "1x"
+    },
+    "G03": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "1x"
+    },
+    "G04": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "1x"
+    },
+    "G05": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.25x"
+    },
+    "G06": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "G07": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.5x"
+    },
+    "G08": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.25x"
+    },
+    "G09": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.25x"
+    },
+    "G10": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "2x"
+    },
+    "G11": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "2x"
+    },
+    "G12": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "1x"
+    },
+    "H01": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.5x"
+    },
+    "H02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.5x"
+    },
+    "H03": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.25x"
+    },
+    "H04": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.5x"
+    },
+    "H05": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "H06": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "1x"
+    },
+    "H07": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.5x"
+    },
+    "H08": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.5x"
+    },
+    "H09": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "2x"
+    },
+    "H10": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "H11": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "2x"
+    },
+    "H12": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    }
+  },
+  "P2": {
+    "A01": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "1x"
+    },
+    "A02": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "A03": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.5x"
+    },
+    "A04": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "A05": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "A06": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "2x"
+    },
+    "A07": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.25x"
+    },
+    "A08": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.5x"
+    },
+    "A09": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.5x"
+    },
+    "A10": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "A11": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.5x"
+    },
+    "A12": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.25x"
+    },
+    "B01": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.5x"
+    },
+    "B02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "1x"
+    },
+    "B03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B04": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.25x"
+    },
+    "B05": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "B06": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.5x"
+    },
+    "B07": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.25x"
+    },
+    "B08": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "2x"
+    },
+    "B09": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "2x"
+    },
+    "B10": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "2x"
+    },
+    "B11": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.5x"
+    },
+    "B12": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "1x"
+    },
+    "C01": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "1x"
+    },
+    "C02": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.25x"
+    },
+    "C03": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.5x"
+    },
+    "C04": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "1x"
+    },
+    "C05": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.5x"
+    },
+    "C06": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.5x"
+    },
+    "C07": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "2x"
+    },
+    "C08": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.5x"
+    },
+    "C09": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "1x"
+    },
+    "C10": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "2x"
+    },
+    "C11": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.5x"
+    },
+    "C12": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.25x"
+    },
+    "D01": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "D02": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "2x"
+    },
+    "D03": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "2x"
+    },
+    "D04": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "1x"
+    },
+    "D05": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.25x"
+    },
+    "D06": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "1x"
+    },
+    "D07": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.25x"
+    },
+    "D08": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "D09": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "D10": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.5x"
+    },
+    "D11": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "2x"
+    },
+    "D12": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "1x"
+    },
+    "E01": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "2x"
+    },
+    "E02": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.5x"
+    },
+    "E03": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "2x"
+    },
+    "E04": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "E05": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "2x"
+    },
+    "E06": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "2x"
+    },
+    "E07": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "2x"
+    },
+    "E08": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.25x"
+    },
+    "E09": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.25x"
+    },
+    "E10": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "E11": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "1x"
+    },
+    "E12": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.25x"
+    },
+    "F01": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "2x"
+    },
+    "F02": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.25x"
+    },
+    "F03": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "1x"
+    },
+    "F04": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "F05": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.5x"
+    },
+    "F06": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "2x"
+    },
+    "F07": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "1x"
+    },
+    "F08": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "1x"
+    },
+    "F09": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.25x"
+    },
+    "F10": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "2x"
+    },
+    "F11": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "1x"
+    },
+    "F12": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "2x"
+    },
+    "G01": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "1x"
+    },
+    "G02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.5x"
+    },
+    "G03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G04": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.25x"
+    },
+    "G05": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "2x"
+    },
+    "G06": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "G07": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.5x"
+    },
+    "G08": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "1x"
+    },
+    "G09": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.25x"
+    },
+    "G10": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "1x"
+    },
+    "G11": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.25x"
+    },
+    "G12": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "2x"
+    },
+    "H01": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "1x"
+    },
+    "H02": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.25x"
+    },
+    "H03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "H04": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "1x"
+    },
+    "H05": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.5x"
+    },
+    "H06": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "H07": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.25x"
+    },
+    "H08": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "1x"
+    },
+    "H09": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.5x"
+    },
+    "H10": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "H11": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.25x"
+    },
+    "H12": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "2x"
+    }
+  },
+  "P3": {
+    "A01": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.5x"
+    },
+    "A02": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.25x"
+    },
+    "A03": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "A04": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "2x"
+    },
+    "A05": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "2x"
+    },
+    "A06": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "A07": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "2x"
+    },
+    "A08": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "1x"
+    },
+    "A09": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.5x"
+    },
+    "A10": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.5x"
+    },
+    "A11": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.25x"
+    },
+    "A12": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "1x"
+    },
+    "B01": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "B02": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.5x"
+    },
+    "B03": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.25x"
+    },
+    "B04": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.5x"
+    },
+    "B05": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "2x"
+    },
+    "B06": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "1x"
+    },
+    "B07": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "2x"
+    },
+    "B08": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "1x"
+    },
+    "B09": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.25x"
+    },
+    "B10": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B11": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "B12": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.5x"
+    },
+    "C01": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "1x"
+    },
+    "C02": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "C03": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "2x"
+    },
+    "C04": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.25x"
+    },
+    "C05": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.25x"
+    },
+    "C06": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "1x"
+    },
+    "C07": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.25x"
+    },
+    "C08": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "1x"
+    },
+    "C09": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "2x"
+    },
+    "C10": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.5x"
+    },
+    "C11": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.5x"
+    },
+    "C12": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.25x"
+    },
+    "D01": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "D02": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.5x"
+    },
+    "D03": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "1x"
+    },
+    "D04": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "2x"
+    },
+    "D05": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.5x"
+    },
+    "D06": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.25x"
+    },
+    "D07": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "1x"
+    },
+    "D08": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "1x"
+    },
+    "D09": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "1x"
+    },
+    "D10": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "2x"
+    },
+    "D11": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "1x"
+    },
+    "D12": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.5x"
+    },
+    "E01": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "1x"
+    },
+    "E02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.25x"
+    },
+    "E03": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.5x"
+    },
+    "E04": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.5x"
+    },
+    "E05": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.25x"
+    },
+    "E06": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "E07": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "2x"
+    },
+    "E08": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "1x"
+    },
+    "E09": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "2x"
+    },
+    "E10": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "2x"
+    },
+    "E11": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "2x"
+    },
+    "E12": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.5x"
+    },
+    "F01": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.25x"
+    },
+    "F02": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "1x"
+    },
+    "F03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "F04": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "2x"
+    },
+    "F05": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "F06": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "2x"
+    },
+    "F07": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "2x"
+    },
+    "F08": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "1x"
+    },
+    "F09": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "1x"
+    },
+    "F10": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "2x"
+    },
+    "F11": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "1x"
+    },
+    "F12": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G01": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "G02": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G03": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.5x"
+    },
+    "G04": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "G05": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "G06": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.25x"
+    },
+    "G07": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.25x"
+    },
+    "G08": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.25x"
+    },
+    "G09": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "2x"
+    },
+    "G10": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.5x"
+    },
+    "G11": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "1x"
+    },
+    "G12": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.5x"
+    },
+    "H01": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.25x"
+    },
+    "H02": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "2x"
+    },
+    "H03": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.5x"
+    },
+    "H04": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.25x"
+    },
+    "H05": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "H06": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.25x"
+    },
+    "H07": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "2x"
+    },
+    "H08": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.25x"
+    },
+    "H09": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.5x"
+    },
+    "H10": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "H11": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "H12": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "1x"
+    }
+  },
+  "P4": {
+    "A01": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "1x"
+    },
+    "A02": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "2x"
+    },
+    "A03": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "A04": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.5x"
+    },
+    "A05": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.5x"
+    },
+    "A06": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "2x"
+    },
+    "A07": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "1x"
+    },
+    "A08": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.25x"
+    },
+    "A09": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "A10": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.25x"
+    },
+    "A11": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "2x"
+    },
+    "A12": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "1x"
+    },
+    "B01": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.5x"
+    },
+    "B02": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.5x"
+    },
+    "B03": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "1x"
+    },
+    "B04": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.25x"
+    },
+    "B05": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.25x"
+    },
+    "B06": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.25x"
+    },
+    "B07": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "1x"
+    },
+    "B08": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.5x"
+    },
+    "B09": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B10": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "B11": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "2x"
+    },
+    "B12": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "2x"
+    },
+    "C01": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "1x"
+    },
+    "C02": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.25x"
+    },
+    "C03": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "2x"
+    },
+    "C04": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.5x"
+    },
+    "C05": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "1x"
+    },
+    "C06": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "2x"
+    },
+    "C07": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "C08": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "C09": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.5x"
+    },
+    "C10": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.5x"
+    },
+    "C11": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "C12": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.25x"
+    },
+    "D01": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "1x"
+    },
+    "D02": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.5x"
+    },
+    "D03": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "2x"
+    },
+    "D04": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.25x"
+    },
+    "D05": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "2x"
+    },
+    "D06": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.5x"
+    },
+    "D07": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "D08": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "2x"
+    },
+    "D09": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "D10": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.5x"
+    },
+    "D11": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "1x"
+    },
+    "D12": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "1x"
+    },
+    "E01": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "1x"
+    },
+    "E02": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "1x"
+    },
+    "E03": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "1x"
+    },
+    "E04": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "1x"
+    },
+    "E05": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "2x"
+    },
+    "E06": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "2x"
+    },
+    "E07": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "2x"
+    },
+    "E08": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.25x"
+    },
+    "E09": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.5x"
+    },
+    "E10": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.5x"
+    },
+    "E11": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "1x"
+    },
+    "E12": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "2x"
+    },
+    "F01": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.25x"
+    },
+    "F02": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.25x"
+    },
+    "F03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "F04": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.25x"
+    },
+    "F05": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "1x"
+    },
+    "F06": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "F07": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "1x"
+    },
+    "F08": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.5x"
+    },
+    "F09": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "2x"
+    },
+    "F10": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.5x"
+    },
+    "F11": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "2x"
+    },
+    "F12": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G01": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G02": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G03": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.25x"
+    },
+    "G04": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.5x"
+    },
+    "G05": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "2x"
+    },
+    "G06": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "2x"
+    },
+    "G07": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "1x"
+    },
+    "G08": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "G09": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "2x"
+    },
+    "G10": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "2x"
+    },
+    "G11": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.25x"
+    },
+    "G12": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.25x"
+    },
+    "H01": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.5x"
+    },
+    "H02": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.25x"
+    },
+    "H03": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "1x"
+    },
+    "H04": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "H05": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "H06": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.5x"
+    },
+    "H07": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.5x"
+    },
+    "H08": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.25x"
+    },
+    "H09": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.25x"
+    },
+    "H10": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "H11": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "1x"
+    },
+    "H12": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.25x"
+    }
+  },
+  "P5": {
+    "A01": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "2x"
+    },
+    "A02": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "1x"
+    },
+    "A03": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.25x"
+    },
+    "A04": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "A05": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "1x"
+    },
+    "A06": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "2x"
+    },
+    "A07": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "2x"
+    },
+    "A08": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.25x"
+    },
+    "A09": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.25x"
+    },
+    "A10": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "1x"
+    },
+    "A11": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "1x"
+    },
+    "A12": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.25x"
+    },
+    "B01": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "2x"
+    },
+    "B02": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.5x"
+    },
+    "B03": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "2x"
+    },
+    "B04": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "1x"
+    },
+    "B05": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "1x"
+    },
+    "B06": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "1x"
+    },
+    "B07": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "2x"
+    },
+    "B08": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "B09": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "2x"
+    },
+    "B10": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "1x"
+    },
+    "B11": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "B12": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.5x"
+    },
+    "C01": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.25x"
+    },
+    "C02": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "2x"
+    },
+    "C03": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.5x"
+    },
+    "C04": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.25x"
+    },
+    "C05": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.5x"
+    },
+    "C06": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.25x"
+    },
+    "C07": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "2x"
+    },
+    "C08": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "2x"
+    },
+    "C09": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "C10": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.5x"
+    },
+    "C11": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "1x"
+    },
+    "C12": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "2x"
+    },
+    "D01": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "1x"
+    },
+    "D02": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.5x"
+    },
+    "D03": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "1x"
+    },
+    "D04": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "D05": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.25x"
+    },
+    "D06": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.5x"
+    },
+    "D07": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.25x"
+    },
+    "D08": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "2x"
+    },
+    "D09": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.5x"
+    },
+    "D10": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "D11": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "D12": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "E01": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "E02": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "2x"
+    },
+    "E03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "E04": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.25x"
+    },
+    "E05": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.5x"
+    },
+    "E06": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.5x"
+    },
+    "E07": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.25x"
+    },
+    "E08": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "1x"
+    },
+    "E09": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.25x"
+    },
+    "E10": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "2x"
+    },
+    "E11": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "1x"
+    },
+    "E12": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.25x"
+    },
+    "F01": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.5x"
+    },
+    "F02": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "1x"
+    },
+    "F03": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.5x"
+    },
+    "F04": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.5x"
+    },
+    "F05": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "2x"
+    },
+    "F06": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.5x"
+    },
+    "F07": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "1x"
+    },
+    "F08": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.5x"
+    },
+    "F09": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "2x"
+    },
+    "F10": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.25x"
+    },
+    "F11": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.25x"
+    },
+    "F12": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G01": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.25x"
+    },
+    "G02": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "1x"
+    },
+    "G03": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "1x"
+    },
+    "G04": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G05": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "2x"
+    },
+    "G06": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "1x"
+    },
+    "G07": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "1x"
+    },
+    "G08": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G09": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.25x"
+    },
+    "G10": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "2x"
+    },
+    "G11": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.5x"
+    },
+    "G12": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "2x"
+    },
+    "H01": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.5x"
+    },
+    "H02": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "H03": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "H04": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.25x"
+    },
+    "H05": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "H06": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "H07": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "H08": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.5x"
+    },
+    "H09": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.5x"
+    },
+    "H10": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "1x"
+    },
+    "H11": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.25x"
+    },
+    "H12": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "2x"
+    }
+  },
+  "P6": {
+    "A01": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "2x"
+    },
+    "A02": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.25x"
+    },
+    "A03": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "1x"
+    },
+    "A04": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.5x"
+    },
+    "A05": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "1x"
+    },
+    "A06": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "1x"
+    },
+    "A07": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "1x"
+    },
+    "A08": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "2x"
+    },
+    "A09": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "1x"
+    },
+    "A10": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "A11": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "2x"
+    },
+    "A12": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.5x"
+    },
+    "B01": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "2x"
+    },
+    "B02": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B03": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "B04": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "1x"
+    },
+    "B05": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "2x"
+    },
+    "B06": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.25x"
+    },
+    "B07": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "B08": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.5x"
+    },
+    "B09": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "1x"
+    },
+    "B10": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.5x"
+    },
+    "B11": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "B12": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "1x"
+    },
+    "C01": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.25x"
+    },
+    "C02": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "2x"
+    },
+    "C03": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "1x"
+    },
+    "C04": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.25x"
+    },
+    "C05": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "C06": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.5x"
+    },
+    "C07": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "1x"
+    },
+    "C08": {
+      "antibiotic": "Aztreonam",
+      "ic50_multiple": "0.5x"
+    },
+    "C09": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "2x"
+    },
+    "C10": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "0.25x"
+    },
+    "C11": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.25x"
+    },
+    "C12": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.5x"
+    },
+    "D01": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "2x"
+    },
+    "D02": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.5x"
+    },
+    "D03": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.25x"
+    },
+    "D04": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.5x"
+    },
+    "D05": {
+      "antibiotic": "Kanamycin",
+      "ic50_multiple": "0.25x"
+    },
+    "D06": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "0.25x"
+    },
+    "D07": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.25x"
+    },
+    "D08": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "0.5x"
+    },
+    "D09": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "1x"
+    },
+    "D10": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "1x"
+    },
+    "D11": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "2x"
+    },
+    "D12": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.5x"
+    },
+    "E01": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "2x"
+    },
+    "E02": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.25x"
+    },
+    "E03": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "2x"
+    },
+    "E04": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "E05": {
+      "antibiotic": "Ciprofloxacin",
+      "ic50_multiple": "1x"
+    },
+    "E06": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "1x"
+    },
+    "E07": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "E08": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "E09": {
+      "antibiotic": "Trimethoprim",
+      "ic50_multiple": "0.25x"
+    },
+    "E10": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.5x"
+    },
+    "E11": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "0.5x"
+    },
+    "E12": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "0.25x"
+    },
+    "F01": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "0.25x"
+    },
+    "F02": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "1x"
+    },
+    "F03": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "2x"
+    },
+    "F04": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "0.25x"
+    },
+    "F05": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.5x"
+    },
+    "F06": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "F07": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "2x"
+    },
+    "F08": {
+      "antibiotic": "Meropenem",
+      "ic50_multiple": "1x"
+    },
+    "F09": {
+      "antibiotic": "Sulbactam",
+      "ic50_multiple": "0.5x"
+    },
+    "F10": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "F11": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "F12": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "2x"
+    },
+    "G01": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "2x"
+    },
+    "G02": {
+      "antibiotic": "Penicillin",
+      "ic50_multiple": "2x"
+    },
+    "G03": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "G04": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "0.25x"
+    },
+    "G05": {
+      "antibiotic": "Rifampicin",
+      "ic50_multiple": "2x"
+    },
+    "G06": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "0.25x"
+    },
+    "G07": {
+      "antibiotic": "Ceftriaxone",
+      "ic50_multiple": "2x"
+    },
+    "G08": {
+      "antibiotic": "Mecillinam",
+      "ic50_multiple": "0.25x"
+    },
+    "G09": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "0.5x"
+    },
+    "G10": {
+      "antibiotic": "Avibactam",
+      "ic50_multiple": "0.5x"
+    },
+    "G11": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.25x"
+    },
+    "G12": {
+      "antibiotic": "Colistin",
+      "ic50_multiple": "1x"
+    },
+    "H01": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "2x"
+    },
+    "H02": {
+      "antibiotic": "Clarithromycin",
+      "ic50_multiple": "2x"
+    },
+    "H03": {
+      "antibiotic": "Norfloxacin",
+      "ic50_multiple": "1x"
+    },
+    "H04": {
+      "antibiotic": "Cefepim",
+      "ic50_multiple": "0.5x"
+    },
+    "H05": {
+      "antibiotic": "Cefsulodin",
+      "ic50_multiple": "0.25x"
+    },
+    "H06": {
+      "antibiotic": "Doxicyclin",
+      "ic50_multiple": "1x"
+    },
+    "H07": {
+      "antibiotic": "Polymyxin B",
+      "ic50_multiple": "2x"
+    },
+    "H08": {
+      "antibiotic": "Relebactam",
+      "ic50_multiple": "0.5x"
+    },
+    "H09": {
+      "antibiotic": "Levofloxacin",
+      "ic50_multiple": "0.5x"
+    },
+    "H10": {
+      "antibiotic": "Clavulanic Acid",
+      "ic50_multiple": "1x"
+    },
+    "H11": {
+      "antibiotic": "DMSO",
+      "ic50_multiple": "control"
+    },
+    "H12": {
+      "antibiotic": "Chloramphenicol",
+      "ic50_multiple": "1x"
+    }
+  }
+}
