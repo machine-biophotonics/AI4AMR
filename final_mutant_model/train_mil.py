@@ -344,7 +344,8 @@ def train_single_fold(test_plate):
     
     class_counts = Counter(train_labels)
     total = len(train_labels)
-    class_weights = torch.tensor([total / (num_classes * class_counts[i]) for i in range(num_classes)], device=device)
+    # Handle classes with zero samples by using minimum count of 1
+    class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
     train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels)
