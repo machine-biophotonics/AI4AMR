@@ -150,11 +150,11 @@ all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
 
 # For drug mode, plates are P1, P2, etc. in Drugs_Data folder
 def get_image_paths_for_plate(plate):
-    # For drug mode: P1 -> Drugs_Data/P1
+    # For drug mode: Plate_1 -> Drugs_Data/P1 (map Plate_X to PX for directory and plate_maps)
     # For mutant mode: Plate_1 -> data/Plate_1
     if args.data_mode == 'drug':
-        plate_key = plate  # Already P1, P2, etc.
-        plate_dir = os.path.join(BASE_DIR, plate_key)
+        plate_key = f"P{plate.split('_')[-1]}"  # Plate_1 -> P1
+        plate_dir = os.path.join(BASE_DIR, plate_key)  # Drugs_Data/P1
     else:
         plate_key = f"P{plate.split('_')[-1]}"
         plate_dir = os.path.join(BASE_DIR, plate)
