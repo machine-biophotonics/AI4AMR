@@ -571,8 +571,8 @@ def main() -> None:
         
         return metrics
 
-    # Process images
-    image_paths: list[Path] = sorted(Path(image_dir).glob('*.tif'))
+    # Process images - search recursively for tif files
+    image_paths: list[Path] = sorted(Path(image_dir).rglob('*.tif'))
     
     if args.max_images:
         image_paths = image_paths[:args.max_images]
