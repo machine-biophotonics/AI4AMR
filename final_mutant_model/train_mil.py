@@ -81,7 +81,7 @@ parser.add_argument('--weight_decay', type=float, default=0.05,
 parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--entropy_loss_weight', type=float, default=0.0,
-                    help='Entropy loss weight (default 0.0, set >0 to add entropy regularization)')
+                    help='Attention entropy loss weight (default 0.0, set >0 to add AEM regularization, e.g., 0.01)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
 parser.add_argument('--use_sc_mil', action='store_true', default=True,
@@ -218,12 +218,10 @@ def weighted_focal_loss(logits: torch.Tensor, targets: torch.Tensor, weights: to
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
 
-def entropy_loss(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-    """Entropy regularization loss - encourages predicted distribution to be less uniform.
-    Helps prevent overconfident predictions."""
-    probs = F.softmax(logits / temperature, dim=-1)
-    log_probs = F.log_softmax(logits / temperature, dim=-1)
-    return -(probs * log_probs).sum(dim=-1).mean()
+def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
+    """Attention entropy regularization - prevents attention over-concentration in MIL.
+    Based on AEM paper (2024) - encourages considering more instances/patches."""
+    return -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=-1).mean()
 
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
@@ -692,10 +690,10 @@ def train_single_fold(test_plate: str) -> None:
                     # SC-MIL loss: weighted focal loss + optional entropy regularization
                     main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                     
-                    # Add entropy loss if specified
+                    # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
                     if args.entropy_loss_weight > 0:
-                        ent_loss = entropy_loss(outputs)
-                        loss = main_loss + args.entropy_loss_weight * ent_loss
+                        attn_ent_loss = attention_entropy_loss(attn_weights)
+                        loss = main_loss + args.entropy_loss_weight * attn_ent_loss
                     else:
                         loss = main_loss
                 
