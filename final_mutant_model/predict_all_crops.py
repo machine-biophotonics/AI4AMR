@@ -151,9 +151,9 @@ def main() -> None:
 
     from mil_model import MILEncoder
     
-    # Define _load_image function with proper 16-bit handling (same as training)
+    # Define _load_image function with proper 16-bit handling (same as training - trial_daniel min-max)
     def _load_image(img_path: str) -> Image.Image:
-        """Load image with proper handling for microscopy images (same as training)."""
+        """Load image with proper handling for microscopy images (same as training - trial_daniel min-max)."""
         import numpy as np
         try:
             import tifffile
@@ -167,27 +167,15 @@ def main() -> None:
         if len(img_array.shape) == 3:
             img_array = img_array[:, :, 0]
         
-        # Normalize based on dtype - exact approach from training
-        try:
-            from skimage import exposure
-            if img_array.dtype == np.uint16:
-                p_bot, p_top = np.percentile(img_array, 0.1), np.percentile(img_array, 99.9)
-                img_array = np.clip(img_array, p_bot, p_top)
-                img_array = exposure.rescale_intensity(img_array, out_range='uint8')
-            elif img_array.dtype == np.uint8:
-                img_array = exposure.rescale_intensity(img_array, out_range='uint8')
-            elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
-                img_array = np.clip(img_array, 0, 1)
-                img_array = (img_array * 255).astype(np.uint8)
-        except ImportError:
-            if img_array.dtype == np.uint16:
-                p1 = np.percentile(img_array, 0.1)
-                p99 = np.percentile(img_array, 99.9)
-                img_array = np.clip(img_array, p1, p99)
-                img_array = ((img_array - p1) / (p99 - p1 + 1e-8) * 255).astype(np.uint8)
-            elif img_array.dtype in [np.float32, np.float64]:
-                img_array = np.clip(img_array, 0, 1)
-                img_array = (img_array * 255).astype(np.uint8)
+        # Normalize using EXACT trial_daniel approach - min-max scaling (preserves ALL info)
+        if img_array.dtype == np.uint16:
+            # trial_daniel: divide by (2^16 - 1) = 65535
+            img_array = (img_array.astype(np.float32) / 65535.0 * 255).astype(np.uint8)
+        elif img_array.dtype == np.uint8:
+            pass  # Already uint8 - pass through
+        elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
+            # Float - already in [0,1] range
+            img_array = (img_array * 255).astype(np.uint8)
         
         # Convert to PIL Image
         if args.num_channels == 1:
@@ -241,7 +229,7 @@ def main() -> None:
 
     def extract_all_crops(img_path: str, crop_size: int, grid_size: int) -> list[tuple[torch.Tensor, int, int, int]]:
         """Extract all crops from an image in deterministic order using proper image loading."""
-        # Use _load_image for proper 16-bit handling (percentile normalization like training)
+        # Use _load_image for proper 16-bit handling (min-max normalization like trial_daniel)
         img: Image.Image = _load_image(img_path)
         
         # Convert to numpy for processing
@@ -310,7 +298,7 @@ def main() -> None:
             List of (crop_tensor, position_idx, local_row, local_col)
             with num_crops = neighborhood * neighborhood crops per position
         """
-        # Use _load_image for proper 16-bit handling (percentile normalization like training)
+        # Use _load_image for proper 16-bit handling (min-max normalization like trial_daniel)
         img: Image.Image = _load_image(img_path)
         
         # Convert to numpy for processing
