@@ -80,8 +80,8 @@ parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
 parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
-parser.add_argument('--entropy_loss_weight', type=float, default=0.0,
-                    help='Attention entropy loss weight (default 0.0, set >0 to add AEM regularization, e.g., 0.01)')
+parser.add_argument('--entropy_loss_weight', type=float, default=0.01,
+                    help='Attention entropy loss weight (default 0.01, AEM regularization for MIL)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
 parser.add_argument('--use_sc_mil', action='store_true', default=True,
