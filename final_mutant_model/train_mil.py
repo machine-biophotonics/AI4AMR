@@ -80,6 +80,8 @@ parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
 parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
+parser.add_argument('--entropy_loss_weight', type=float, default=0.0,
+                    help='Entropy loss weight (default 0.0, set >0 to add entropy regularization)')
 parser.add_argument('--use_contrastive', action='store_true',
                     help='Use patch-level contrastive pre-training')
 parser.add_argument('--use_sc_mil', action='store_true', default=True,
@@ -102,6 +104,8 @@ parser.add_argument('--num_channels', type=int, default=1,
                     help='Number of input channels (1 for grayscale, 3 for RGB)')
 parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'], 
                     help='Pretrained weights: imagenet (default) or micronet (NASA microscopy pretrained)')
+parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorch', 'tensorflow'],
+                    help='Framework: pytorch (default) or tensorflow/keras')
 parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
 args = parser.parse_args()
@@ -213,6 +217,13 @@ def weighted_focal_loss(logits: torch.Tensor, targets: torch.Tensor, weights: to
     pt = torch.exp(-ce_loss)
     focal = alpha * (1 - pt) ** gamma * ce_loss
     return (focal * weights).mean()
+
+def entropy_loss(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+    """Entropy regularization loss - encourages predicted distribution to be less uniform.
+    Helps prevent overconfident predictions."""
+    probs = F.softmax(logits / temperature, dim=-1)
+    log_probs = F.log_softmax(logits / temperature, dim=-1)
+    return -(probs * log_probs).sum(dim=-1).mean()
 
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
@@ -678,8 +689,15 @@ def train_single_fold(test_plate: str) -> None:
                 with torch.amp.autocast('cuda', enabled=use_amp):
                     outputs, attn_weights = model(images, return_attention=True)
                     
-                    # SC-MIL loss: weighted focal loss (no entropy loss - not in original SC-MIL paper)
-                    loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    # SC-MIL loss: weighted focal loss + optional entropy regularization
+                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    
+                    # Add entropy loss if specified
+                    if args.entropy_loss_weight > 0:
+                        ent_loss = entropy_loss(outputs)
+                        loss = main_loss + args.entropy_loss_weight * ent_loss
+                    else:
+                        loss = main_loss
                 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
