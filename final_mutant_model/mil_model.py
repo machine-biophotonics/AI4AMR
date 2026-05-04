@@ -141,6 +141,12 @@ class MILEncoder(nn.Module):
         layers.append(nn.Linear(in_dim, num_classes))
         
         self.classifier = nn.Sequential(*layers)
+        
+        # Simple instance classifier for instance-level predictions (no BatchNorm, handles multi-crop)
+        self.instance_classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(self.feature_dim, num_classes)
+        )
     
     def forward(
         self,
@@ -177,8 +183,12 @@ class MILEncoder(nn.Module):
         if return_pooled_embeddings:
             results.append(pooled)
         if return_instance_logits:
-            # Instance-level predictions: apply classifier to each crop
-            instance_logits = self.classifier(crop_embeddings)
+            # Instance-level predictions: apply simple classifier to each crop
+            # Reshape: [B, num_crops, 1280] -> [B*num_crops, 1280] -> [B*num_crops, num_classes]
+            batch_size, num_crops = crop_embeddings.shape[:2]
+            crop_features = crop_embeddings.view(-1, self.feature_dim)
+            instance_logits = self.instance_classifier(crop_features)
+            instance_logits = instance_logits.view(batch_size, num_crops, -1)
             results.append(instance_logits)
         
         return results[0] if len(results) == 1 else tuple(results)
