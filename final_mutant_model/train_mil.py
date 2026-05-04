@@ -63,7 +63,7 @@ print(f"Device: {device}")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
-parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
@@ -108,12 +108,7 @@ parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorc
                     help='Framework: pytorch (default) or tensorflow/keras')
 parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
-parser.add_argument('--classifier_hidden_dims', type=str, default='512,128',
-                    help='Classifier hidden layer dimensions (comma-separated, e.g., "512,128")')
 args = parser.parse_args()
-
-# Parse classifier hidden dimensions
-args.classifier_hidden_dims = [int(x) for x in args.classifier_hidden_dims.split(',')]
 
 if args.warmup_epochs is None:
     args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
@@ -388,12 +383,12 @@ def train_single_fold(test_plate: str) -> None:
     # Model selection based on flags
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
-        print(f"Classifier architecture: 1280 -> {' -> '.join(map(str, args.classifier_hidden_dims))} -> {num_classes}")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, classifier_hidden_dims=args.classifier_hidden_dims)
+        print(f"Classifier: single FC layer with dropout={args.dropout}")
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained)
     else:
         print(f"Using AttentionMILModel...")
-        print(f"Classifier architecture: 1280 -> {' -> '.join(map(str, args.classifier_hidden_dims))} -> {num_classes}")
-        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, classifier_hidden_dims=args.classifier_hidden_dims)
+        print(f"Classifier: single FC layer with dropout={args.dropout}")
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
