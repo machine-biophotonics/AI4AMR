@@ -422,10 +422,10 @@ class MultiCropDataset(Dataset):
     def _load_image(self, img_path: str) -> Image.Image:
         """Load image with proper handling for microscopy images.
         
-        Exact approach from trial_daniel (min-max normalization):
-        - For uint16: divide by 65535 (2^16 - 1)
-        - For uint8: divide by 255 (2^8 - 1)
-        This preserves ALL information without clipping any outliers.
+        EXACT same approach as trial_daniel:
+        - For uint16: sample / (2^16 - 1) = sample / 65535
+        - For uint8: sample / (2^8 - 1) = sample / 255
+        Returns normalized array in [0, 1] range as float32 (same as trial_daniel).
         """
         # Try tifffile first for 16-bit TIFF, fallback to PIL
         try:
@@ -440,24 +440,24 @@ class MultiCropDataset(Dataset):
         if len(img_array.shape) == 3:
             img_array = img_array[:, :, 0]  # Take first channel if multi-channel
         
-        # Normalize using EXACT trial_daniel approach - min-max scaling
-        # This preserves ALL information without any clipping
+        # EXACT same normalization as trial_daniel (dataset.py line 207)
+        # sample = torch.FloatTensor(sample / (2 ** self.bit_depth - 1))
         if img_array.dtype == np.uint16:
-            # trial_daniel approach: divide by (2^16 - 1) = 65535
-            img_array = (img_array.astype(np.float32) / 65535.0 * 255).astype(np.uint8)
+            # uint16: divide by (2^16 - 1) = 65535
+            img_array = img_array.astype(np.float32) / 65535.0
         elif img_array.dtype == np.uint8:
-            # Already uint8 - just pass through
-            pass
+            # uint8: divide by (2^8 - 1) = 255
+            img_array = img_array.astype(np.float32) / 255.0
         elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
             # Float - already in [0,1] range
-            img_array = (img_array * 255).astype(np.uint8)
+            img_array = img_array.astype(np.float32)
         
         # Convert to PIL Image - use L for grayscale (1 channel), RGB for 3 channels
+        # The transform pipeline will apply Normalize(mean=0.5, std=0.5) to convert to [-1, 1]
         if self.num_channels == 1:
-            image = Image.fromarray(img_array, mode='L')
+            image = Image.fromarray((img_array * 255).astype(np.uint8), mode='L')
         else:
-            # Convert grayscale to RGB by stacking
-            image = Image.fromarray(img_array, mode='L').convert('RGB')
+            image = Image.fromarray((img_array * 255).astype(np.uint8), mode='L').convert('RGB')
         
         return image
     

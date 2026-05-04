@@ -151,9 +151,9 @@ def main() -> None:
 
     from mil_model import MILEncoder
     
-    # Define _load_image function with proper 16-bit handling (same as training - trial_daniel min-max)
+    # Define _load_image function - EXACT same as trial_daniel (min-max normalization)
     def _load_image(img_path: str) -> Image.Image:
-        """Load image with proper handling for microscopy images (same as training - trial_daniel min-max)."""
+        """Load image - EXACT same normalization as trial_daniel: sample / (2^bit_depth - 1)"""
         import numpy as np
         try:
             import tifffile
@@ -167,21 +167,21 @@ def main() -> None:
         if len(img_array.shape) == 3:
             img_array = img_array[:, :, 0]
         
-        # Normalize using EXACT trial_daniel approach - min-max scaling (preserves ALL info)
+        # EXACT same normalization as trial_daniel (dataset.py line 207)
         if img_array.dtype == np.uint16:
-            # trial_daniel: divide by (2^16 - 1) = 65535
-            img_array = (img_array.astype(np.float32) / 65535.0 * 255).astype(np.uint8)
+            # uint16: divide by (2^16 - 1) = 65535
+            img_array = img_array.astype(np.float32) / 65535.0
         elif img_array.dtype == np.uint8:
-            pass  # Already uint8 - pass through
+            # uint8: divide by (2^8 - 1) = 255
+            img_array = img_array.astype(np.float32) / 255.0
         elif img_array.dtype == np.float32 or img_array.dtype == np.float64:
-            # Float - already in [0,1] range
-            img_array = (img_array * 255).astype(np.uint8)
+            img_array = img_array.astype(np.float32)
         
         # Convert to PIL Image
         if args.num_channels == 1:
-            return Image.fromarray(img_array, mode='L')
+            return Image.fromarray((img_array * 255).astype(np.uint8), mode='L')
         else:
-            return Image.fromarray(img_array, mode='L').convert('RGB')
+            return Image.fromarray((img_array * 255).astype(np.uint8), mode='L').convert('RGB')
     
     test_plate: str = args.fold if args.fold else 'P6'
     fold_dir: str = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')

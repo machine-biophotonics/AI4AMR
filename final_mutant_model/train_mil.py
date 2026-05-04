@@ -63,15 +63,15 @@ print(f"Device: {device}")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
-parser.add_argument('--batch_size', type=int, default=32)
+parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='Plate_6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', default=False, help='Run all 6 folds')
-parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
-                    help='Neighborhood size: 3=(3x3=9 crops, recommended), 5=(5x5=25 crops)')
+parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
+                    help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops, recommended)')
 parser.add_argument('--grid_size', type=int, default=12,
                     help='Grid size for crop positions')
 parser.add_argument('--dropout', type=float, default=0.5,
