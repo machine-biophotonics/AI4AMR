@@ -42,6 +42,7 @@ from functools import partial
 
 from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
 from supcon_loss import SupConLoss, SupConLossMIL
+from torch.utils.tensorboard import SummaryWriter
 
 SEED = 42
 random.seed(SEED)
@@ -417,6 +418,9 @@ def train_single_fold(test_plate: str) -> None:
         writer = csv.writer(f)
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
     
+    # TensorBoard writer - 2 cards: (Train Loss, Val Loss) and (Train Acc, Val Acc)
+    tb_writer = SummaryWriter(log_dir=OUTPUT_DIR)
+    
     best_val_auc = 0.0
     best_val_acc = 0.0
     best_val_loss = float('inf')
@@ -653,6 +657,12 @@ def train_single_fold(test_plate: str) -> None:
                 writer = csv.writer(f)
                 writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
             
+            # TensorBoard logging - 2 cards only (SC-MIL)
+            # Card 1: Train CE Loss + Val CE Loss
+            tb_writer.add_scalars('Loss', {'train': avg_ce_loss, 'val': avg_val_ce_loss}, epoch)
+            # Card 2: Train Acc + Val Acc
+            tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
+            
             # Save best model based on validation AUC
             if val_auc > best_val_auc:
                 best_val_auc = val_auc
@@ -745,6 +755,12 @@ def train_single_fold(test_plate: str) -> None:
             writer = csv.writer(f)
             writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
         
+        # TensorBoard logging - 2 cards only
+        # Card 1: Train Loss + Val Loss
+        tb_writer.add_scalars('Loss', {'train': avg_train_loss, 'val': avg_val_loss}, epoch)
+        # Card 2: Train Acc + Val Acc
+        tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
+        
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
@@ -792,6 +808,9 @@ def train_single_fold(test_plate: str) -> None:
     
     with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
         json.dump(results, f, indent=2)
+    
+    # Close TensorBoard writer
+    tb_writer.close()
     
     print(f"Results saved to {OUTPUT_DIR}")
 
