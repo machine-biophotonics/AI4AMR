@@ -43,6 +43,7 @@ class ContrastiveEncoder(nn.Module):
         super().__init__()
         self.projection_head = nn.Sequential(
             nn.Linear(feature_dim, projection_dim),
+            nn.Dropout(p=0.5),
             nn.ReLU(),
             nn.Linear(projection_dim, projection_dim)
         )
@@ -109,10 +110,19 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
+        # Dropout 1: After backbone, before attention (regularize instance features)
+        self.feature_dropout = nn.Dropout(p=0.5)
+        
         self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
         self.attention_temp = attention_temp
         
+        # Dropout 2: After attention pooling, before projection
+        self.pooled_dropout = nn.Dropout(p=0.5)
+        
         self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
+        
+        # Dropout 3: After head projection, before classifier
+        self.head_dropout = nn.Dropout(p=0.5)
         
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
@@ -144,9 +154,19 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
+        # Dropout 1: After backbone, before attention (regularize instance features)
+        crop_embeddings = self.feature_dropout(crop_embeddings)
+        
         pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
+        
+        # Dropout 2: After attention pooling, before projection
+        pooled = self.pooled_dropout(pooled)
+        
         pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
+        
+        # Dropout 3: After head projection, before classifier
+        pooled = self.head_dropout(pooled)
         
         if return_embedding and self.use_contrastive:
             embedding = self.contrastive_head.get_embedding(pooled)
