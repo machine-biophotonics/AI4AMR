@@ -70,8 +70,8 @@ parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='Plate_6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', default=False, help='Run all 6 folds')
-parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
-                    help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops)')
+parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
+                    help='Neighborhood size: 3=(3x3=9 crops, recommended), 5=(5x5=25 crops)')
 parser.add_argument('--grid_size', type=int, default=12,
                     help='Grid size for crop positions')
 parser.add_argument('--dropout', type=float, default=0.5,
@@ -108,7 +108,12 @@ parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorc
                     help='Framework: pytorch (default) or tensorflow/keras')
 parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
+parser.add_argument('--classifier_hidden_dims', type=str, default='512,128',
+                    help='Classifier hidden layer dimensions (comma-separated, e.g., "512,128")')
 args = parser.parse_args()
+
+# Parse classifier hidden dimensions
+args.classifier_hidden_dims = [int(x) for x in args.classifier_hidden_dims.split(',')]
 
 if args.warmup_epochs is None:
     args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
@@ -383,9 +388,12 @@ def train_single_fold(test_plate: str) -> None:
     # Model selection based on flags
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained)
+        print(f"Classifier architecture: 1280 -> {' -> '.join(map(str, args.classifier_hidden_dims))} -> {num_classes}")
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, classifier_hidden_dims=args.classifier_hidden_dims)
     else:
-        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained)
+        print(f"Using AttentionMILModel...")
+        print(f"Classifier architecture: 1280 -> {' -> '.join(map(str, args.classifier_hidden_dims))} -> {num_classes}")
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, classifier_hidden_dims=args.classifier_hidden_dims)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]

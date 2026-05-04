@@ -65,7 +65,9 @@ class MILEncoder(nn.Module):
         dropout: float = 0.2,
         use_contrastive: bool = False,
         projection_dim: int = 256,
-        num_channels: int = 3, pretrained: str = "imagenet"
+        num_channels: int = 3,
+        pretrained: str = "imagenet",
+        classifier_hidden_dims: list = None
     ) -> None:
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
@@ -116,10 +118,29 @@ class MILEncoder(nn.Module):
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
         
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(self.feature_dim, num_classes)
-        )
+        # Progressive classifier with multiple FC layers for better generalization
+        # Default: 1280 -> 512 -> 128 -> num_classes
+        if classifier_hidden_dims is None:
+            classifier_hidden_dims = [512, 128]
+        
+        layers = []
+        in_dim = self.feature_dim
+        num_layers = len(classifier_hidden_dims)
+        
+        for i, hidden_dim in enumerate(classifier_hidden_dims):
+            # Progressive dropout: higher at start, lower at end
+            layer_dropout = dropout * (1 - 0.3 * i / max(num_layers, 1))
+            layers.append(nn.Dropout(p=layer_dropout))
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.BatchNorm1d(hidden_dim))
+            in_dim = hidden_dim
+        
+        # Final output layer with minimal dropout
+        layers.append(nn.Dropout(p=dropout * 0.2))
+        layers.append(nn.Linear(in_dim, num_classes))
+        
+        self.classifier = nn.Sequential(*layers)
     
     def forward(
         self,
@@ -229,7 +250,7 @@ class MILEncoder(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, num_channels=1, pretrained="imagenet"):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.2, num_channels=1, pretrained="imagenet", classifier_hidden_dims=None):
         super().__init__()
         base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
         self.backbone = nn.Sequential(
@@ -276,10 +297,29 @@ class AttentionMILModel(nn.Module):
         
         self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
         
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(feature_dim, num_classes)
-        )
+        # Progressive classifier with multiple FC layers for better generalization
+        # Default: 1280 -> 512 -> 128 -> num_classes
+        if classifier_hidden_dims is None:
+            classifier_hidden_dims = [512, 128]
+        
+        layers = []
+        in_dim = feature_dim
+        num_layers = len(classifier_hidden_dims)
+        
+        for i, hidden_dim in enumerate(classifier_hidden_dims):
+            # Progressive dropout: higher at start, lower at end
+            layer_dropout = dropout * (1 - 0.3 * i / max(num_layers, 1))
+            layers.append(nn.Dropout(p=layer_dropout))
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.BatchNorm1d(hidden_dim))
+            in_dim = hidden_dim
+        
+        # Final output layer with minimal dropout
+        layers.append(nn.Dropout(p=dropout * 0.2))
+        layers.append(nn.Linear(in_dim, num_classes))
+        
+        self.classifier = nn.Sequential(*layers)
     
     def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
