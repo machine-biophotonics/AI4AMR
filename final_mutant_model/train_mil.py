@@ -221,7 +221,7 @@ def weighted_focal_loss(logits: torch.Tensor, targets: torch.Tensor, weights: to
 def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
     """Attention entropy regularization - prevents attention over-concentration in MIL.
     Based on AEM paper (2024) - encourages considering more instances/patches."""
-    return -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=-1).mean()
+    return -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
 
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
