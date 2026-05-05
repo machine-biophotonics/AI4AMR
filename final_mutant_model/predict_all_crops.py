@@ -61,6 +61,10 @@ def main() -> None:
                         help='Number of input channels (1 for grayscale, 3 for RGB)')
     parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'],
                         help='Pretrained weights: imagenet (default) or micronet')
+    parser.add_argument('--filter_class', type=str, default=None,
+                        help='Filter predictions by class name pattern (e.g., _2x, control)')
+    parser.add_argument('--dry_run', action='store_true', default=False,
+                        help='Dry run - do not save any results')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -184,10 +188,18 @@ def main() -> None:
             return Image.fromarray((img_array * 255).astype(np.uint8), mode='L').convert('RGB')
     
     test_plate: str = args.fold if args.fold else 'P6'
-    fold_dir: str = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
-    checkpoint_path: str = os.path.join(fold_dir, args.checkpoint)
+    
+    # Checkpoint path: use data_mode folder if specified checkpoint doesn't contain path separator
+    if os.path.sep in args.checkpoint or os.path.exists(args.checkpoint):
+        # Direct path provided
+        checkpoint_path = args.checkpoint
+    else:
+        # Use data_mode folder (e.g., drug/fold_P6/, mutant/fold_P6/)
+        fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
+        checkpoint_path = os.path.join(fold_dir, args.checkpoint)
+    
     image_dir: str = os.path.join(BASE_DIR, test_plate)
-    output_dir: str = fold_dir
+    output_dir: str = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
 
     print(f'\n{"="*60}')
     print(f'Processing fold: test plate={test_plate}')
@@ -198,34 +210,38 @@ def main() -> None:
     print(f'{"="*60}')
     
     if not os.path.exists(checkpoint_path):
+        # Show available in data_mode folder
+        fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
         print(f'ERROR: Checkpoint not found: {checkpoint_path}')
-        print(f'Available checkpoints in {fold_dir}:')
-        for f in os.listdir(fold_dir):
-            if f.endswith('.pth'):
-                print(f'  - {f}')
+        if os.path.exists(fold_dir):
+            print(f'Available checkpoints in {fold_dir}:')
+            for f in os.listdir(fold_dir):
+                if f.endswith('.pth'):
+                    print(f'  - {f}')
+        else:
+            print(f'Directory does not exist: {fold_dir}')
         return
     
     checkpoint: dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     has_contrastive = any('contrastive_head' in k for k in checkpoint['model_state_dict'].keys())
     print(f'  sc_mil_checkpoint: {has_contrastive}')
-    if args.use_sc_mil is None:
-        args.use_sc_mil = has_contrastive
+    use_sc_mil = has_contrastive or args.use_sc_mil
     
     model: MILEncoder = MILEncoder(
         num_classes=num_classes, 
         num_heads=args.num_heads, 
         attention_temp=0.5, 
         dropout=args.dropout,
-        use_contrastive=has_contrastive or args.use_sc_mil,
+        use_contrastive=use_sc_mil,
         num_channels=args.num_channels,
         pretrained=args.pretrained
     )
     model = model.to(device)
     
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     model.eval()
-    print(f"MILEncoder model loaded successfully (SC-MIL: {has_contrastive or args.use_sc_mil})")
+    print(f"MILEncoder model loaded successfully (SC-MIL: {use_sc_mil})")
 
     def extract_all_crops(img_path: str, crop_size: int, grid_size: int) -> list[tuple[torch.Tensor, int, int, int]]:
         """Extract all crops from an image in deterministic order using proper image loading."""
@@ -315,8 +331,7 @@ def main() -> None:
         w: int = img_np.shape[2] if len(img_np.shape) == 3 else img_np.shape[1]
         h: int = img_np.shape[1]
         
-        stride_x: int = (w - crop_size) // (grid_size - 1) if grid_size > 1 else 0
-        stride_y: int = (h - crop_size) // (grid_size - 1) if grid_size > 1 else 0
+        stride: int = (w - crop_size) // (grid_size - 1) if grid_size > 1 else 0
         
         half_n: int = neighborhood // 2
         
@@ -324,14 +339,14 @@ def main() -> None:
         valid_positions: list[tuple[int, int]] = []
         for i in range(grid_size):
             for j in range(grid_size):
-                left = j * stride_x
-                top = i * stride_y
+                left = j * stride
+                top = i * stride
                 if left + crop_size <= w and top + crop_size <= h:
                     # Check if we can extract full neighborhood around this position
-                    can_left = left - half_n * stride_x >= 0
-                    can_right = left + half_n * stride_x + crop_size <= w
-                    can_top = top - half_n * stride_y >= 0
-                    can_bottom = top + half_n * stride_y + crop_size <= h
+                    can_left = left - half_n * stride >= 0
+                    can_right = left + half_n * stride + crop_size <= w
+                    can_top = top - half_n * stride >= 0
+                    can_bottom = top + half_n * stride + crop_size <= h
                     if can_left and can_right and can_top and can_bottom:
                         valid_positions.append((left, top))
         
@@ -340,8 +355,8 @@ def main() -> None:
         for pos_idx, (center_x, center_y) in enumerate(valid_positions):
             for dy in range(-half_n, half_n + 1):
                 for dx in range(-half_n, half_n + 1):
-                    left = center_x + dx * stride_x
-                    top = center_y + dy * stride_y
+                    left = center_x + dx * stride
+                    top = center_y + dy * stride
                     
                     # Extract crop from numpy array
                     if args.num_channels == 1:
@@ -378,8 +393,7 @@ def main() -> None:
                 well_str: str = part.replace('Well', '')
                 if len(well_str) == 3:
                     row: str = well_str[0]
-                    col: str = well_str[1:]
-                    col = str(int(col))
+                    col: str = well_str[1:]  # Keep leading zero (e.g., '01' not '1')
                     return row + col
                 return well_str
         return None
@@ -581,6 +595,17 @@ def main() -> None:
     if args.max_images:
         image_paths = image_paths[:args.max_images]
     
+    # Filter images by class if filter_class is specified (BEFORE sampling)
+    if args.filter_class:
+        filtered_paths: list[Path] = []
+        for img_path in image_paths:
+            well = parse_well_from_filename(str(img_path))
+            label = get_ground_truth_label(test_plate, well)
+            if label and args.filter_class in label:
+                filtered_paths.append(img_path)
+        image_paths = filtered_paths
+        print(f"Filtered images by '{args.filter_class}': {len(image_paths)} images")
+    
     # Sample N images per class if requested
     if args.sample_per_class:
         import random
@@ -617,12 +642,70 @@ def main() -> None:
         results: list[dict] = predict_image(model, img_path_str, test_plate, args.batch_size)
         all_results.extend(results)
     
+    # Filter by class pattern if requested
+    if args.filter_class:
+        filtered_results = []
+        for r in all_results:
+            gt_label = r.get('ground_truth_label', '')
+            if gt_label and args.filter_class in gt_label:
+                filtered_results.append(r)
+        print(f"\nFiltered by '{args.filter_class}': {len(filtered_results)}/{len(all_results)} results")
+        all_results = filtered_results
+    
     metrics: dict = compute_metrics(all_results, num_classes)
     
     print(f"\nPrediction summary:")
     print(f"  - Images processed: {len(image_paths)}")
     print(f"  - Crops per position: {num_crops_per_position} ({neighborhood}x{neighborhood})")
     print(f"  - Total crop predictions: {len(all_results)}")
+    
+    # Calculate accuracy by position (1 prediction per position)
+    if all_results:
+        df = pd.DataFrame(all_results)
+        
+        # Position-level accuracy (1 prediction per grid position)
+        pos_accuracy = None
+        if 'ground_truth_idx' in df.columns and 'predicted_class_idx' in df.columns:
+            df_with_gt = df[df['ground_truth_idx'] != -1]
+            if len(df_with_gt) > 0:
+                correct = (df_with_gt['predicted_class_idx'] == df_with_gt['ground_truth_idx']).sum()
+                total = len(df_with_gt)
+                pos_accuracy = correct / total
+                print(f"\nPosition-level accuracy: {pos_accuracy:.4f} ({correct}/{total})")
+        
+        # Majority voting accuracy (1 vote per image)
+        if 'image_path' in df.columns and 'ground_truth_label' in df.columns:
+            image_votes = {}
+            for _, row in df.iterrows():
+                img = row['image_path']
+                if img not in image_votes:
+                    image_votes[img] = {}
+                pred = row['predicted_class_name']
+                image_votes[img][pred] = image_votes[img].get(pred, 0) + 1
+            
+            correct_images = 0
+            total_images = 0
+            print(f"\nMajority voting per image:")
+            for img, votes in image_votes.items():
+                majority_pred = max(votes, key=votes.get)
+                well = parse_well_from_filename(img)
+                gt = get_ground_truth_label(test_plate, well)
+                if gt:
+                    total_images += 1
+                    if majority_pred == gt:
+                        correct_images += 1
+                    print(f"  {os.path.basename(img)[:30]}: GT={gt}, Pred={majority_pred} ({'✓' if majority_pred == gt else '✗'})")
+            
+            if total_images > 0:
+                maj_accuracy = correct_images / total_images
+                print(f"\nMajority voting accuracy: {maj_accuracy:.4f} ({correct_images}/{total_images})")
+    
+    if args.dry_run:
+        print(f"\n[DRY RUN] Skipping save and metrics")
+        print(f"\n{'='*60}")
+        print(f"Done! Fold {test_plate} (dry run - no files saved)")
+        print(f"{'='*60}")
+        return
     
     df: pd.DataFrame = pd.DataFrame(all_results)
     
@@ -632,7 +715,7 @@ def main() -> None:
         return
     
     output_csv: str = os.path.join(output_dir, f'predictions_all_crops_mil.csv')
-    checkpoint_name = args.checkpoint.replace('.pth', '')
+    checkpoint_name = os.path.basename(args.checkpoint).replace('.pth', '')
     if mil_mode:
         suffix = f"_{checkpoint_name}_n{neighborhood}"
         if args.use_sc_mil:

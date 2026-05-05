@@ -123,11 +123,8 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
         
-        # Same simple classifier for instance-level predictions
-        self.instance_classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(self.feature_dim, num_classes)
-        )
+        # Same simple classifier for instance-level predictions (no dropout - contrastive learning provides regularization)
+        self.instance_classifier = nn.Linear(self.feature_dim, num_classes)
     
     def forward(
         self,
