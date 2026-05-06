@@ -82,6 +82,15 @@ class MILEncoder(nn.Module):
                 nn.AdaptiveAvgPool2d(1),
                 nn.Flatten()
             )
+        elif backbone == "mobilenet_v2":
+            base_model = torchvision.models.mobilenet_v2(weights='IMAGENET1K_V1')
+            # MobileNetV2 output features: 1280
+            self.feature_dim = 1280
+            self.backbone = nn.Sequential(
+                base_model.features,
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten()
+            )
         else:  # efficientnet_b0 (default)
             base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
             # EfficientNet-B0 output features: 1280
@@ -99,6 +108,13 @@ class MILEncoder(nn.Module):
                 original_weights = original_conv.weight.data  # [16, 3, 3, 3]
                 new_weights = original_weights.sum(dim=1, keepdim=True)  # [16, 1, 3, 3]
                 self.backbone[0][0] = nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
+            elif backbone == "mobilenet_v2":
+                # MobileNetV2 first conv: Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data  # [32, 3, 3, 3]
+                new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
+                self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1, bias=False)
                 self.backbone[0][0].weight.data = new_weights
             else:  # efficientnet_b0
                 # Transfer ImageNet RGB weights to single channel (sum over channels)
@@ -275,6 +291,14 @@ class AttentionMILModel(nn.Module):
                 nn.AdaptiveAvgPool2d(1),
                 nn.Flatten()
             )
+        elif backbone == "mobilenet_v2":
+            base_model = torchvision.models.mobilenet_v2(weights='IMAGENET1K_V1')
+            self.feature_dim = 1280
+            self.backbone = nn.Sequential(
+                base_model.features,
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten()
+            )
         else:  # efficientnet_b0
             base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
             self.feature_dim = 1280
@@ -291,6 +315,13 @@ class AttentionMILModel(nn.Module):
                 original_weights = original_conv.weight.data  # [16, 3, 3, 3]
                 new_weights = original_weights.sum(dim=1, keepdim=True)  # [16, 1, 3, 3]
                 self.backbone[0][0] = nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
+            elif backbone == "mobilenet_v2":
+                # MobileNetV2 first conv: Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data  # [32, 3, 3, 3]
+                new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
+                self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1, bias=False)
                 self.backbone[0][0].weight.data = new_weights
             else:  # efficientnet_b0
                 original_conv = base_model.features[0][0]

@@ -105,8 +105,8 @@ parser.add_argument('--checkpoint_every', type=int, default=1,
                     help='Save checkpoint every N epochs (default: 1)')
 parser.add_argument('--num_channels', type=int, default=1,
                     help='Number of input channels (1 for grayscale, 3 for RGB)')
-parser.add_argument('--backbone', type=str, default='efficientnet_b0', choices=['efficientnet_b0', 'mobilenet_v3_small'],
-                    help='Backbone architecture: efficientnet_b0 (default) or mobilenet_v3_small')
+parser.add_argument('--backbone', type=str, default='efficientnet_b0', choices=['efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'],
+                    help='Backbone architecture: efficientnet_b0 (default), mobilenet_v3_small, or mobilenet_v2')
 parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'], 
                     help='Pretrained weights: imagenet (default) or micronet (NASA microscopy pretrained)')
 parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorch', 'tensorflow'],
