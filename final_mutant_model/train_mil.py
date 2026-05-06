@@ -115,6 +115,11 @@ parser.add_argument('--drug_no_concentration', action='store_true', default=Fals
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
 args = parser.parse_args()
 
+# Determine folder name for results (drug_noconcentration vs drug)
+data_mode_folder = args.data_mode
+if args.data_mode == 'drug' and args.drug_no_concentration:
+    data_mode_folder = 'drug_noconcentration'
+
 if args.warmup_epochs is None:
     args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
 
@@ -243,7 +248,7 @@ def worker_init_fn(worker_id: int, seed: int = 42) -> None:
 
 
 def train_single_fold(test_plate: str) -> None:
-    OUTPUT_DIR = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
+    OUTPUT_DIR = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     print(f"\n{'='*60}")
@@ -837,7 +842,7 @@ def train_single_fold(test_plate: str) -> None:
 if __name__ == '__main__':
     if args.run_all_folds:
         for test_plate in all_plates:
-            fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
+            fold_dir = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
             
             # Check for any checkpoint files to skip trained folds
             checkpoints = [

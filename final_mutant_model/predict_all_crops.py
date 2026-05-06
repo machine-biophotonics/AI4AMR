@@ -72,6 +72,11 @@ def main() -> None:
     
     args: argparse.Namespace = parser.parse_args()
     
+    # Determine folder name for results (drug_noconcentration vs drug)
+    data_mode_folder = args.data_mode
+    if args.data_mode == 'drug' and args.drug_no_concentration:
+        data_mode_folder = 'drug_noconcentration'
+    
     # Load JSON mappings based on data_mode
     if args.data_mode in ['drug', 'both']:
         with open(os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json'), 'r') as f:
@@ -214,11 +219,11 @@ def main() -> None:
         checkpoint_path = args.checkpoint
     else:
         # Use data_mode folder (e.g., drug/fold_P6/, mutant/fold_P6/)
-        fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
+        fold_dir = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
         checkpoint_path = os.path.join(fold_dir, args.checkpoint)
     
     image_dir: str = os.path.join(BASE_DIR, test_plate)
-    output_dir: str = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
+    output_dir: str = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
 
     print(f'\n{"="*60}')
     print(f'Processing fold: test plate={test_plate}')
@@ -230,7 +235,7 @@ def main() -> None:
     
     if not os.path.exists(checkpoint_path):
         # Show available in data_mode folder
-        fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{test_plate}')
+        fold_dir = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
         print(f'ERROR: Checkpoint not found: {checkpoint_path}')
         if os.path.exists(fold_dir):
             print(f'Available checkpoints in {fold_dir}:')
