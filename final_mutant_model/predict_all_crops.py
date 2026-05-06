@@ -32,6 +32,8 @@ def main() -> None:
                         help='Data mode: drug (Drugs_Data), mutant (Mutants_Data), both')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
+    parser.add_argument('--extraction_mode', type=str, default='neighborhood', choices=['neighborhood', 'raster'],
+                        help='Crop extraction mode: neighborhood (N×N grids around positions) or raster (all crops in tiling grid)')
     parser.add_argument('--crop_neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
                         help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops), 9=(9x9=81 crops), 11=(11x11=121 crops)')
     parser.add_argument('--no_mil_mode', action='store_true',
@@ -92,11 +94,16 @@ def main() -> None:
     crop_size: int = args.crop_size
     grid_size: int = args.grid_size
     neighborhood: int = args.crop_neighborhood
+    extraction_mode: str = args.extraction_mode
     mil_mode: bool = args.mil_mode
     
     num_crops_per_position: int = neighborhood * neighborhood
     
-    print(f"Config: crop_size={crop_size}, grid_size={grid_size}, mil_mode={mil_mode}, neighborhood={neighborhood}x{neighborhood} ({num_crops_per_position} crops)")
+    if extraction_mode == 'raster':
+        total_crops = grid_size * grid_size
+        print(f"Config: RASTER - {total_crops} crops ({grid_size}x{grid_size} grid), extraction_mode={extraction_mode}")
+    else:
+        print(f"Config: NEIGHBORHOOD - {num_crops_per_position} crops/position ({neighborhood}x{neighborhood}), extraction_mode={extraction_mode}")
     
     # Build classes based on data_mode (same logic as training)
     all_classes: list[str] = []
@@ -428,16 +435,54 @@ def main() -> None:
 
     def predict_image(model: MILEncoder, img_path: str, plate: str, batch_size: int) -> list[dict]:
         """Predict all crops for a single image using MIL attention."""
-        if mil_mode:
+        if extraction_mode == 'raster':
+            all_crops = extract_all_crops(img_path, crop_size, grid_size)
+            n_positions = 1
+            num_crops = len(all_crops)
+        elif mil_mode:
             all_crops = extract_mil_crops(img_path, crop_size, grid_size, neighborhood)
             n_positions = len(all_crops) // num_crops_per_position
+            num_crops = num_crops_per_position
         else:
             all_crops = extract_all_crops(img_path, crop_size, grid_size)
             n_positions = len(all_crops)
+            num_crops = 1
         
         results: list[dict] = []
         
-        if mil_mode:
+        if extraction_mode == 'raster':
+            batch_tensors = torch.stack([c[0] for c in all_crops]).unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                logits, attn_weights = model(batch_tensors, return_attention=True)
+                probs = torch.softmax(logits, dim=1)
+            
+            pooled_pred_idx = int(probs[0].argmax(dim=0).item())
+            pooled_confidence = float(probs[0].max(dim=0).values.item())
+            pooled_probs_np = probs[0].cpu().numpy().tolist()
+            pooled_attn_np = attn_weights[0].cpu().numpy().tolist()
+            
+            well = parse_well_from_filename(img_path)
+            gt_label = get_ground_truth_label(plate, well) if well else None
+            gt_idx = label_to_idx.get(gt_label, -1) if gt_label else -1
+            
+            results.append({
+                'image_path': img_path,
+                'image_name': os.path.basename(img_path),
+                'plate': plate,
+                'well': well,
+                'ground_truth_label': gt_label,
+                'ground_truth_idx': gt_idx,
+                'position_index': 0,
+                'extraction_mode': 'raster',
+                'num_crops': num_crops,
+                'predicted_class_idx': pooled_pred_idx,
+                'predicted_class_name': idx_to_label.get(pooled_pred_idx, 'unknown'),
+                'confidence': pooled_confidence,
+                'probs': pooled_probs_np,
+                'attention': pooled_attn_np,
+            })
+        elif mil_mode:
             # Calculate center index for extracting center crop info
             center_idx = num_crops_per_position // 2
             

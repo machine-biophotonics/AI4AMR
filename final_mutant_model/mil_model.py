@@ -311,7 +311,12 @@ class AttentionMILModel(nn.Module):
 
 
 class MultiCropDataset(Dataset):
-    """Cycle-based crop extraction with configurable neighborhood for MIL"""
+    """Cycle-based crop extraction with configurable neighborhood for MIL
+    
+    extraction_mode options:
+    - 'neighborhood': Extract N×N crops around each valid center position (current behavior)
+    - 'raster': Extract all crops in tiling grid as a single bag (like AI4AB/trial_daniel)
+    """
     
     def __init__(
         self,
@@ -324,7 +329,8 @@ class MultiCropDataset(Dataset):
         augment: bool = True,
         seed: int = 42,
         epoch: int = 0,
-        num_channels: int = 1
+        num_channels: int = 1,
+        extraction_mode: str = 'neighborhood'
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
@@ -336,6 +342,7 @@ class MultiCropDataset(Dataset):
         self.epoch = epoch
         self.single_crop = False
         self.num_channels = num_channels
+        self.extraction_mode = extraction_mode
         
         sample_img = Image.open(image_paths[0])
         # Convert to grayscale ('L') for 1-channel, or RGB for 3-channel
@@ -349,21 +356,34 @@ class MultiCropDataset(Dataset):
         stride = (w - crop_size) // (grid_size - 1)
         self.stride = stride
         
-        half_n = neighborhood // 2
-        positions = []
-        for i in range(grid_size):
-            for j in range(grid_size):
-                left = j * stride
-                top = i * stride
-                if left + crop_size <= w and top + crop_size <= h:
-                    can_left = left - half_n * stride >= 0
-                    can_right = left + half_n * stride + crop_size <= w
-                    can_top = top - half_n * stride >= 0
-                    can_bottom = top + half_n * stride + crop_size <= h
-                    if can_left and can_right and can_top and can_bottom:
+        if extraction_mode == 'raster':
+            positions = []
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    left = j * stride
+                    top = i * stride
+                    if left + crop_size <= w and top + crop_size <= h:
                         positions.append((left, top))
-        
-        self.positions = positions
+            self.all_positions = positions
+            self.positions = positions
+            self.num_neighbors = len(positions) - 1
+        else:
+            half_n = neighborhood // 2
+            positions = []
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    left = j * stride
+                    top = i * stride
+                    if left + crop_size <= w and top + crop_size <= h:
+                        can_left = left - half_n * stride >= 0
+                        can_right = left + half_n * stride + crop_size <= w
+                        can_top = top - half_n * stride >= 0
+                        can_bottom = top + half_n * stride + crop_size <= h
+                        if can_left and can_right and can_top and can_bottom:
+                            positions.append((left, top))
+            self.positions = positions
+            self.all_positions = []
+            self.num_neighbors = neighborhood * neighborhood - 1
         self.num_neighbors = neighborhood * neighborhood - 1
         
         # Normalization for 1-channel vs 3-channel
@@ -389,7 +409,11 @@ class MultiCropDataset(Dataset):
                 ToTensorV2(),
             ])
         
-        print(f"MIL: {len(positions)} positions, {self.neighborhood}x{self.neighborhood}={self.num_neighbors + 1} crops/image")
+        if extraction_mode == 'raster':
+            total_crops = len(positions)
+            print(f"MIL (raster): {total_crops} crops in {len(positions)} positions")
+        else:
+            print(f"MIL (neighborhood): {len(positions)} positions, {self.neighborhood}x{self.neighborhood}={self.num_neighbors + 1} crops/image")
     
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -403,16 +427,21 @@ class MultiCropDataset(Dataset):
             self.single_crop = False
             return
         
-        cycle = epoch // num_pos
-        pos_in_cycle = epoch % num_pos
-        rng = random.Random(self.seed + cycle)
-        shuffled = self.positions.copy()
-        rng.shuffle(shuffled)
-        
-        self.epoch_centers = {}
-        for idx in range(num_images):
-            assigned_idx = (idx + pos_in_cycle) % num_pos
-            self.epoch_centers[idx] = shuffled[assigned_idx]
+        if self.extraction_mode == 'raster':
+            center_left = self.positions[0][0] if self.positions else 0
+            center_top = self.positions[0][1] if self.positions else 0
+            self.epoch_centers = {i: (center_left, center_top) for i in range(num_images)}
+        else:
+            cycle = epoch // num_pos
+            pos_in_cycle = epoch % num_pos
+            rng = random.Random(self.seed + cycle)
+            shuffled = self.positions.copy()
+            rng.shuffle(shuffled)
+            
+            self.epoch_centers = {}
+            for idx in range(num_images):
+                assigned_idx = (idx + pos_in_cycle) % num_pos
+                self.epoch_centers[idx] = shuffled[assigned_idx]
         
         self.single_crop = False
     
@@ -463,7 +492,6 @@ class MultiCropDataset(Dataset):
     
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         img_path = self.image_paths[idx]
-        # Load image with proper handling for 16-bit microscopy images
         image = self._load_image(img_path)
         
         center_left, center_top = self.epoch_centers[idx]
@@ -473,6 +501,34 @@ class MultiCropDataset(Dataset):
             crop = np.array(crop)
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
+        elif self.extraction_mode == 'raster':
+            jitter_range = self.stride // 4 if self.augment else 0
+            crops_list = []
+            
+            for (left, top) in self.all_positions:
+                if self.augment:
+                    jitter_x = random.randint(-jitter_range, jitter_range)
+                    jitter_y = random.randint(-jitter_range, jitter_range)
+                else:
+                    jitter_x = jitter_y = 0
+                
+                left = left + jitter_x
+                top = top + jitter_y
+                left = max(0, min(left, self.image_size - self.crop_size))
+                top = max(0, min(top, self.image_size - self.crop_size))
+                
+                crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
+                crop = np.array(crop)
+                crop = self.transform(image=crop)['image']
+                crops_list.append(crop)
+            
+            num_crops = len(self.all_positions)
+            if self.augment:
+                perm = list(range(num_crops))
+                random.shuffle(perm)
+                crops_list = [crops_list[i] for i in perm]
+            
+            crops = torch.stack(crops_list)
         else:
             jitter_range = self.stride // 4
             crops_list = []

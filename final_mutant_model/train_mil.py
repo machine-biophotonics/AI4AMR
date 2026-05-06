@@ -75,6 +75,8 @@ parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 
                     help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops, recommended)')
 parser.add_argument('--grid_size', type=int, default=12,
                     help='Grid size for crop positions')
+parser.add_argument('--extraction_mode', type=str, default='neighborhood', choices=['neighborhood', 'raster'],
+                    help='Crop extraction mode: neighborhood (N×N grids around positions) or raster (all crops in tiling grid)')
 parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate for classifier (default 0.5 for stronger regularization)')
 parser.add_argument('--weight_decay', type=float, default=0.05,
@@ -356,9 +358,9 @@ def train_single_fold(test_plate: str) -> None:
     class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels)
-    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels)
-    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels)
+    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode)
+    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode)
+    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -382,7 +384,11 @@ def train_single_fold(test_plate: str) -> None:
                              persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2,
                              worker_init_fn=partial(worker_init_fn, seed=SEED))
     
-    print(f"Crops per image: {args.neighborhood}x{args.neighborhood}={args.neighborhood**2} crops")
+    if args.extraction_mode == 'raster':
+        num_crops = args.grid_size * args.grid_size
+        print(f"Extraction mode: RASTER - {num_crops} crops per image ({args.grid_size}x{args.grid_size} grid)")
+    else:
+        print(f"Extraction mode: NEIGHBORHOOD - {args.neighborhood}x{args.neighborhood}={args.neighborhood**2} crops per position")
     
     # Model selection based on flags
     if args.use_sc_mil:
