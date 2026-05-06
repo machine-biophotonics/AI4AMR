@@ -77,6 +77,12 @@ parser.add_argument('--grid_size', type=int, default=12,
                     help='Grid size for crop positions')
 parser.add_argument('--extraction_mode', type=str, default='neighborhood', choices=['neighborhood', 'raster'],
                     help='Crop extraction mode: neighborhood (N×N grids around positions) or raster (all crops in tiling grid)')
+parser.add_argument('--raster_crop_size', type=int, default=500,
+                    help='Crop size for raster mode extraction (default 500)')
+parser.add_argument('--raster_resize_size', type=int, default=256,
+                    help='Resize raster crops to this size for model input (default 256)')
+parser.add_argument('--raster_num_crops', type=int, default=9,
+                    help='Number of crops to extract in raster mode (default 9, 3x3 grid)')
 parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate for classifier (default 0.5 for stronger regularization)')
 parser.add_argument('--weight_decay', type=float, default=0.05,
@@ -372,9 +378,9 @@ def train_single_fold(test_plate: str) -> None:
     class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode)
-    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode)
-    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode)
+    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops)
+    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops)
+    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -458,8 +464,8 @@ def train_single_fold(test_plate: str) -> None:
         print(f"{'='*60}")
         
         # Create two augmented views for each image
-        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels)
-        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1, num_channels=args.num_channels)
+        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops)
+        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops)
         
         # Set initial epoch for both
         crop_dataset_v1.set_epoch(0)

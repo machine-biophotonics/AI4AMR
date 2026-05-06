@@ -404,7 +404,10 @@ class MultiCropDataset(Dataset):
         seed: int = 42,
         epoch: int = 0,
         num_channels: int = 1,
-        extraction_mode: str = 'neighborhood'
+        extraction_mode: str = 'neighborhood',
+        raster_crop_size: int = 500,
+        raster_resize_size: int = 256,
+        raster_num_crops: int = 9
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
@@ -417,6 +420,9 @@ class MultiCropDataset(Dataset):
         self.single_crop = False
         self.num_channels = num_channels
         self.extraction_mode = extraction_mode
+        self.raster_crop_size = raster_crop_size
+        self.raster_resize_size = raster_resize_size
+        self.raster_num_crops = raster_num_crops
         
         sample_img = Image.open(image_paths[0])
         # Convert to grayscale ('L') for 1-channel, or RGB for 3-channel
@@ -431,16 +437,41 @@ class MultiCropDataset(Dataset):
         self.stride = stride
         
         if extraction_mode == 'raster':
+            # New raster mode: 3x3 grid of positions, each sampling a 500x500 crop (then resized to 256)
+            num_crops_side = int(np.sqrt(raster_num_crops))  # 3 for 9 crops
             positions = []
-            for i in range(grid_size):
-                for j in range(grid_size):
-                    left = j * stride
-                    top = i * stride
-                    if left + crop_size <= w and top + crop_size <= h:
+            
+            # Calculate evenly spaced positions for the 3x3 grid
+            if num_crops_side > 1:
+                # Calculate spacing to evenly distribute crops across image
+                spacing_x = w / num_crops_side
+                spacing_y = h / num_crops_side
+                
+                for i in range(num_crops_side):
+                    for j in range(num_crops_side):
+                        # Center of each crop position
+                        center_x = (j + 0.5) * spacing_x
+                        center_y = (i + 0.5) * spacing_y
+                        
+                        # Top-left corner of 500x500 crop
+                        left = int(center_x - raster_crop_size / 2)
+                        top = int(center_y - raster_crop_size / 2)
+                        
+                        # Ensure within bounds
+                        left = max(0, min(left, w - raster_crop_size))
+                        top = max(0, min(top, h - raster_crop_size))
+                        
                         positions.append((left, top))
+            else:
+                # Single crop - center it
+                left = (w - raster_crop_size) // 2
+                top = (h - raster_crop_size) // 2
+                positions.append((left, top))
+            
             self.all_positions = positions
             self.positions = positions
             self.num_neighbors = len(positions) - 1
+            print(f"MIL (raster): {len(positions)} crops ({num_crops_side}x{num_crops_side} grid), crop_size={raster_crop_size}, resize={raster_resize_size}")
         else:
             half_n = neighborhood // 2
             positions = []
@@ -576,7 +607,8 @@ class MultiCropDataset(Dataset):
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
         elif self.extraction_mode == 'raster':
-            jitter_range = self.stride // 4 if self.augment else 0
+            # New raster mode: use raster_crop_size and raster_resize_size
+            jitter_range = self.raster_crop_size // 8 if self.augment else 0
             crops_list = []
             
             for (left, top) in self.all_positions:
@@ -588,19 +620,25 @@ class MultiCropDataset(Dataset):
                 
                 left = left + jitter_x
                 top = top + jitter_y
-                left = max(0, min(left, self.image_size - self.crop_size))
-                top = max(0, min(top, self.image_size - self.crop_size))
+                # Ensure within bounds using raster_crop_size
+                left = max(0, min(left, self.image_size - self.raster_crop_size))
+                top = max(0, min(top, self.image_size - self.raster_crop_size))
                 
-                crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
+                # Extract 500x500 crop
+                crop = image.crop((left, top, left + self.raster_crop_size, top + self.raster_crop_size))
+                # Resize to 256x256
+                crop = crop.resize((self.raster_resize_size, self.raster_resize_size), Image.BILINEAR)
                 crop = np.array(crop)
                 crop = self.transform(image=crop)['image']
                 crops_list.append(crop)
             
             num_crops = len(self.all_positions)
             if self.augment:
-                perm = list(range(num_crops))
-                random.shuffle(perm)
-                crops_list = [crops_list[i] for i in perm]
+                # Only shuffle if we have more than 9 crops (old raster mode)
+                if num_crops > self.raster_num_crops:
+                    perm = list(range(num_crops))
+                    random.shuffle(perm)
+                    crops_list = [crops_list[i] for i in perm]
             
             crops = torch.stack(crops_list)
         else:
