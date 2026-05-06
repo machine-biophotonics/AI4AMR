@@ -67,10 +67,12 @@ class MILEncoder(nn.Module):
         projection_dim: int = 256,
         num_channels: int = 3,
         pretrained: str = "imagenet",
-        backbone: str = "efficientnet_b0"
+        backbone: str = "efficientnet_b0",
+        pooling: str = "attention"
     ) -> None:
         super().__init__()
         self.backbone_type = backbone
+        self.pooling = pooling
         
         # Select backbone
         if backbone == "mobilenet_v3_small":
@@ -181,8 +183,19 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
-        pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
-        pooled = pooled.reshape(batch_size, -1)
+        # Apply pooling based on self.pooling
+        if self.pooling == 'mean':
+            # Mean pooling
+            pooled = crop_embeddings.mean(dim=1)
+            attn_weights = None
+        elif self.pooling == 'max':
+            # Max pooling
+            pooled, _ = crop_embeddings.max(dim=1)
+            attn_weights = None
+        else:  # attention (default)
+            pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+        
         pooled = self.head_proj(pooled)
         
         if return_embedding and self.use_contrastive:
@@ -278,9 +291,10 @@ class MILEncoder(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.5, num_channels=1, pretrained="imagenet", backbone="efficientnet_b0"):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.5, num_channels=1, pretrained="imagenet", backbone="efficientnet_b0", pooling="attention"):
         super().__init__()
         self.backbone_type = backbone
+        self.pooling = pooling
         
         # Select backbone
         if backbone == "mobilenet_v3_small":
@@ -372,9 +386,19 @@ class AttentionMILModel(nn.Module):
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
         
-        pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+        # Apply pooling based on self.pooling
+        if self.pooling == 'mean':
+            # Mean pooling
+            pooled = x.mean(dim=1)
+            attn_weights = None
+        elif self.pooling == 'max':
+            # Max pooling
+            pooled, _ = x.max(dim=1)
+            attn_weights = None
+        else:  # attention (default)
+            pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
         
-        pooled = pooled.reshape(batch_size, -1)
         pooled = self.head_proj(pooled)
         
         output = self.classifier(pooled)

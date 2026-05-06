@@ -89,6 +89,8 @@ parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate for classifier (default 0.5 for stronger regularization)')
 parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
+parser.add_argument('--pooling', type=str, default='attention', choices=['attention', 'mean', 'max'],
+                    help='MIL pooling method: attention (gated attention), mean (average pooling), max (max pooling)')
 parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--entropy_loss_weight', type=float, default=0.01,
@@ -416,13 +418,15 @@ def train_single_fold(test_plate: str) -> None:
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
         print(f"Backbone: {args.backbone}")
+        print(f"Pooling: {args.pooling}")
         print(f"Classifier: single FC layer with dropout={args.dropout}")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone)
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
     else:
         print(f"Using AttentionMILModel...")
         print(f"Backbone: {args.backbone}")
+        print(f"Pooling: {args.pooling}")
         print(f"Classifier: single FC layer with dropout={args.dropout}")
-        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone)
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
