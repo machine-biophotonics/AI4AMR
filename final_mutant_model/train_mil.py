@@ -81,8 +81,8 @@ parser.add_argument('--raster_crop_size', type=int, default=500,
                     help='Crop size for raster mode extraction (default 500)')
 parser.add_argument('--raster_resize_size', type=int, default=256,
                     help='Resize raster crops to this size for model input (default 256)')
-parser.add_argument('--raster_num_crops', type=int, default=9,
-                    help='Number of crops to extract in raster mode (default 9, 3x3 grid)')
+parser.add_argument('--raster_num_crops', type=int, default=25,
+                    help='Number of crops to extract in raster mode (default 25, 5x5 grid)')
 parser.add_argument('--raster_grid_size', type=int, default=2500,
                     help='Grid size for raster mode - centered on image (default 2500)')
 parser.add_argument('--dropout', type=float, default=0.5,

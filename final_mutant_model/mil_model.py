@@ -407,7 +407,7 @@ class MultiCropDataset(Dataset):
         extraction_mode: str = 'neighborhood',
         raster_crop_size: int = 500,
         raster_resize_size: int = 256,
-        raster_num_crops: int = 9,
+        raster_num_crops: int = 25,
         raster_grid_size: int = 2500
     ) -> None:
         self.image_paths = image_paths
