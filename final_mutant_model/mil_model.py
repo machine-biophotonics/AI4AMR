@@ -183,20 +183,29 @@ class MILEncoder(nn.Module):
         x = self.backbone(x)
         crop_embeddings = x.view(batch_size, num_crops, -1)
         
-        # Apply pooling based on self.pooling
+# Apply pooling based on self.pooling
         if self.pooling == 'mean':
             # Mean pooling
             pooled = crop_embeddings.mean(dim=1)
             attn_weights = None
+            pooled = self.classifier_dropout(pooled)
+            pooled = self.classifier(pooled)
+            if return_attention:
+                return pooled, attn_weights
+            return pooled
         elif self.pooling == 'max':
             # Max pooling
             pooled, _ = crop_embeddings.max(dim=1)
             attn_weights = None
+            pooled = self.classifier_dropout(pooled)
+            pooled = self.classifier(pooled)
+            if return_attention:
+                return pooled, attn_weights
+            return pooled
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
             pooled = pooled.reshape(batch_size, -1)
-        
-        pooled = self.head_proj(pooled)
+            pooled = self.head_proj(pooled)
         
         if return_embedding and self.use_contrastive:
             embedding = self.contrastive_head.get_embedding(pooled)
@@ -215,7 +224,6 @@ class MILEncoder(nn.Module):
             results.append(pooled)
         if return_instance_logits:
             # Instance-level predictions: apply simple classifier to each crop
-            # Reshape: [B, num_crops, 1280] -> [B*num_crops, 1280] -> [B*num_crops, num_classes]
             batch_size, num_crops = crop_embeddings.shape[:2]
             crop_features = crop_embeddings.view(-1, self.feature_dim)
             instance_logits = self.instance_classifier(crop_features)
@@ -391,21 +399,28 @@ class AttentionMILModel(nn.Module):
             # Mean pooling
             pooled = x.mean(dim=1)
             attn_weights = None
+            pooled = self.classifier_dropout(pooled)
+            output = self.classifier(pooled)
+            if return_attention:
+                return output, attn_weights
+            return output
         elif self.pooling == 'max':
             # Max pooling
             pooled, _ = x.max(dim=1)
             attn_weights = None
+            pooled = self.classifier_dropout(pooled)
+            output = self.classifier(pooled)
+            if return_attention:
+                return output, attn_weights
+            return output
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
             pooled = pooled.reshape(batch_size, -1)
-        
-        pooled = self.head_proj(pooled)
-        
-        output = self.classifier(pooled)
-        
-        if return_attention:
-            return output, attn_weights
-        return output
+            pooled = self.head_proj(pooled)
+            output = self.classifier(pooled)
+            if return_attention:
+                return output, attn_weights
+            return output
 
 
 class MultiCropDataset(Dataset):
