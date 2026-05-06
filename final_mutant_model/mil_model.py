@@ -407,7 +407,8 @@ class MultiCropDataset(Dataset):
         extraction_mode: str = 'neighborhood',
         raster_crop_size: int = 500,
         raster_resize_size: int = 256,
-        raster_num_crops: int = 9
+        raster_num_crops: int = 9,
+        raster_grid_size: int = 1500
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
@@ -423,6 +424,7 @@ class MultiCropDataset(Dataset):
         self.raster_crop_size = raster_crop_size
         self.raster_resize_size = raster_resize_size
         self.raster_num_crops = raster_num_crops
+        self.raster_grid_size = raster_grid_size
         
         sample_img = Image.open(image_paths[0])
         # Convert to grayscale ('L') for 1-channel, or RGB for 3-channel
@@ -437,41 +439,37 @@ class MultiCropDataset(Dataset):
         self.stride = stride
         
         if extraction_mode == 'raster':
-            # New raster mode: 3x3 grid of positions, each sampling a 500x500 crop (then resized to 256)
+            # New raster mode: centered 1500x1500 grid with 3x3 crops of 500x500 resized to 256
             num_crops_side = int(np.sqrt(raster_num_crops))  # 3 for 9 crops
             positions = []
             
-            # Calculate evenly spaced positions for the 3x3 grid
-            if num_crops_side > 1:
-                # Calculate spacing to evenly distribute crops across image
-                spacing_x = w / num_crops_side
-                spacing_y = h / num_crops_side
-                
-                for i in range(num_crops_side):
-                    for j in range(num_crops_side):
-                        # Center of each crop position
-                        center_x = (j + 0.5) * spacing_x
-                        center_y = (i + 0.5) * spacing_y
-                        
-                        # Top-left corner of 500x500 crop
-                        left = int(center_x - raster_crop_size / 2)
-                        top = int(center_y - raster_crop_size / 2)
-                        
-                        # Ensure within bounds
-                        left = max(0, min(left, w - raster_crop_size))
-                        top = max(0, min(top, h - raster_crop_size))
-                        
-                        positions.append((left, top))
-            else:
-                # Single crop - center it
-                left = (w - raster_crop_size) // 2
-                top = (h - raster_crop_size) // 2
-                positions.append((left, top))
+            # Calculate the centered grid region on the image
+            grid_left = (w - raster_grid_size) // 2
+            grid_top = (h - raster_grid_size) // 2
+            
+            # Calculate spacing within the grid
+            spacing = raster_grid_size / num_crops_side  # 1500/3 = 500
+            
+            for i in range(num_crops_side):
+                for j in range(num_crops_side):
+                    # Center of each crop position within the grid
+                    center_x = grid_left + (j + 0.5) * spacing
+                    center_y = grid_top + (i + 0.5) * spacing
+                    
+                    # Top-left corner of 500x500 crop
+                    left = int(center_x - raster_crop_size / 2)
+                    top = int(center_y - raster_crop_size / 2)
+                    
+                    # Ensure within bounds
+                    left = max(0, min(left, w - raster_crop_size))
+                    top = max(0, min(top, h - raster_crop_size))
+                    
+                    positions.append((left, top))
             
             self.all_positions = positions
             self.positions = positions
             self.num_neighbors = len(positions) - 1
-            print(f"MIL (raster): {len(positions)} crops ({num_crops_side}x{num_crops_side} grid), crop_size={raster_crop_size}, resize={raster_resize_size}")
+            print(f"MIL (raster): {len(positions)} crops ({num_crops_side}x{num_crops_side} grid), grid={raster_grid_size}, crop_size={raster_crop_size}, resize={raster_resize_size}")
         else:
             half_n = neighborhood // 2
             positions = []
