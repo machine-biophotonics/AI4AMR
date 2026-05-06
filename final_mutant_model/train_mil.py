@@ -111,6 +111,8 @@ parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorc
                     help='Framework: pytorch (default) or tensorflow/keras')
 parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
+parser.add_argument('--drug_no_concentration', action='store_true', default=False,
+                    help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
 args = parser.parse_args()
 
 if args.warmup_epochs is None:
@@ -157,12 +159,17 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
                 antibiotic = info.get('antibiotic', '')
                 ic50_multiple = info.get('ic50_multiple', '')
                 if antibiotic and ic50_multiple:
-                    if ic50_multiple == 'control':
-                        drug_class = 'control'
+                    if args.drug_no_concentration:
+                        # Group by antibiotic name only (ignore concentration)
+                        drug_class = antibiotic.replace(' ', '_')
                     else:
-                        ic50_str = ic50_multiple if 'x' in ic50_multiple else f"{ic50_multiple}x"
-                        antibiotic_clean = antibiotic.replace(' ', '_')
-                        drug_class = f"{antibiotic_clean}_{ic50_str}"
+                        # Include concentration in class name
+                        if ic50_multiple == 'control':
+                            drug_class = 'control'
+                        else:
+                            ic50_str = ic50_multiple if 'x' in ic50_multiple else f"{ic50_multiple}x"
+                            antibiotic_clean = antibiotic.replace(' ', '_')
+                            drug_class = f"{antibiotic_clean}_{ic50_str}"
                     plate_maps[plate][well] = drug_class
     
     if args.data_mode in ['mutant', 'both']:

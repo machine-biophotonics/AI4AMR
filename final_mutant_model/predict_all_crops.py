@@ -30,6 +30,8 @@ def main() -> None:
                         help='Fold to predict (e.g., P6). If not specified, uses P6.')
     parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                         help='Data mode: drug (Drugs_Data), mutant (Mutants_Data), both')
+    parser.add_argument('--drug_no_concentration', action='store_true', default=False,
+                        help='Group drugs by antibiotic name only, ignoring concentration levels')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--extraction_mode', type=str, default='neighborhood', choices=['neighborhood', 'raster'],
@@ -114,12 +116,17 @@ def main() -> None:
                 antibiotic = info.get('antibiotic', '')
                 ic50_multiple = info.get('ic50_multiple', '')
                 if antibiotic and ic50_multiple:
-                    if ic50_multiple == 'control':
-                        drug_classes.add('control')
+                    if args.drug_no_concentration:
+                        # Group by antibiotic name only (ignore concentration)
+                        drug_classes.add(antibiotic.replace(' ', '_'))
                     else:
-                        ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
-                        antibiotic_clean = antibiotic.replace(' ', '_')
-                        drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
+                        # Include concentration in class name
+                        if ic50_multiple == 'control':
+                            drug_classes.add('control')
+                        else:
+                            ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                            antibiotic_clean = antibiotic.replace(' ', '_')
+                            drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
         all_classes = sorted(drug_classes)
     elif args.data_mode == 'mutant':
         mutant_classes: set = set()
@@ -136,12 +143,17 @@ def main() -> None:
                 antibiotic = info.get('antibiotic', '')
                 ic50_multiple = info.get('ic50_multiple', '')
                 if antibiotic and ic50_multiple:
-                    if ic50_multiple == 'control':
-                        drug_classes.add('control')
+                    if args.drug_no_concentration:
+                        # Group by antibiotic name only (ignore concentration)
+                        drug_classes.add(antibiotic.replace(' ', '_'))
                     else:
-                        ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
-                        antibiotic_clean = antibiotic.replace(' ', '_')
-                        drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
+                        # Include concentration in class name
+                        if ic50_multiple == 'control':
+                            drug_classes.add('control')
+                        else:
+                            ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                            antibiotic_clean = antibiotic.replace(' ', '_')
+                            drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
         mutant_classes: set = set()
         for plate, rows in MUTANT_DATA.items():
             for row, cols in rows.items():
@@ -425,11 +437,16 @@ def main() -> None:
                 antibiotic = info.get('antibiotic', '')
                 ic50_multiple = info.get('ic50_multiple', '')
                 if antibiotic and ic50_multiple:
-                    if ic50_multiple == 'control':
-                        return 'control'
-                    ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
-                    antibiotic_clean = antibiotic.replace(' ', '_')
-                    return f"{antibiotic_clean}_{ic50_str}"
+                    if args.drug_no_concentration:
+                        # Group by antibiotic name only (ignore concentration)
+                        return antibiotic.replace(' ', '_')
+                    else:
+                        # Include concentration in class name
+                        if ic50_multiple == 'control':
+                            return 'control'
+                        ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                        antibiotic_clean = antibiotic.replace(' ', '_')
+                        return f"{antibiotic_clean}_{ic50_str}"
         
         return None
 
