@@ -105,6 +105,8 @@ parser.add_argument('--checkpoint_every', type=int, default=1,
                     help='Save checkpoint every N epochs (default: 1)')
 parser.add_argument('--num_channels', type=int, default=1,
                     help='Number of input channels (1 for grayscale, 3 for RGB)')
+parser.add_argument('--backbone', type=str, default='efficientnet_b0', choices=['efficientnet_b0', 'mobilenet_v3_small'],
+                    help='Backbone architecture: efficientnet_b0 (default) or mobilenet_v3_small')
 parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'], 
                     help='Pretrained weights: imagenet (default) or micronet (NASA microscopy pretrained)')
 parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorch', 'tensorflow'],
@@ -405,12 +407,14 @@ def train_single_fold(test_plate: str) -> None:
     # Model selection based on flags
     if args.use_sc_mil:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
+        print(f"Backbone: {args.backbone}")
         print(f"Classifier: single FC layer with dropout={args.dropout}")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained)
+        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone)
     else:
         print(f"Using AttentionMILModel...")
+        print(f"Backbone: {args.backbone}")
         print(f"Classifier: single FC layer with dropout={args.dropout}")
-        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained)
+        model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone)
     model = model.to(device)
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]

@@ -66,23 +66,47 @@ class MILEncoder(nn.Module):
         use_contrastive: bool = False,
         projection_dim: int = 256,
         num_channels: int = 3,
-        pretrained: str = "imagenet"
+        pretrained: str = "imagenet",
+        backbone: str = "efficientnet_b0"
     ) -> None:
         super().__init__()
-        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
-        self.backbone = nn.Sequential(
-            base_model.features,
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
+        self.backbone_type = backbone
+        
+        # Select backbone
+        if backbone == "mobilenet_v3_small":
+            base_model = torchvision.models.mobilenet_v3_small(weights='IMAGENET1K_V1')
+            # MobileNetV3 Small output features: 576
+            self.feature_dim = 576
+            self.backbone = nn.Sequential(
+                base_model.features,
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten()
+            )
+        else:  # efficientnet_b0 (default)
+            base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+            # EfficientNet-B0 output features: 1280
+            self.feature_dim = 1280
+            self.backbone = nn.Sequential(
+                base_model.features,
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten()
+            )
         # Modify first conv layer for num_channels with proper weight transfer
         if num_channels == 1 and pretrained == 'imagenet':
-            # Transfer ImageNet RGB weights to single channel (sum over channels)
-            original_conv = base_model.features[0][0]
-            original_weights = original_conv.weight.data  # [32, 3, 3, 3]
-            new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
-            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
-            self.backbone[0][0].weight.data = new_weights
+            if backbone == "mobilenet_v3_small":
+                # MobileNetV3 Small first conv: Conv2d(3, 16, kernel_size=3, stride=2, padding=1)
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data  # [16, 3, 3, 3]
+                new_weights = original_weights.sum(dim=1, keepdim=True)  # [16, 1, 3, 3]
+                self.backbone[0][0] = nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
+            else:  # efficientnet_b0
+                # Transfer ImageNet RGB weights to single channel (sum over channels)
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data  # [32, 3, 3, 3]
+                new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
+                self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
         elif num_channels == 1 and pretrained == 'micronet':
             # Load NASA MicroNet pretrained weights (ImageNet -> MicroNet)
             print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet)...")
@@ -238,23 +262,42 @@ class MILEncoder(nn.Module):
 
 
 class AttentionMILModel(nn.Module):
-    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.5, num_channels=1, pretrained="imagenet"):
+    def __init__(self, num_classes, num_heads=4, attention_temp=0.5, dropout=0.5, num_channels=1, pretrained="imagenet", backbone="efficientnet_b0"):
         super().__init__()
-        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
-        self.backbone = nn.Sequential(
-            base_model.features,
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
-        )
+        self.backbone_type = backbone
+        
+        # Select backbone
+        if backbone == "mobilenet_v3_small":
+            base_model = torchvision.models.mobilenet_v3_small(weights='IMAGENET1K_V1')
+            self.feature_dim = 576
+            self.backbone = nn.Sequential(
+                base_model.features,
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten()
+            )
+        else:  # efficientnet_b0
+            base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+            self.feature_dim = 1280
+            self.backbone = nn.Sequential(
+                base_model.features,
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten()
+            )
         
         # Modify first conv layer for num_channels with proper weight transfer
         if num_channels == 1 and pretrained == 'imagenet':
-            # Transfer ImageNet RGB weights to single channel (sum over channels)
-            original_conv = base_model.features[0][0]
-            original_weights = original_conv.weight.data  # [32, 3, 3, 3]
-            new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
-            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
-            self.backbone[0][0].weight.data = new_weights
+            if backbone == "mobilenet_v3_small":
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data  # [16, 3, 3, 3]
+                new_weights = original_weights.sum(dim=1, keepdim=True)  # [16, 1, 3, 3]
+                self.backbone[0][0] = nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
+            else:  # efficientnet_b0
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data  # [32, 3, 3, 3]
+                new_weights = original_weights.sum(dim=1, keepdim=True)  # [32, 1, 3, 3]
+                self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
         elif num_channels == 1 and pretrained == 'micronet':
             # Load NASA MicroNet pretrained weights (ImageNet -> MicroNet)
             print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet) for AttentionMILModel...")
