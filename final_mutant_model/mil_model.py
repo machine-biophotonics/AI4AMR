@@ -408,7 +408,7 @@ class MultiCropDataset(Dataset):
         raster_crop_size: int = 500,
         raster_resize_size: int = 256,
         raster_num_crops: int = 9,
-        raster_grid_size: int = 1500
+        raster_grid_size: int = 2500
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
