@@ -764,6 +764,7 @@ def extract_well_from_filename(filename: str) -> str | None:
 def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     """Extract gene/mutant label from image path using plate_maps.
     Handles both mutant mode (data/Plate_X) and drug mode (Drugs_Data/PX).
+    Uses composite keys (drug_A01 or mutant_A01) for both data mode.
     """
     path_lower = img_path.lower()
     
@@ -783,5 +784,19 @@ def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     
     filename = os.path.basename(img_path)
     well = extract_well_from_filename(filename)
-    if well and plate_key in plate_maps and well in plate_maps[plate_key]:
-        return plate_maps[plate_key][well]
+    if not well:
+        return None
+    
+    # Determine if this is drug or mutant data based on path
+    if '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
+        source_prefix = 'mutant_'
+    else:
+        # Default to drug (for drug mode or fallback)
+        source_prefix = 'drug_'
+    
+    # Use composite key: drug_A01 or mutant_A01
+    composite_well = f"{source_prefix}{well}"
+    if composite_well and plate_key in plate_maps and composite_well in plate_maps[plate_key]:
+        return plate_maps[plate_key][composite_well]
+    
+    return None

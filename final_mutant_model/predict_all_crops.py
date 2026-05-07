@@ -573,7 +573,7 @@ def main() -> None:
             
             with torch.no_grad():
                 outputs = model(batch_tensors, return_attention=True)
-                if pooling == 'attention':
+                if pooling in ['attention', 'simple_attention']:
                     logits, attn_weights = outputs
                     pooled_attn_np = attn_weights[0].cpu().numpy().tolist() if attn_weights is not None else []
                 else:
@@ -615,7 +615,7 @@ def main() -> None:
                 
                 with torch.no_grad():
                     outputs = model(batch_tensors, return_attention=True)
-                    if pooling == 'attention':
+                    if pooling in ['attention', 'simple_attention']:
                         logits, attn_weights = outputs
                         pooled_attn_np = attn_weights[0].cpu().numpy().tolist() if attn_weights is not None else []
                     else:
@@ -659,7 +659,7 @@ def main() -> None:
                 
                 with torch.no_grad():
                     outputs = model(batch_tensors, return_attention=True)
-                    if pooling == 'attention':
+                    if pooling in ['attention', 'simple_attention']:
                         logits, attn_weights = outputs
                     else:
                         logits = outputs[0] if isinstance(outputs, tuple) else outputs
