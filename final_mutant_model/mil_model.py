@@ -145,9 +145,19 @@ class MILEncoder(nn.Module):
                 self.backbone[0][0].weight.data = new_weights
         elif num_channels == 1 and pretrained == 'micronet':
             # Load NASA MicroNet pretrained weights (ImageNet -> MicroNet)
-            print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet)...")
-            url = pmm.util.get_pretrained_microscopynet_url('efficientnet-b0', 'image-micronet')
-            state_dict = model_zoo.load_url(url)
+            # Micronet only available for efficientnet_b0, use ImageNet for other backbones
+            if backbone != 'efficientnet_b0':
+                print(f"WARNING: Micronet pretrained weights only available for efficientnet_b0, falling back to ImageNet for {backbone}")
+                pretrained = 'imagenet'
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data
+                new_weights = original_weights.sum(dim=1, keepdim=True)
+                self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
+            else:
+                print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet)...")
+                url = pmm.util.get_pretrained_microscopynet_url('efficientnet-b0', 'image-micronet')
+                state_dict = model_zoo.load_url(url)
             # Remove module. prefix if present and features. prefix
             new_state_dict = {}
             for k, v in state_dict.items():
@@ -218,7 +228,6 @@ class MILEncoder(nn.Module):
                 results.append(pooled_feat)
             if return_instance_logits:
                 batch_size, num_crops = crop_embeddings.shape[:2]
-                crop_features = crop_embeddings.view(-1, self.feature_dim)
                 instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
@@ -237,7 +246,6 @@ class MILEncoder(nn.Module):
                 results.append(pooled_feat)
             if return_instance_logits:
                 batch_size, num_crops = crop_embeddings.shape[:2]
-                crop_features = crop_embeddings.view(-1, self.feature_dim)
                 instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
@@ -265,7 +273,6 @@ class MILEncoder(nn.Module):
         if return_instance_logits:
             # Instance-level predictions: apply simple classifier to each crop
             batch_size, num_crops = crop_embeddings.shape[:2]
-            crop_features = crop_embeddings.view(-1, self.feature_dim)
             instance_logits = self.classifier(crop_embeddings)
             instance_logits = instance_logits.view(batch_size, num_crops, -1)
             results.append(instance_logits)
@@ -393,9 +400,19 @@ class AttentionMILModel(nn.Module):
                 self.backbone[0][0].weight.data = new_weights
         elif num_channels == 1 and pretrained == 'micronet':
             # Load NASA MicroNet pretrained weights (ImageNet -> MicroNet)
-            print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet) for AttentionMILModel...")
-            url = pmm.util.get_pretrained_microscopynet_url('efficientnet-b0', 'image-micronet')
-            state_dict = model_zoo.load_url(url)
+            # Micronet only available for efficientnet_b0, use ImageNet for other backbones
+            if backbone != 'efficientnet_b0':
+                print(f"WARNING: Micronet pretrained weights only available for efficientnet_b0, falling back to ImageNet for {backbone}")
+                pretrained = 'imagenet'
+                original_conv = base_model.features[0][0]
+                original_weights = original_conv.weight.data
+                new_weights = original_weights.sum(dim=1, keepdim=True)
+                self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+                self.backbone[0][0].weight.data = new_weights
+            else:
+                print("Loading NASA MicroNet pretrained weights (ImageNet -> MicroNet) for AttentionMILModel...")
+                url = pmm.util.get_pretrained_microscopynet_url('efficientnet-b0', 'image-micronet')
+                state_dict = model_zoo.load_url(url)
             # Remove module. prefix if present and features. prefix
             new_state_dict = {}
             for k, v in state_dict.items():
