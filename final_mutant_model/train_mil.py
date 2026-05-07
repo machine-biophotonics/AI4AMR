@@ -65,6 +65,8 @@ print(f"Device: {device}")
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=32)
+parser.add_argument('--prefetch_factor', type=int, default=32,
+                    help='Number of batches to prefetch per worker (default: same as batch_size)')
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
@@ -448,13 +450,13 @@ def train_single_fold(test_plate: str) -> None:
         print(f"Using {effective_workers} workers")
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, 
-                              persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2, drop_last=True,
+                              persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True,
                               worker_init_fn=partial(worker_init_fn, seed=SEED))
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True,
-                            persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2,
+                            persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor,
                             worker_init_fn=partial(worker_init_fn, seed=SEED))
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True,
-                             persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2,
+                             persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor,
                              worker_init_fn=partial(worker_init_fn, seed=SEED))
     
     if args.extraction_mode == 'raster':
@@ -528,9 +530,9 @@ def train_single_fold(test_plate: str) -> None:
         
         # Higher batch size for contrastive (more negatives = better learning)
         crop_loader_v1 = DataLoader(crop_dataset_v1, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=4, pin_memory=True, 
-                                    persistent_workers=True, prefetch_factor=2, drop_last=True)
+                                    persistent_workers=True, prefetch_factor=args.prefetch_factor, drop_last=True)
         crop_loader_v2 = DataLoader(crop_dataset_v2, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=4, pin_memory=True, 
-                                    persistent_workers=True, prefetch_factor=2, drop_last=True)
+                                    persistent_workers=True, prefetch_factor=args.prefetch_factor, drop_last=True)
         
         # Train encoder + projection head
         contrastive_params = [p for n, p in model.named_parameters() if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n]
@@ -612,7 +614,7 @@ def train_single_fold(test_plate: str) -> None:
         
         # Recreate data loaders with smaller batch size
         train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True,
-                                   persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2, drop_last=True)
+                                   persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True)
         
         # Train encoder + attention + classifier jointly
         sc_mil_params = [p for n, p in model.named_parameters()]
