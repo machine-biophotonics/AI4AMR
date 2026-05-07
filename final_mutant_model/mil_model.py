@@ -29,7 +29,7 @@ class AttentionPooling(nn.Module):
         self.U = nn.Linear(in_features, self.hidden_dim)
         self.w = nn.Linear(self.hidden_dim, num_heads)
     
-    def forward(self, x: torch.Tensor, temperature: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, temperature: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
         attn_weights = self.w(A)
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
@@ -47,7 +47,7 @@ class SimpleAttentionPooling(nn.Module):
         self.V = nn.Linear(in_features, self.hidden_dim)
         self.w = nn.Linear(self.hidden_dim, num_heads)
     
-    def forward(self, x: torch.Tensor, temperature: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, temperature: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
         A = torch.tanh(self.V(x))
         attn_weights = self.w(A)
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
@@ -187,9 +187,6 @@ class MILEncoder(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
-        
-        # Same simple classifier for instance-level predictions (no dropout - contrastive learning provides regularization)
-        self.instance_classifier = nn.Linear(self.feature_dim, num_classes)
     
     def forward(
         self,
@@ -222,7 +219,7 @@ class MILEncoder(nn.Module):
             if return_instance_logits:
                 batch_size, num_crops = crop_embeddings.shape[:2]
                 crop_features = crop_embeddings.view(-1, self.feature_dim)
-                instance_logits = self.instance_classifier(crop_features)
+                instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
             return results[0] if len(results) == 1 else tuple(results)
@@ -241,7 +238,7 @@ class MILEncoder(nn.Module):
             if return_instance_logits:
                 batch_size, num_crops = crop_embeddings.shape[:2]
                 crop_features = crop_embeddings.view(-1, self.feature_dim)
-                instance_logits = self.instance_classifier(crop_features)
+                instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
             return results[0] if len(results) == 1 else tuple(results)
@@ -269,7 +266,7 @@ class MILEncoder(nn.Module):
             # Instance-level predictions: apply simple classifier to each crop
             batch_size, num_crops = crop_embeddings.shape[:2]
             crop_features = crop_embeddings.view(-1, self.feature_dim)
-            instance_logits = self.instance_classifier(crop_features)
+            instance_logits = self.classifier(crop_embeddings)
             instance_logits = instance_logits.view(batch_size, num_crops, -1)
             results.append(instance_logits)
         
