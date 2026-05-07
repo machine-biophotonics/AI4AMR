@@ -50,11 +50,9 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
-
-# Speed optimization: enable cuDNN benchmark for faster training
-# Set deterministic=False for maximum speed (reproducibility can be enabled with --deterministic flag)
-torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)
 
 # Disable inductor max_autotune_gemm at runtime to avoid SM warning on small GPUs
 import torch._inductor.config as inductor_config
@@ -67,10 +65,6 @@ print(f"Device: {device}")
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
 parser.add_argument('--batch_size', type=int, default=32)
-parser.add_argument('--torch_compile', action='store_true', default=True,
-                    help='Use torch.compile for faster training (PyTorch 2.0+, default: True)')
-parser.add_argument('--prefetch_factor', type=int, default=4,
-                    help='Number of batches to prefetch per worker (default: 4)')
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
@@ -454,13 +448,13 @@ def train_single_fold(test_plate: str) -> None:
         print(f"Using {effective_workers} workers")
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True, 
-                              persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True,
+                              persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2, drop_last=True,
                               worker_init_fn=partial(worker_init_fn, seed=SEED))
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True,
-                            persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor,
+                            persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2,
                             worker_init_fn=partial(worker_init_fn, seed=SEED))
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=effective_workers, pin_memory=True,
-                             persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor,
+                             persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2,
                              worker_init_fn=partial(worker_init_fn, seed=SEED))
     
     if args.extraction_mode == 'raster':
@@ -483,13 +477,6 @@ def train_single_fold(test_plate: str) -> None:
         print(f"Classifier: single FC layer with dropout={args.dropout}")
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
     model = model.to(device)
-    
-    # Apply torch.compile for faster training (PyTorch 2.0+)
-    if args.torch_compile and hasattr(torch, 'compile'):
-        print("Using torch.compile for faster training...")
-        model = torch.compile(model, mode='reduce-overhead')
-    elif args.torch_compile:
-        print("WARNING: torch.compile not available (requires PyTorch 2.0+)")
     
     backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
     attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
@@ -541,9 +528,9 @@ def train_single_fold(test_plate: str) -> None:
         
         # Higher batch size for contrastive (more negatives = better learning)
         crop_loader_v1 = DataLoader(crop_dataset_v1, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=4, pin_memory=True, 
-                                    persistent_workers=True, prefetch_factor=args.prefetch_factor, drop_last=True)
+                                    persistent_workers=True, prefetch_factor=2, drop_last=True)
         crop_loader_v2 = DataLoader(crop_dataset_v2, batch_size=args.contrastive_batch_size, shuffle=True, num_workers=4, pin_memory=True, 
-                                    persistent_workers=True, prefetch_factor=args.prefetch_factor, drop_last=True)
+                                    persistent_workers=True, prefetch_factor=2, drop_last=True)
         
         # Train encoder + projection head
         contrastive_params = [p for n, p in model.named_parameters() if 'contrastive_head' in n or 'head_proj' in n or 'backbone' in n]
@@ -625,7 +612,7 @@ def train_single_fold(test_plate: str) -> None:
         
         # Recreate data loaders with smaller batch size
         train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True,
-                                   persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True)
+                                   persistent_workers=True if effective_workers > 0 else False, prefetch_factor=2, drop_last=True)
         
         # Train encoder + attention + classifier jointly
         sc_mil_params = [p for n, p in model.named_parameters()]
