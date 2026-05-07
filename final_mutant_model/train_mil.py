@@ -733,7 +733,6 @@ def train_single_fold(test_plate: str) -> None:
             
             val_acc = 100. * val_correct / val_total
             unique_val_classes = np.unique(np.array(all_val_labels))
-            print(f"  DEBUG: Val samples={len(all_val_labels)}, unique classes={len(unique_val_classes)}")
             val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
@@ -834,7 +833,6 @@ def train_single_fold(test_plate: str) -> None:
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
         unique_val_classes = np.unique(np.array(all_labels))
-        print(f"  DEBUG: Val samples={len(all_labels)}, unique classes={len(unique_val_classes)}")
         val_auc = compute_robust_auc(all_labels, all_probs, num_classes)
         avg_val_loss = val_loss_total / len(val_loader)
         
