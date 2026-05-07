@@ -69,6 +69,16 @@ def main() -> None:
                         help='Filter predictions by class name pattern (e.g., _2x, control)')
     parser.add_argument('--dry_run', action='store_true', default=False,
                         help='Dry run - do not save any results')
+    parser.add_argument('--pooling', type=str, default='attention', choices=['attention', 'simple_attention', 'mean', 'max'],
+                        help='Pooling method: attention (gated), simple_attention (no gating), mean, or max')
+    parser.add_argument('--raster_crop_size', type=int, default=500,
+                        help='Crop size for raster mode extraction (default: 500)')
+    parser.add_argument('--raster_resize_size', type=int, default=256,
+                        help='Resize raster crops to this size for model input (default: 256)')
+    parser.add_argument('--raster_num_crops', type=int, default=25,
+                        help='Number of crops to extract in raster mode (default: 25, 5x5 grid)')
+    parser.add_argument('--raster_grid_size', type=int, default=2500,
+                        help='Grid size for raster mode - centered on image (default: 2500)')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -103,14 +113,19 @@ def main() -> None:
     neighborhood: int = args.crop_neighborhood
     extraction_mode: str = args.extraction_mode
     mil_mode: bool = args.mil_mode
+    pooling: str = args.pooling
+    
+    raster_crop_size: int = args.raster_crop_size
+    raster_resize_size: int = args.raster_resize_size
+    raster_num_crops: int = args.raster_num_crops
+    raster_grid_size: int = args.raster_grid_size
     
     num_crops_per_position: int = neighborhood * neighborhood
     
     if extraction_mode == 'raster':
-        total_crops = grid_size * grid_size
-        print(f"Config: RASTER - {total_crops} crops ({grid_size}x{grid_size} grid), extraction_mode={extraction_mode}")
+        print(f"Config: RASTER - {raster_num_crops} crops ({int(np.sqrt(raster_num_crops))}x{int(np.sqrt(raster_num_crops))} grid), crop_size={raster_crop_size}, resize={raster_resize_size}, grid={raster_grid_size}, pooling={pooling}")
     else:
-        print(f"Config: NEIGHBORHOOD - {num_crops_per_position} crops/position ({neighborhood}x{neighborhood}), extraction_mode={extraction_mode}")
+        print(f"Config: NEIGHBORHOOD - {num_crops_per_position} crops/position ({neighborhood}x{neighborhood}), extraction_mode={extraction_mode}, pooling={pooling}")
     
     # Build classes based on data_mode (same logic as training)
     all_classes: list[str] = []
@@ -259,7 +274,8 @@ def main() -> None:
         dropout=args.dropout,
         use_contrastive=use_sc_mil,
         num_channels=args.num_channels,
-        pretrained=args.pretrained
+        pretrained=args.pretrained,
+        pooling=args.pooling
     )
     model = model.to(device)
     
@@ -309,6 +325,86 @@ def main() -> None:
                 crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
             
             # Normalize using ImageNet stats
+            if args.num_channels == 1:
+                mean: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
+                std: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
+            else:
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+            
+            crop_np = crop_np.astype(np.float32) / 255.0
+            crop_np = (crop_np - mean) / std
+            crop_tensor: torch.Tensor = torch.from_numpy(crop_np).float()
+            
+            crops.append((crop_tensor, row, col, idx))
+        
+        return crops
+
+    def extract_raster_crops(img_path: str, raster_crop_size: int, raster_resize_size: int, raster_num_crops: int, raster_grid_size: int) -> list[tuple[torch.Tensor, int, int, int]]:
+        """Extract raster crops matching training configuration.
+        
+        Args:
+            img_path: Path to image
+            raster_crop_size: Size of each crop (e.g., 500)
+            raster_resize_size: Resize crop to this size (e.g., 256)
+            raster_num_crops: Total number of crops (e.g., 25 for 5x5)
+            raster_grid_size: Grid size for positioning (e.g., 2500)
+        
+        Returns:
+            List of (crop_tensor, row, col, idx)
+        """
+        img: Image.Image = _load_image(img_path)
+        
+        if args.num_channels == 1:
+            img_np: np.ndarray = np.array(img)
+            if len(img_np.shape) == 2:
+                img_np = img_np[np.newaxis, ...]
+            else:
+                img_np = np.transpose(img_np, (2, 0, 1))
+        else:
+            img_np = np.array(img)
+            img_np = np.transpose(img_np, (2, 0, 1))
+        
+        w: int = img_np.shape[2] if len(img_np.shape) == 3 else img_np.shape[1]
+        h: int = img_np.shape[1]
+        
+        num_crops_side = int(np.sqrt(raster_num_crops))
+        
+        grid_left = (w - raster_grid_size) // 2
+        grid_top = (h - raster_grid_size) // 2
+        spacing = raster_grid_size / num_crops_side
+        
+        positions: list[tuple[int, int]] = []
+        for i in range(num_crops_side):
+            for j in range(num_crops_side):
+                center_x = grid_left + (j + 0.5) * spacing
+                center_y = grid_top + (i + 0.5) * spacing
+                left = int(center_x - raster_crop_size / 2)
+                top = int(center_y - raster_crop_size / 2)
+                left = max(0, min(left, w - raster_crop_size))
+                top = max(0, min(top, h - raster_crop_size))
+                positions.append((left, top))
+        
+        crops: list[tuple[torch.Tensor, int, int, int]] = []
+        
+        for idx, (left, top) in enumerate(positions):
+            row = idx // num_crops_side
+            col = idx % num_crops_side
+            
+            if args.num_channels == 1:
+                crop_np = img_np[:, top:top+raster_crop_size, left:left+raster_crop_size]
+            else:
+                crop_np = img_np[:, top:top+raster_crop_size, left:left+raster_crop_size]
+            
+            crop_pil = Image.fromarray(crop_np[0] if args.num_channels == 1 else np.transpose(crop_np, (1, 2, 0)))
+            crop_pil = crop_pil.resize((raster_resize_size, raster_resize_size), Image.BILINEAR)
+            crop_np = np.array(crop_pil)
+            
+            if args.num_channels == 1:
+                crop_np = crop_np[np.newaxis, ...]
+            else:
+                crop_np = np.transpose(crop_np, (2, 0, 1))
+            
             if args.num_channels == 1:
                 mean: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
                 std: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
@@ -458,7 +554,7 @@ def main() -> None:
     def predict_image(model: MILEncoder, img_path: str, plate: str, batch_size: int) -> list[dict]:
         """Predict all crops for a single image using MIL attention."""
         if extraction_mode == 'raster':
-            all_crops = extract_all_crops(img_path, crop_size, grid_size)
+            all_crops = extract_raster_crops(img_path, raster_crop_size, raster_resize_size, raster_num_crops, raster_grid_size)
             n_positions = 1
             num_crops = len(all_crops)
         elif mil_mode:
@@ -476,13 +572,18 @@ def main() -> None:
             batch_tensors = torch.stack([c[0] for c in all_crops]).unsqueeze(0).to(device)
             
             with torch.no_grad():
-                logits, attn_weights = model(batch_tensors, return_attention=True)
+                outputs = model(batch_tensors, return_attention=True)
+                if pooling == 'attention':
+                    logits, attn_weights = outputs
+                    pooled_attn_np = attn_weights[0].cpu().numpy().tolist() if attn_weights is not None else []
+                else:
+                    logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                    pooled_attn_np = []
                 probs = torch.softmax(logits, dim=1)
             
             pooled_pred_idx = int(probs[0].argmax(dim=0).item())
             pooled_confidence = float(probs[0].max(dim=0).values.item())
             pooled_probs_np = probs[0].cpu().numpy().tolist()
-            pooled_attn_np = attn_weights[0].cpu().numpy().tolist()
             
             well = parse_well_from_filename(img_path)
             gt_label = get_ground_truth_label(plate, well) if well else None
@@ -513,13 +614,18 @@ def main() -> None:
                 batch_tensors = torch.stack([c[0] for c in pos_crops]).unsqueeze(0).to(device)
                 
                 with torch.no_grad():
-                    logits, attn_weights = model(batch_tensors, return_attention=True)
+                    outputs = model(batch_tensors, return_attention=True)
+                    if pooling == 'attention':
+                        logits, attn_weights = outputs
+                        pooled_attn_np = attn_weights[0].cpu().numpy().tolist() if attn_weights is not None else []
+                    else:
+                        logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                        pooled_attn_np = []
                     probs = torch.softmax(logits, dim=1)
                 
                 pooled_pred_idx = int(probs[0].argmax(dim=0).item())
                 pooled_confidence = float(probs[0].max(dim=0).values.item())
                 pooled_probs_np = probs[0].cpu().numpy().tolist()
-                pooled_attn_np = attn_weights[0].cpu().numpy().tolist()
                 
                 center_crop = pos_crops[center_idx]
                 crop_tensor, pos_id, local_row, local_col = center_crop
@@ -552,7 +658,12 @@ def main() -> None:
                 batch_tensors = torch.stack([c[0] for c in batch_crops]).to(device)
                 
                 with torch.no_grad():
-                    logits, attn_weights = model(batch_tensors, return_attention=True)
+                    outputs = model(batch_tensors, return_attention=True)
+                    if pooling == 'attention':
+                        logits, attn_weights = outputs
+                    else:
+                        logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                        attn_weights = None
                     probs = torch.softmax(logits, dim=1)
                     preds = probs.argmax(dim=1)
                     confidences = probs.max(dim=1).values
@@ -561,7 +672,7 @@ def main() -> None:
                     pred_idx = int(preds[j].item())
                     confidence = float(confidences[j].item())
                     probs_np = probs[j].cpu().numpy().tolist()
-                    attn_np = attn_weights[j].cpu().numpy().tolist()
+                    attn_np = attn_weights[j].cpu().numpy().tolist() if attn_weights is not None else []
                     
                     well = parse_well_from_filename(img_path)
                     gt_label = get_ground_truth_label(plate, well) if well else None

@@ -19,7 +19,7 @@ import os
 
 
 class AttentionPooling(nn.Module):
-    """Gated attention MIL pooling (Ilse et al. 2018)"""
+    """Gated attention MIL pooling (Ilse et al. 2018, Eq 9 - with gating)"""
     def __init__(self, in_features: int, num_heads: int = 4) -> None:
         super().__init__()
         self.num_heads = num_heads
@@ -29,8 +29,26 @@ class AttentionPooling(nn.Module):
         self.U = nn.Linear(in_features, self.hidden_dim)
         self.w = nn.Linear(self.hidden_dim, num_heads)
     
-    def forward(self, x: torch.Tensor, temperature: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, temperature: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        attn_weights = self.w(A)
+        attn_weights = torch.softmax(attn_weights / temperature, dim=1)
+        pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
+        return pooled, attn_weights
+
+
+class SimpleAttentionPooling(nn.Module):
+    """Simple attention MIL pooling (Ilse et al. 2018, Eq 8 - no gating)"""
+    def __init__(self, in_features: int, num_heads: int = 4) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.hidden_dim = 256
+        
+        self.V = nn.Linear(in_features, self.hidden_dim)
+        self.w = nn.Linear(self.hidden_dim, num_heads)
+    
+    def forward(self, x: torch.Tensor, temperature: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
+        A = torch.tanh(self.V(x))
         attn_weights = self.w(A)
         attn_weights = torch.softmax(attn_weights / temperature, dim=1)
         pooled = torch.einsum('bnh,bnf->bhf', attn_weights, x)
@@ -151,7 +169,12 @@ class MILEncoder(nn.Module):
         self.feature_dim = 1280
         self.use_contrastive = use_contrastive
         
-        self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
+        if pooling == 'simple_attention':
+            self.attention_pool = SimpleAttentionPooling(self.feature_dim, num_heads)
+            print(f"MILEncoder: Using SimpleAttentionPooling (no gating)")
+        else:
+            self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
+            print(f"MILEncoder: Using Gated AttentionPooling")
         self.attention_temp = attention_temp
         
         self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
@@ -185,23 +208,43 @@ class MILEncoder(nn.Module):
         
 # Apply pooling based on self.pooling
         if self.pooling == 'mean':
-            # Mean pooling
             pooled = crop_embeddings.mean(dim=1)
             attn_weights = None
-            pooled = self.classifier_dropout(pooled)
-            pooled = self.classifier(pooled)
+            pooled_feat = pooled.clone()
+            output = self.classifier(pooled)
+            results = [output]
             if return_attention:
-                return pooled, attn_weights
-            return pooled
+                results.append(attn_weights)
+            if return_crop_embeddings:
+                results.append(crop_embeddings)
+            if return_pooled_embeddings:
+                results.append(pooled_feat)
+            if return_instance_logits:
+                batch_size, num_crops = crop_embeddings.shape[:2]
+                crop_features = crop_embeddings.view(-1, self.feature_dim)
+                instance_logits = self.instance_classifier(crop_features)
+                instance_logits = instance_logits.view(batch_size, num_crops, -1)
+                results.append(instance_logits)
+            return results[0] if len(results) == 1 else tuple(results)
         elif self.pooling == 'max':
-            # Max pooling
             pooled, _ = crop_embeddings.max(dim=1)
             attn_weights = None
-            pooled = self.classifier_dropout(pooled)
-            pooled = self.classifier(pooled)
+            pooled_feat = pooled.clone()
+            output = self.classifier(pooled)
+            results = [output]
             if return_attention:
-                return pooled, attn_weights
-            return pooled
+                results.append(attn_weights)
+            if return_crop_embeddings:
+                results.append(crop_embeddings)
+            if return_pooled_embeddings:
+                results.append(pooled_feat)
+            if return_instance_logits:
+                batch_size, num_crops = crop_embeddings.shape[:2]
+                crop_features = crop_embeddings.view(-1, self.feature_dim)
+                instance_logits = self.instance_classifier(crop_features)
+                instance_logits = instance_logits.view(batch_size, num_crops, -1)
+                results.append(instance_logits)
+            return results[0] if len(results) == 1 else tuple(results)
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
             pooled = pooled.reshape(batch_size, -1)
@@ -376,7 +419,12 @@ class AttentionMILModel(nn.Module):
         
         feature_dim = 1280
         
-        self.attention_pool = AttentionPooling(feature_dim, num_heads)
+        if pooling == 'simple_attention':
+            self.attention_pool = SimpleAttentionPooling(feature_dim, num_heads)
+            print(f"AttentionMILModel: Using SimpleAttentionPooling (no gating)")
+        else:
+            self.attention_pool = AttentionPooling(feature_dim, num_heads)
+            print(f"AttentionMILModel: Using Gated AttentionPooling")
         self.attention_temp = attention_temp
         
         self.head_proj = nn.Linear(feature_dim * num_heads, feature_dim)
@@ -740,4 +788,3 @@ def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     well = extract_well_from_filename(filename)
     if well and plate_key in plate_maps and well in plate_maps[plate_key]:
         return plate_maps[plate_key][well]
-    return 'WT'

@@ -64,14 +64,14 @@ print(f"Device: {device}")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=200)
-parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--num_heads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--test_plate', type=str, default='Plate_6')
 parser.add_argument('--data_root', type=str, default=None, help='Path to folder containing P1-P6 plate folders')
 parser.add_argument('--run_all_folds', action='store_true', default=False, help='Run all 6 folds')
-parser.add_argument('--neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
+parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
                     help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops, recommended)')
 parser.add_argument('--grid_size', type=int, default=12,
                     help='Grid size for crop positions')
@@ -89,8 +89,8 @@ parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate for classifier (default 0.5 for stronger regularization)')
 parser.add_argument('--weight_decay', type=float, default=0.05,
                     help='Weight decay (default 0.05 for stronger regularization)')
-parser.add_argument('--pooling', type=str, default='attention', choices=['attention', 'mean', 'max'],
-                    help='MIL pooling method: attention (gated attention), mean (average pooling), max (max pooling)')
+parser.add_argument('--pooling', type=str, default='attention', choices=['attention', 'simple_attention', 'mean', 'max'],
+                    help='MIL pooling method: attention (gated), simple_attention (no gating), mean (average), max (max)')
 parser.add_argument('--label_smoothing', type=float, default=0.1,
                     help='Label smoothing (default 0.1, helps with small datasets)')
 parser.add_argument('--entropy_loss_weight', type=float, default=0.01,
@@ -167,6 +167,7 @@ with open(MUTANT_MAPPING_PATH, 'r') as f:
     mutant_data = json.load(f)
 
 # Build plate_maps based on data_mode
+# Use prefixes to distinguish drug vs mutant (they share same well positions)
 plate_maps = {}
 for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
     plate_maps[plate] = {}
@@ -187,15 +188,17 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
                             ic50_str = ic50_multiple if 'x' in ic50_multiple else f"{ic50_multiple}x"
                             antibiotic_clean = antibiotic.replace(' ', '_')
                             drug_class = f"{antibiotic_clean}_{ic50_str}"
-                    plate_maps[plate][well] = drug_class
+                    # Prefix with 'drug_' to avoid overwriting mutant data in same wells
+                    plate_maps[plate][f"drug_{well}"] = drug_class
     
     if args.data_mode in ['mutant', 'both']:
         if plate in mutant_data:
             for row, cols in mutant_data[plate].items():
                 for col, info in cols.items():
                     if 'id' in info:
-                        well = f"{row}{col}"  # Convert A, 1 -> A01
-                        plate_maps[plate][well] = info['id']
+                        well = f"{row}{int(col):02d}"  # Convert A, 1 -> A01 (2-digit format)
+                        # Prefix with 'mutant_' to avoid overwriting drug data in same wells
+                        plate_maps[plate][f"mutant_{well}"] = info['id']
 
 all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
 
@@ -227,12 +230,44 @@ def get_image_paths_for_plate(plate: str) -> list[str]:
         for pattern in ['*.tif', '*.tiff', '*.png']:
             paths.extend(glob.glob(os.path.join(plate_dir, '**', pattern), recursive=True))
         
+        # Add prefix based on source type (drug vs mutant)
+        well_prefix = f"{source_type}_"
+        
         for path in paths:
             well = extract_well_from_filename(os.path.basename(path))
-            if well and well in plate_maps.get(plate_key, {}):
+            # Use composite key: drug_A01 or mutant_A01
+            composite_well = f"{well_prefix}{well}"
+            if composite_well and composite_well in plate_maps.get(plate_key, {}):
                 valid_paths.append(path)
     
     return valid_paths
+
+def compute_robust_auc(labels: list, probs: list, num_classes: int) -> float:
+    """Compute ROC AUC with robust error handling."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    
+    labels_np = np.array(labels)
+    probs_np = np.array(probs)
+    
+    # Get unique classes in ground truth
+    unique_classes = np.unique(labels_np)
+    if len(unique_classes) < 2:
+        return float('nan')
+    
+    # Filter to only classes present in ground truth (not all num_classes)
+    labels_bin = label_binarize(labels_np, classes=unique_classes)
+    probs_filtered = probs_np[:, unique_classes]
+    
+    try:
+        auc = roc_auc_score(labels_bin, probs_filtered, average='macro')
+        return float(auc)
+    except Exception:
+        try:
+            auc = roc_auc_score(labels_bin, probs_filtered, average='weighted')
+            return float(auc)
+        except Exception:
+            return float('nan')
 
 def focal_loss(logits: torch.Tensor, targets: torch.Tensor, alpha: float = 0.25, gamma: float = 2.0) -> torch.Tensor:
     ce_loss = nn.functional.cross_entropy(logits, targets, reduction='none')
@@ -305,8 +340,10 @@ def train_single_fold(test_plate: str) -> None:
             else:
                 return None
             well = extract_well_from_filename(os.path.basename(path))
-            if well and plate_key in pm and well in pm[plate_key]:
-                return pm[plate_key][well]
+            # Use composite key: drug_A01
+            composite_well = f"drug_{well}"
+            if composite_well and plate_key in pm and composite_well in pm[plate_key]:
+                return pm[plate_key][composite_well]
             return None
         
         label_extractor = drug_label_extractor
@@ -334,8 +371,20 @@ def train_single_fold(test_plate: str) -> None:
             else:
                 return None
             well = extract_well_from_filename(os.path.basename(path))
-            if well and plate_key in pm and well in pm[plate_key]:
-                return pm[plate_key][well]
+            
+            # Determine source type from path (drug vs mutant directory)
+            if '/drugs_data/' in path_lower or '\\drugs_data\\' in path_lower or '/drugs_data/' in path_lower:
+                source_prefix = 'drug_'
+            elif '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
+                source_prefix = 'mutant_'
+            else:
+                # Default to drug if can't determine
+                source_prefix = 'drug_'
+            
+            # Use composite key: drug_A01 or mutant_A01
+            composite_well = f"{source_prefix}{well}"
+            if composite_well and plate_key in pm and composite_well in pm[plate_key]:
+                return pm[plate_key][composite_well]
             return None
         
         label_extractor = both_extractor
@@ -683,8 +732,9 @@ def train_single_fold(test_plate: str) -> None:
                     val_total += labels.size(0)
             
             val_acc = 100. * val_correct / val_total
-            all_val_labels_bin = label_binarize(all_val_labels, classes=list(range(num_classes)))
-            val_auc = roc_auc_score(all_val_labels_bin, np.array(all_val_probs), average='macro')
+            unique_val_classes = np.unique(np.array(all_val_labels))
+            print(f"  DEBUG: Val samples={len(all_val_labels)}, unique classes={len(unique_val_classes)}")
+            val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
             print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
@@ -704,7 +754,7 @@ def train_single_fold(test_plate: str) -> None:
             tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
             
             # Save best model based on validation AUC
-            if val_auc > best_val_auc:
+            if not np.isnan(val_auc) and val_auc > best_val_auc:
                 best_val_auc = val_auc
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
@@ -783,8 +833,9 @@ def train_single_fold(test_plate: str) -> None:
                 val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
-        all_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
-        val_auc = roc_auc_score(all_labels_bin, np.array(all_probs), average='macro')
+        unique_val_classes = np.unique(np.array(all_labels))
+        print(f"  DEBUG: Val samples={len(all_labels)}, unique classes={len(unique_val_classes)}")
+        val_auc = compute_robust_auc(all_labels, all_probs, num_classes)
         avg_val_loss = val_loss_total / len(val_loader)
         
         backbone_lr = optimizer.param_groups[0]['lr']
@@ -801,7 +852,7 @@ def train_single_fold(test_plate: str) -> None:
         # Card 2: Train Acc + Val Acc
         tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
         
-        if val_auc > best_val_auc:
+        if not np.isnan(val_auc) and val_auc > best_val_auc:
             best_val_auc = val_auc
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
