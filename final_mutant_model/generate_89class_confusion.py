@@ -198,66 +198,83 @@ def create_full_confusion_matrix(df_voted, output_dir):
     # Save metrics
     metrics_df.to_csv(os.path.join(output_dir, 'per_class_metrics.csv'), index=False)
     
-    # Create heatmap (subset for visibility if too many classes)
+    # Create full 89x89 heatmap
     num_classes = len(present_class_names)
+    print(f"\nCreating full {num_classes}x{num_classes} confusion matrix heatmap...")
     
-    if num_classes <= 50:
-        # Full heatmap
-        plt.figure(figsize=(24, 20))
-        cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        cm_normalized = np.nan_to_num(cm_normalized, 0)
-        
-        sns.heatmap(cm_normalized, 
-                    xticklabels=present_class_names, 
-                    yticklabels=present_class_names,
-                    cmap='Blues', 
-                    annot=False,
-                    cbar_kws={'label': 'Normalized Accuracy'})
-        plt.xlabel('Predicted', fontsize=10)
-        plt.ylabel('True', fontsize=10)
-        plt.title(f'89-Class Confusion Matrix (Normalized)\nOverall Accuracy: {accuracy:.2%}', fontsize=14)
-        plt.xticks(rotation=90, fontsize=7)
-        plt.yticks(rotation=0, fontsize=7)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'confusion_matrix_89class_full.png'), dpi=150)
-        plt.close()
-    else:
-        # Too many classes - show top/bottom performers only
-        print(f"\nToo many classes ({num_classes}) for full heatmap - creating subset heatmaps")
-        
-        # Top 20
-        top_classes = metrics_df.head(20)['class'].tolist()
-        top_indices = [present_class_names.index(c) for c in top_classes]
-        cm_top = cm[np.ix_(top_indices, top_indices)]
-        
-        plt.figure(figsize=(16, 14))
-        sns.heatmap(cm_top, xticklabels=top_classes, yticklabels=top_classes, 
-                    cmap='Blues', annot=True, fmt='d')
-        plt.xlabel('Predicted', fontsize=10)
-        plt.ylabel('True', fontsize=10)
-        plt.title('Top 20 Performing Classes (Raw Counts)', fontsize=12)
-        plt.xticks(rotation=45, ha='right', fontsize=8)
-        plt.yticks(rotation=0, fontsize=8)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'confusion_matrix_top20.png'), dpi=150)
-        plt.close()
-        
-        # Bottom 20
-        bottom_classes = metrics_df.tail(20)['class'].tolist()
-        bottom_indices = [present_class_names.index(c) for c in bottom_classes]
-        cm_bottom = cm[np.ix_(bottom_indices, bottom_indices)]
-        
-        plt.figure(figsize=(16, 14))
-        sns.heatmap(cm_bottom, xticklabels=bottom_classes, yticklabels=bottom_classes, 
-                    cmap='Blues', annot=True, fmt='d')
-        plt.xlabel('Predicted', fontsize=10)
-        plt.ylabel('True', fontsize=10)
-        plt.title('Bottom 20 Performing Classes (Raw Counts)', fontsize=12)
-        plt.xticks(rotation=45, ha='right', fontsize=8)
-        plt.yticks(rotation=0, fontsize=8)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'confusion_matrix_bottom20.png'), dpi=150)
-        plt.close()
+    # Full heatmap with smaller font and larger figure
+    plt.figure(figsize=(32, 28))
+    cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    cm_normalized = np.nan_to_num(cm_normalized, 0)
+    
+    sns.heatmap(cm_normalized, 
+                xticklabels=present_class_names, 
+                yticklabels=present_class_names,
+                cmap='Blues', 
+                annot=False,
+                cbar_kws={'label': 'Normalized Accuracy'})
+    plt.xlabel('Predicted', fontsize=8)
+    plt.ylabel('True', fontsize=8)
+    plt.title(f'89-Class Confusion Matrix (Normalized)\nOverall Accuracy: {accuracy:.2%}', fontsize=14)
+    plt.xticks(rotation=90, fontsize=5)
+    plt.yticks(rotation=0, fontsize=5)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'confusion_matrix_89class_full.png'), dpi=150)
+    plt.close()
+    print(f"Saved: confusion_matrix_89class_full.png")
+    
+    # Also create raw count version
+    plt.figure(figsize=(32, 28))
+    sns.heatmap(cm, 
+                xticklabels=present_class_names, 
+                yticklabels=present_class_names,
+                cmap='Blues', 
+                annot=False,
+                fmt='d',
+                cbar_kws={'label': 'Count'})
+    plt.xlabel('Predicted', fontsize=8)
+    plt.ylabel('True', fontsize=8)
+    plt.title(f'89-Class Confusion Matrix (Raw Counts)\nOverall Accuracy: {accuracy:.2%}', fontsize=14)
+    plt.xticks(rotation=90, fontsize=5)
+    plt.yticks(rotation=0, fontsize=5)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'confusion_matrix_89class_raw.png'), dpi=150)
+    plt.close()
+    print(f"Saved: confusion_matrix_89class_raw.png")
+    
+    # Top 20
+    top_classes = metrics_df.head(20)['class'].tolist()
+    top_indices = [present_class_names.index(c) for c in top_classes]
+    cm_top = cm[np.ix_(top_indices, top_indices)]
+    
+    plt.figure(figsize=(16, 14))
+    sns.heatmap(cm_top, xticklabels=top_classes, yticklabels=top_classes, 
+                cmap='Blues', annot=True, fmt='d')
+    plt.xlabel('Predicted', fontsize=10)
+    plt.ylabel('True', fontsize=10)
+    plt.title('Top 20 Performing Classes (Raw Counts)', fontsize=12)
+    plt.xticks(rotation=45, ha='right', fontsize=8)
+    plt.yticks(rotation=0, fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'confusion_matrix_top20.png'), dpi=150)
+    plt.close()
+    
+    # Bottom 20
+    bottom_classes = metrics_df.tail(20)['class'].tolist()
+    bottom_indices = [present_class_names.index(c) for c in bottom_classes]
+    cm_bottom = cm[np.ix_(bottom_indices, bottom_indices)]
+    
+    plt.figure(figsize=(16, 14))
+    sns.heatmap(cm_bottom, xticklabels=bottom_classes, yticklabels=bottom_classes, 
+                cmap='Blues', annot=True, fmt='d')
+    plt.xlabel('Predicted', fontsize=10)
+    plt.ylabel('True', fontsize=10)
+    plt.title('Bottom 20 Performing Classes (Raw Counts)', fontsize=12)
+    plt.xticks(rotation=45, ha='right', fontsize=8)
+    plt.yticks(rotation=0, fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'confusion_matrix_bottom20.png'), dpi=150)
+    plt.close()
     
     # Save raw confusion matrix
     cm_df = pd.DataFrame(cm, index=present_class_names, columns=present_class_names)
