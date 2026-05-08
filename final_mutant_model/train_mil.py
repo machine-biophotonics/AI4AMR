@@ -131,10 +131,10 @@ parser.add_argument('--freeze', action='store_true', default=False,
                     help='Freeze backbone, only train attention pool + classifier head')
 args = parser.parse_args()
 
-# Increase batch size 4x if using pretrained weights (faster training)
+# Increase batch size 8x if using pretrained weights (faster training)
 if args.pretrained in ['imagenet', 'micronet'] and args.batch_size <= 64:
     original_batch_size = args.batch_size
-    args.batch_size = args.batch_size * 4
+    args.batch_size = args.batch_size * 8
     args.prefetch_factor = 2
     print(f"Using pretrained weights - increasing batch size from {original_batch_size} to {args.batch_size}")
 
