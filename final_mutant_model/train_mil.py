@@ -320,8 +320,12 @@ def train_single_fold(test_plate: str) -> None:
         test_plate_normalized = test_plate
     
     train_val_plates = [p for p in all_plates if p != test_plate_normalized]
-    train_plates = train_val_plates[:4]
-    val_plates = train_val_plates[4:5]  # Only first plate for validation
+    # Use cyclic validation: test plate i → validation plate is previous one
+    test_num = int(test_plate_normalized.split('_')[1])
+    val_num = (test_num - 2) % 6 + 1  # Previous plate (cyclic), e.g., test=3 → val=2
+    val_plate = f"Plate_{val_num}"
+    val_plates = [val_plate] if val_plate in train_val_plates else [train_val_plates[0]]
+    train_plates = [p for p in train_val_plates if p not in val_plates][:4]
     
     print(f"Train plates: {train_plates}")
     print(f"Val plates: {val_plates}")
