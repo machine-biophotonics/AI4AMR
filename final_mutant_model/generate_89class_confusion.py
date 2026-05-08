@@ -114,12 +114,43 @@ def majority_vote_per_image_89class(df, ic50_data):
 def create_full_confusion_matrix(df_voted, output_dir):
     """Create 89x89 confusion matrix for all drug classes with concentration."""
     
+    # Group classes by antibiotic (for better visualization)
+    def get_antibiotic_base(class_name):
+        """Extract base antibiotic name without concentration."""
+        if class_name == 'control' or 'DMSO' in class_name:
+            return 'DMSO'
+        if '_' in class_name:
+            return class_name.rsplit('_', 1)[0]
+        return class_name
+    
     # Get all unique classes (ground truth)
     all_classes = sorted([c for c in df_voted['ground_truth_label'].unique() if c != 'Unknown'])
     print(f"Total classes: {len(all_classes)}")
     
+    # Group classes by antibiotic and sort within groups
+    # Order: concentrations in order [0.25x, 0.5x, 1x, 2x, control]
+    conc_order = {'0.25x': 0, '0.5x': 1, '1x': 2, '2x': 3, 'control': 4, 'Unknown': 5}
+    
+    def sort_key(class_name):
+        ab = get_antibiotic_base(class_name)
+        if '_' in class_name:
+            conc = class_name.rsplit('_', 1)[-1]
+            conc_idx = conc_order.get(conc, 99)
+        else:
+            conc_idx = 99
+        return (ab, conc_idx)
+    
+    # Sort classes: grouped by antibiotic, then by concentration
+    sorted_classes = sorted(all_classes, key=sort_key)
+    
+    # Print class order for debugging
+    print("\nClass order (grouped by antibiotic):")
+    for ab in sorted(set(get_antibiotic_base(c) for c in sorted_classes)):
+        classes = [c for c in sorted_classes if get_antibiotic_base(c) == ab]
+        print(f"  {ab}: {classes}")
+    
     # Label mapping
-    class_to_idx = {c: i for i, c in enumerate(all_classes)}
+    class_to_idx = {c: i for i, c in enumerate(sorted_classes)}
     idx_to_class = {i: c for c, i in class_to_idx.items()}
     
     # Filter out Unknown and NaN
@@ -198,12 +229,44 @@ def create_full_confusion_matrix(df_voted, output_dir):
     # Save metrics
     metrics_df.to_csv(os.path.join(output_dir, 'per_class_metrics.csv'), index=False)
     
-    # Create full 89x89 heatmap
+    # Create full 89x89 heatmap with group boxes
     num_classes = len(present_class_names)
     print(f"\nCreating full {num_classes}x{num_classes} confusion matrix heatmap...")
     
+    # Find group boundaries for drawing boxes
+    def find_group_boundaries(class_names):
+        """Find start and end indices for each antibiotic group."""
+        groups = {}
+        current_group = None
+        start_idx = 0
+        for i, name in enumerate(class_names):
+            base = get_antibiotic_base(name)
+            if base != current_group:
+                if current_group is not None:
+                    groups[current_group] = (start_idx, i - 1)
+                current_group = base
+                start_idx = i
+        # Last group
+        if current_group is not None:
+            groups[current_group] = (start_idx, len(class_names) - 1)
+        return groups
+    
+    group_bounds = find_group_boundaries(present_class_names)
+    print(f"Group boundaries: {group_bounds}")
+    
+    # Function to add group boxes
+    def add_group_boxes(ax, bounds, color='red', linewidth=2):
+        for group, (start, end) in bounds.items():
+            # Add rectangle around group
+            # Note: heatmap uses 0-based indexing, so add 0.5 for proper positioning
+            rect = plt.Rectangle((start + 0.5, start + 0.5), 
+                                 end - start, end - start,
+                                 linewidth=linewidth, edgecolor=color, 
+                                 facecolor='none', linestyle='--')
+            ax.add_patch(rect)
+    
     # Full heatmap with smaller font and larger figure
-    plt.figure(figsize=(32, 28))
+    fig, ax = plt.subplots(figsize=(34, 30))
     cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
     cm_normalized = np.nan_to_num(cm_normalized, 0)
     
@@ -212,31 +275,40 @@ def create_full_confusion_matrix(df_voted, output_dir):
                 yticklabels=present_class_names,
                 cmap='Blues', 
                 annot=False,
-                cbar_kws={'label': 'Normalized Accuracy'})
-    plt.xlabel('Predicted', fontsize=8)
-    plt.ylabel('True', fontsize=8)
-    plt.title(f'89-Class Confusion Matrix (Normalized)\nOverall Accuracy: {accuracy:.2%}', fontsize=14)
-    plt.xticks(rotation=90, fontsize=5)
-    plt.yticks(rotation=0, fontsize=5)
+                cbar_kws={'label': 'Normalized Accuracy'},
+                ax=ax)
+    
+    # Add boxes around antibiotic groups
+    add_group_boxes(ax, group_bounds, color='darkred', linewidth=1.5)
+    
+    ax.set_xlabel('Predicted', fontsize=8)
+    ax.set_ylabel('True', fontsize=8)
+    ax.set_title(f'89-Class Confusion Matrix (Normalized)\nGrouped by Antibiotic | Boxed groups | Overall Accuracy: {accuracy:.2%}', fontsize=14)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=4)
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'confusion_matrix_89class_full.png'), dpi=150)
     plt.close()
     print(f"Saved: confusion_matrix_89class_full.png")
     
-    # Also create raw count version
-    plt.figure(figsize=(32, 28))
+    # Raw count version with boxes
+    fig, ax = plt.subplots(figsize=(34, 30))
     sns.heatmap(cm, 
                 xticklabels=present_class_names, 
                 yticklabels=present_class_names,
                 cmap='Blues', 
                 annot=False,
                 fmt='d',
-                cbar_kws={'label': 'Count'})
-    plt.xlabel('Predicted', fontsize=8)
-    plt.ylabel('True', fontsize=8)
-    plt.title(f'89-Class Confusion Matrix (Raw Counts)\nOverall Accuracy: {accuracy:.2%}', fontsize=14)
-    plt.xticks(rotation=90, fontsize=5)
-    plt.yticks(rotation=0, fontsize=5)
+                cbar_kws={'label': 'Count'},
+                ax=ax)
+    
+    add_group_boxes(ax, group_bounds, color='darkred', linewidth=1.5)
+    
+    ax.set_xlabel('Predicted', fontsize=8)
+    ax.set_ylabel('True', fontsize=8)
+    ax.set_title(f'89-Class Confusion Matrix (Raw Counts)\nGrouped by Antibiotic | Boxed groups | Overall Accuracy: {accuracy:.2%}', fontsize=14)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=4)
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'confusion_matrix_89class_raw.png'), dpi=150)
     plt.close()
