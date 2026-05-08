@@ -260,38 +260,36 @@ def create_full_confusion_matrix(df_voted, output_dir):
     
     # Function to add group boxes
     def add_group_boxes(ax, class_names):
-        """Add rectangular boxes around each antibiotic group."""
+        """Add rectangular boxes around each antibiotic group on the edges."""
         from matplotlib.patches import Rectangle
         
+        # Find group boundaries
+        groups = {}
         current_group = None
         group_start = None
         
         for i, name in enumerate(class_names):
             base = get_antibiotic_base(name)
             if base != current_group:
-                # Draw box for previous group if it has more than 1 class
                 if current_group is not None and group_start is not None:
-                    num_in_group = i - group_start
-                    if num_in_group > 1:
-                        # Draw encompassing rectangle
-                        rect = Rectangle(
-                            (group_start - 0.5, group_start - 0.5),
-                            num_in_group, num_in_group,
-                            linewidth=2, edgecolor='darkred', 
-                            facecolor='none', linestyle='-'
-                        )
-                        ax.add_patch(rect)
+                    groups[current_group] = (group_start, i - 1)
                 current_group = base
                 group_start = i
         
-        # Handle last group
+        # Last group
         if current_group is not None and group_start is not None:
-            num_in_group = len(class_names) - group_start
+            groups[current_group] = (group_start, len(class_names) - 1)
+        
+        # Draw boxes for each group (on edges)
+        for group_name, (start_idx, end_idx) in groups.items():
+            num_in_group = end_idx - start_idx + 1
             if num_in_group > 1:
+                # Box drawn at the outer edges of the group
+                # Using positions as edge indices (0, 4, 8, etc.)
                 rect = Rectangle(
-                    (group_start - 0.5, group_start - 0.5),
+                    (start_idx, start_idx),
                     num_in_group, num_in_group,
-                    linewidth=2, edgecolor='darkred', 
+                    linewidth=2.5, edgecolor='darkred', 
                     facecolor='none', linestyle='-'
                 )
                 ax.add_patch(rect)
