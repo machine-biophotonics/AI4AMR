@@ -28,15 +28,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Predict all crops for final_mutant_model')
     parser.add_argument('--fold', type=str, default=None,
                         help='Fold to predict (e.g., P6). If not specified, uses P6.')
-    parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
+    parser.add_argument('--data_mode', type=str, default='drug', choices=['drug', 'mutant', 'both'],
                         help='Data mode: drug (Drugs_Data), mutant (Mutants_Data), both')
     parser.add_argument('--drug_no_concentration', action='store_true', default=False,
                         help='Group drugs by antibiotic name only, ignoring concentration levels')
+    parser.add_argument('--drug_on_mutant', action='store_true', default=False,
+                        help='Use drug-trained model to predict on mutant plate data (cross-domain evaluation)')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--extraction_mode', type=str, default='neighborhood', choices=['neighborhood', 'raster'],
                         help='Crop extraction mode: neighborhood (N×N grids around positions) or raster (all crops in tiling grid)')
-    parser.add_argument('--crop_neighborhood', type=int, default=5, choices=[3, 5, 7, 9, 11],
+    parser.add_argument('--crop_neighborhood', type=int, default=3, choices=[3, 5, 7, 9, 11],
                         help='Neighborhood size: 3=(3x3=9 crops), 5=(5x5=25 crops), 7=(7x7=49 crops), 9=(9x9=81 crops), 11=(11x11=121 crops)')
     parser.add_argument('--no_mil_mode', action='store_true',
                         help='Disable MIL mode (use single crops instead of neighborhoods)')
@@ -63,8 +65,8 @@ def main() -> None:
                         help='Number of attention heads (default: 4)')
     parser.add_argument('--num_channels', type=int, default=1,
                         help='Number of input channels (1 for grayscale, 3 for RGB)')
-    parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imagenet', 'micronet'],
-                        help='Pretrained weights: imagenet (default) or micronet')
+    parser.add_argument('--pretrained', type=str, default='micronet', choices=['imagenet', 'micronet'],
+                        help='Pretrained weights: imagenet or micronet (default: micronet)')
     parser.add_argument('--filter_class', type=str, default=None,
                         help='Filter predictions by class name pattern (e.g., _2x, control)')
     parser.add_argument('--dry_run', action='store_true', default=False,
@@ -100,10 +102,27 @@ def main() -> None:
     else:
         MUTANT_DATA = {}
     
+    # Handle --drug_on_mutant: use drug model on mutant images
+    if args.drug_on_mutant:
+        # Always load drug IC50 data for classes
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json'), 'r') as f:
+            IC50_DATA: dict = json.load(f)
+        # Use mutant data for image paths but drug classes for prediction
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+            MUTANT_DATA: dict = json.load(f)
+        # Set data_mode_folder to drug_on_mutant for output
+        data_mode_folder = 'drug_on_mutant'
+        # Override data_mode for BASE_DIR to point to mutant
+        actual_data_mode = 'mutant'
+        print(f"\n*** DRUG ON MUTANT MODE ***")
+        print(f"  Using drug-trained model to predict on mutant plates")
+    else:
+        actual_data_mode = args.data_mode
+    
     # Set BASE_DIR based on data_root and data_mode
     if args.data_root:
         BASE_DIR: str = args.data_root
-    elif args.data_mode == 'drug':
+    elif actual_data_mode == 'drug':
         BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data')
     else:
         BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data')
@@ -129,7 +148,7 @@ def main() -> None:
     
     # Build classes based on data_mode (same logic as training)
     all_classes: list[str] = []
-    if args.data_mode == 'drug':
+    if args.data_mode == 'drug' or args.drug_on_mutant:
         drug_classes: set = set()
         for plate, wells in IC50_DATA.items():
             for well, info in wells.items():
@@ -228,16 +247,37 @@ def main() -> None:
     
     test_plate: str = args.fold if args.fold else 'P6'
     
+    # Convert Plate_X to PX format for directory lookup (Plate_1 -> P1, P1 -> P1)
+    if 'Plate_' in test_plate:
+        plate_num = test_plate.split('_')[-1]
+        image_plate_key = f'P{plate_num}'
+    else:
+        image_plate_key = test_plate
+    
     # Checkpoint path: use data_mode folder if specified checkpoint doesn't contain path separator
     if os.path.sep in args.checkpoint or os.path.exists(args.checkpoint):
         # Direct path provided
         checkpoint_path = args.checkpoint
     else:
-        # Use data_mode folder (e.g., drug/fold_P6/, mutant/fold_P6/)
-        fold_dir = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
+        # For drug_on_mutant, load checkpoint from drug folder
+        if args.drug_on_mutant:
+            checkpoint_folder = 'drug'
+            # Convert Plate_X format for checkpoint folder
+            if 'Plate_' in test_plate:
+                fold_key = test_plate  # keep as Plate_1
+            else:
+                fold_key = f'Plate_{test_plate.replace("P", "")}'
+        else:
+            # Convert P1 -> Plate_1, P2 -> Plate_2 for folder lookup
+            checkpoint_folder = data_mode_folder
+            if 'Plate_' in test_plate:
+                fold_key = test_plate
+            else:
+                fold_key = f'Plate_{test_plate.replace("P", "")}'
+        fold_dir = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key}')
         checkpoint_path = os.path.join(fold_dir, args.checkpoint)
     
-    image_dir: str = os.path.join(BASE_DIR, test_plate)
+    image_dir: str = os.path.join(BASE_DIR, image_plate_key)
     output_dir: str = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
 
     print(f'\n{"="*60}')
@@ -523,8 +563,8 @@ def main() -> None:
         if not well:
             return None
         
-        # For mutant mode, use MUTANT_DATA
-        if args.data_mode in ['mutant', 'both'] and plate in MUTANT_DATA:
+        # For mutant mode OR drug_on_mutant mode, use MUTANT_DATA for ground truth
+        if (args.data_mode in ['mutant', 'both'] or args.drug_on_mutant) and plate in MUTANT_DATA:
             row: str = well[0]
             col: str = well[1:]
             if row in MUTANT_DATA[plate]:
@@ -891,6 +931,9 @@ def main() -> None:
         print('ERROR: No valid predictions. Skipping per-image aggregation.')
         print('Results were empty.')
         return
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
     
     output_csv: str = os.path.join(output_dir, f'predictions_all_crops_mil.csv')
     checkpoint_name = os.path.basename(args.checkpoint).replace('.pth', '')
