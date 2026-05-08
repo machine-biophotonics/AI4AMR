@@ -127,6 +127,8 @@ parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
 parser.add_argument('--drug_no_concentration', action='store_true', default=False,
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
+parser.add_argument('--freeze', action='store_true', default=False,
+                    help='Freeze backbone, only train attention pool + classifier head')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
@@ -480,13 +482,28 @@ def train_single_fold(test_plate: str) -> None:
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
     model = model.to(device)
     
-    backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
-    attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+    # Freeze backbone if requested
+    if args.freeze:
+        print("*** FREEZING BACKBONE - ONLY TRAINING ATTENTION + CLASSIFIER ***")
+        for param in model.backbone.parameters():
+            param.requires_grad = False
+        model.backbone.eval()
     
-    optimizer = torch.optim.AdamW([
-        {'params': backbone_params, 'lr': args.lr * 0.1},
-        {'params': attention_params, 'lr': args.lr}
-    ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+    # Set up optimizer based on whether backbone is frozen
+    if args.freeze:
+        # Only train attention pool + classifier
+        attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+        optimizer = torch.optim.AdamW([
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+    else:
+        # Original: backbone + attention + classifier with different LRs
+        backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
+        attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+        optimizer = torch.optim.AdamW([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
 
     # AMP scaler for mixed precision training
     use_amp = torch.cuda.is_available()
