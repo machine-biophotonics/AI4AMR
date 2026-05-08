@@ -259,24 +259,47 @@ def create_full_confusion_matrix(df_voted, output_dir):
     print(f"DMSO index: {dmso_idx}")
     
     # Function to add group boxes
-    def add_group_lines(ax, class_names, dmso_idx=None):
-        """Add vertical and horizontal lines for group boundaries and DMSO."""
-        # Draw lines for each group boundary
+    def add_group_boxes(ax, class_names):
+        """Add rectangular boxes around each antibiotic group."""
+        from matplotlib.patches import Rectangle
+        
         current_group = None
+        group_start = None
+        
         for i, name in enumerate(class_names):
             base = get_antibiotic_base(name)
             if base != current_group:
-                if current_group is not None and i > 0:
-                    # Draw vertical line at boundary (after previous group)
-                    ax.axvline(x=i + 0.5, color='red', linewidth=1.5, linestyle='-')
-                    ax.axhline(y=i + 0.5, color='red', linewidth=1.5, linestyle='-')
+                # Draw box for previous group if it has more than 1 class
+                if current_group is not None and group_start is not None:
+                    num_in_group = i - group_start
+                    if num_in_group > 1:
+                        # Draw encompassing rectangle
+                        rect = Rectangle(
+                            (group_start - 0.5, group_start - 0.5),
+                            num_in_group, num_in_group,
+                            linewidth=2, edgecolor='darkred', 
+                            facecolor='none', linestyle='-'
+                        )
+                        ax.add_patch(rect)
                 current_group = base
+                group_start = i
         
-        # Draw DMSO line (straight through center)
+        # Handle last group
+        if current_group is not None and group_start is not None:
+            num_in_group = len(class_names) - group_start
+            if num_in_group > 1:
+                rect = Rectangle(
+                    (group_start - 0.5, group_start - 0.5),
+                    num_in_group, num_in_group,
+                    linewidth=2, edgecolor='darkred', 
+                    facecolor='none', linestyle='-'
+                )
+                ax.add_patch(rect)
+        
+        # Draw straight line for DMSO (single class in center)
+        dmso_idx = class_names.index('control') if 'control' in class_names else None
         if dmso_idx is not None:
-            # Vertical line through DMSO column
             ax.axvline(x=dmso_idx + 0.5, color='green', linewidth=2, linestyle='-')
-            # Horizontal line through DMSO row
             ax.axhline(y=dmso_idx + 0.5, color='green', linewidth=2, linestyle='-')
     
     # Full heatmap with smaller font and larger figure
@@ -293,7 +316,7 @@ def create_full_confusion_matrix(df_voted, output_dir):
                 ax=ax)
     
     # Add group boundaries and DMSO line
-    add_group_lines(ax, present_class_names, dmso_idx)
+    add_group_boxes(ax, present_class_names)
     
     ax.set_xlabel('Predicted', fontsize=8)
     ax.set_ylabel('True', fontsize=8)
@@ -316,7 +339,7 @@ def create_full_confusion_matrix(df_voted, output_dir):
                 cbar_kws={'label': 'Count'},
                 ax=ax)
     
-    add_group_lines(ax, present_class_names, dmso_idx)
+    add_group_boxes(ax, present_class_names)
     
     ax.set_xlabel('Predicted', fontsize=8)
     ax.set_ylabel('True', fontsize=8)
