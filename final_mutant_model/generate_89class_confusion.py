@@ -254,16 +254,30 @@ def create_full_confusion_matrix(df_voted, output_dir):
     group_bounds = find_group_boundaries(present_class_names)
     print(f"Group boundaries: {group_bounds}")
     
+    # Find DMSO position (index 40)
+    dmso_idx = present_class_names.index('control') if 'control' in present_class_names else None
+    print(f"DMSO index: {dmso_idx}")
+    
     # Function to add group boxes
-    def add_group_boxes(ax, bounds, color='red', linewidth=2):
-        for group, (start, end) in bounds.items():
-            # Add rectangle around group
-            # Note: heatmap uses 0-based indexing, so add 0.5 for proper positioning
-            rect = plt.Rectangle((start + 0.5, start + 0.5), 
-                                 end - start, end - start,
-                                 linewidth=linewidth, edgecolor=color, 
-                                 facecolor='none', linestyle='--')
-            ax.add_patch(rect)
+    def add_group_lines(ax, class_names, dmso_idx=None):
+        """Add vertical and horizontal lines for group boundaries and DMSO."""
+        # Draw lines for each group boundary
+        current_group = None
+        for i, name in enumerate(class_names):
+            base = get_antibiotic_base(name)
+            if base != current_group:
+                if current_group is not None and i > 0:
+                    # Draw vertical line at boundary (after previous group)
+                    ax.axvline(x=i + 0.5, color='red', linewidth=1.5, linestyle='-')
+                    ax.axhline(y=i + 0.5, color='red', linewidth=1.5, linestyle='-')
+                current_group = base
+        
+        # Draw DMSO line (straight through center)
+        if dmso_idx is not None:
+            # Vertical line through DMSO column
+            ax.axvline(x=dmso_idx + 0.5, color='green', linewidth=2, linestyle='-')
+            # Horizontal line through DMSO row
+            ax.axhline(y=dmso_idx + 0.5, color='green', linewidth=2, linestyle='-')
     
     # Full heatmap with smaller font and larger figure
     fig, ax = plt.subplots(figsize=(34, 30))
@@ -278,12 +292,12 @@ def create_full_confusion_matrix(df_voted, output_dir):
                 cbar_kws={'label': 'Normalized Accuracy'},
                 ax=ax)
     
-    # Add boxes around antibiotic groups
-    add_group_boxes(ax, group_bounds, color='darkred', linewidth=1.5)
+    # Add group boundaries and DMSO line
+    add_group_lines(ax, present_class_names, dmso_idx)
     
     ax.set_xlabel('Predicted', fontsize=8)
     ax.set_ylabel('True', fontsize=8)
-    ax.set_title(f'89-Class Confusion Matrix (Normalized)\nGrouped by Antibiotic | Boxed groups | Overall Accuracy: {accuracy:.2%}', fontsize=14)
+    ax.set_title(f'89-Class Confusion Matrix (Normalized)\nRed lines = antibiotic groups | Green line = DMSO/Control | Overall Accuracy: {accuracy:.2%}', fontsize=14)
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=4)
     ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
     plt.tight_layout()
@@ -291,7 +305,7 @@ def create_full_confusion_matrix(df_voted, output_dir):
     plt.close()
     print(f"Saved: confusion_matrix_89class_full.png")
     
-    # Raw count version with boxes
+    # Raw count version with lines
     fig, ax = plt.subplots(figsize=(34, 30))
     sns.heatmap(cm, 
                 xticklabels=present_class_names, 
@@ -302,11 +316,11 @@ def create_full_confusion_matrix(df_voted, output_dir):
                 cbar_kws={'label': 'Count'},
                 ax=ax)
     
-    add_group_boxes(ax, group_bounds, color='darkred', linewidth=1.5)
+    add_group_lines(ax, present_class_names, dmso_idx)
     
     ax.set_xlabel('Predicted', fontsize=8)
     ax.set_ylabel('True', fontsize=8)
-    ax.set_title(f'89-Class Confusion Matrix (Raw Counts)\nGrouped by Antibiotic | Boxed groups | Overall Accuracy: {accuracy:.2%}', fontsize=14)
+    ax.set_title(f'89-Class Confusion Matrix (Raw Counts)\nRed lines = antibiotic groups | Green line = DMSO/Control | Overall Accuracy: {accuracy:.2%}', fontsize=14)
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=4)
     ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
     plt.tight_layout()
