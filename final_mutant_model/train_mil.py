@@ -135,7 +135,7 @@ args = parser.parse_args()
 if args.pretrained in ['imagenet', 'micronet'] and args.batch_size <= 64:
     original_batch_size = args.batch_size
     args.batch_size = args.batch_size * 4
-    args.prefetch_factor = args.batch_size
+    args.prefetch_factor = 2
     print(f"Using pretrained weights - increasing batch size from {original_batch_size} to {args.batch_size}")
 
 # Determine folder name for results (drug_noconcentration vs drug)
