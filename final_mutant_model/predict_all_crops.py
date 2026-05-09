@@ -301,8 +301,14 @@ def main() -> None:
         fold_dir = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key}')
         checkpoint_path = os.path.join(fold_dir, args.checkpoint)
     
+    # Determine fold_key for folder lookup (P1 -> fold_Plate_1, Plate_1 -> fold_Plate_1)
+    if 'Plate_' in test_plate:
+        fold_key = test_plate  # Already in Plate_X format
+    else:
+        fold_key = f'Plate_{test_plate.replace("P", "")}'
+    
     image_dir: str = os.path.join(BASE_DIR, image_plate_key)
-    output_dir: str = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{test_plate}')
+    output_dir: str = os.path.join(SCRIPT_DIR, data_mode_folder, f'fold_{fold_key}')
 
     print(f'\n{"="*60}')
     print(f'Processing fold: test plate={test_plate}')
@@ -598,17 +604,29 @@ def main() -> None:
             return None
         
         # For mutant mode OR drug_on_mutant mode, use MUTANT_DATA for ground truth
-        if (args.data_mode in ['mutant', 'both'] or args.drug_on_mutant) and plate in MUTANT_DATA:
+        if (args.data_mode in ['mutant', 'both'] or args.drug_on_mutant):
+            # Convert plate: 'Plate_1' -> 'P1', 'P1' -> 'P1'
+            if 'Plate_' in plate:
+                plate_key = 'P' + plate.split('_')[-1]
+            else:
+                plate_key = plate
+            
             row: str = well[0]
-            col: str = well[1:]
-            if row in MUTANT_DATA[plate]:
-                if col in MUTANT_DATA[plate][row]:
-                    return MUTANT_DATA[plate][row][col].get('id', None)
+            col: str = well[1:].lstrip('0') or '0'  # Fix: strip leading zeros (A01 -> col='1', not '01')
+            if plate_key in MUTANT_DATA and row in MUTANT_DATA[plate_key]:
+                if col in MUTANT_DATA[plate_key][row]:
+                    return MUTANT_DATA[plate_key][row][col].get('id', None)
         
         # For drug mode OR mutant_on_drug mode, use IC50_DATA for ground truth
-        if (args.data_mode in ['drug', 'both'] or args.mutant_on_drug) and plate in IC50_DATA:
-            if well in IC50_DATA[plate]:
-                info = IC50_DATA[plate][well]
+        if (args.data_mode in ['drug', 'both'] or args.mutant_on_drug):
+            # Convert plate: 'Plate_1' -> 'P1', 'P1' -> 'P1'
+            if 'Plate_' in plate:
+                plate_key = 'P' + plate.split('_')[-1]
+            else:
+                plate_key = plate
+            
+            if plate_key in IC50_DATA and well in IC50_DATA[plate_key]:
+                info = IC50_DATA[plate_key][well]
                 antibiotic = info.get('antibiotic', '')
                 ic50_multiple = info.get('ic50_multiple', '')
                 if antibiotic and ic50_multiple:

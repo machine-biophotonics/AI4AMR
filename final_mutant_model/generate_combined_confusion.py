@@ -393,7 +393,7 @@ def main():
     parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for final_crispr_model')
     parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
     parser.add_argument('--single_fold', type=str, default=None,
-                        help='Generate for a single fold (e.g., P1) - creates fold-specific output directory')
+                        help='Generate for a single fold (e.g., P1 or Plate_1) - creates fold-specific output directory')
     parser.add_argument('--guide', action='store_true', help='Generate only guide-level')
     parser.add_argument('--family', action='store_true', help='Generate only family-level')
     parser.add_argument('--csv_name', type=str, default=None, 
@@ -411,8 +411,15 @@ def main():
     # Handle single fold case
     if args.single_fold:
         folds = [args.single_fold]
-        # Save within the fold folder by default
-        fold_key = f'fold_P{args.single_fold.replace("P", "")}' if not args.single_fold.startswith('fold_') else args.single_fold
+        # Convert fold format: P1 -> fold_Plate_1, Plate_1 -> fold_Plate_1
+        fold_input = args.single_fold
+        if fold_input.startswith('fold_'):
+            fold_key = fold_input
+        elif 'Plate_' in fold_input:
+            fold_key = f'fold_{fold_input}'
+        else:
+            fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
+        # Save within the mutant fold folder (this script is for mutants only)
         output_dir = os.path.join(SCRIPT_DIR, 'mutant', fold_key, 'confusion_matrices')
     elif args.output_dir:
         folds = args.folds.split(',')
@@ -433,8 +440,15 @@ def main():
     all_fold_data = {}
 
     for fold in folds:
-        # Look in mutant folder for predictions - check fold_P1 format
-        fold_key = f'fold_P{fold.replace("P", "")}' if not fold.startswith('fold_') else fold
+        # Convert fold format: P1 -> fold_Plate_1, Plate_1 -> fold_Plate_1
+        fold_input = fold
+        if fold_input.startswith('fold_'):
+            fold_key = fold_input
+        elif 'Plate_' in fold_input:
+            fold_key = f'fold_{fold_input}'
+        else:
+            fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
+        
         fold_dir = os.path.join(SCRIPT_DIR, 'mutant', fold_key)
         
         if args.prediction_csv:
