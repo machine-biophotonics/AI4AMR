@@ -163,8 +163,29 @@ def main() -> None:
         print(f"Config: NEIGHBORHOOD - {num_crops_per_position} crops/position ({neighborhood}x{neighborhood}), extraction_mode={extraction_mode}, pooling={pooling}")
     
     # Build classes based on data_mode (same logic as training)
+    # Priority: check cross-domain flags first, then data_mode
     all_classes: list[str] = []
-    if args.data_mode == 'drug' or args.drug_on_mutant:
+    
+    # For mutant_on_drug: use mutant classes (mutant model predicts mutant labels)
+    if args.mutant_on_drug:
+        mutant_classes: set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        mutant_classes.add(info['id'])
+        all_classes = sorted(mutant_classes)
+    # For drug_on_mutant: use mutant classes (drug model predicts on mutant images)
+    elif args.drug_on_mutant:
+        mutant_classes: set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        mutant_classes.add(info['id'])
+        all_classes = sorted(mutant_classes)
+    # For normal drug mode: use drug classes
+    elif args.data_mode == 'drug':
         drug_classes: set = set()
         for plate, wells in IC50_DATA.items():
             for well, info in wells.items():
@@ -172,10 +193,8 @@ def main() -> None:
                 ic50_multiple = info.get('ic50_multiple', '')
                 if antibiotic and ic50_multiple:
                     if args.drug_no_concentration:
-                        # Group by antibiotic name only (ignore concentration)
                         drug_classes.add(antibiotic.replace(' ', '_'))
                     else:
-                        # Include concentration in class name
                         if ic50_multiple == 'control':
                             drug_classes.add('control')
                         else:
@@ -183,7 +202,8 @@ def main() -> None:
                             antibiotic_clean = antibiotic.replace(' ', '_')
                             drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
         all_classes = sorted(drug_classes)
-    elif args.data_mode == 'mutant' or args.mutant_on_drug:
+    # For normal mutant mode: use mutant classes
+    elif args.data_mode == 'mutant':
         mutant_classes: set = set()
         for plate, rows in MUTANT_DATA.items():
             for row, cols in rows.items():
@@ -215,6 +235,7 @@ def main() -> None:
                 for col, info in cols.items():
                     if 'id' in info:
                         mutant_classes.add(info['id'])
+        all_classes = sorted(drug_classes | mutant_classes)
         all_classes = sorted(drug_classes | mutant_classes)
     
     classes = {i: name for i, name in enumerate(all_classes)}
