@@ -1,0 +1,8 @@
+Drug-on-Mutant Analysis Summary
+==================================================
+
+Ground truth: CRISPRi gene knockdowns
+Predicted: Antibiotic classes
+Analysis: Does predicted antibiotic target the CRISPRi gene?
+
+Overall Gene Match Rate: 11.95%

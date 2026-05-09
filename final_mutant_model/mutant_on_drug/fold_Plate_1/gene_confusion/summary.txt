@@ -1,0 +1,8 @@
+Mutant-on-Drug Analysis Summary
+==================================================
+
+Ground truth: Antibiotic classes
+Predicted: Gene labels (mutant IDs)
+Analysis: Does predicted gene match antibiotic's target genes?
+
+Overall Gene Match Rate: 8.53%

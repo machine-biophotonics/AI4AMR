@@ -15,10 +15,9 @@ final_mutant_model/
 ├── plate_well_id_path.json            # Mutant (gene) mapping
 ├── plate_well_ic50_mapping.json       # Drug (antibiotic) mapping
 │
-├── generate_combined_confusion.py     # Mutant: gene hierarchy confusion matrices
-├── generate_drug_confusion.py         # Drug: MoA grouped confusion matrices
-├── generate_89class_confusion.py      # Drug: 89-class confusion matrix
-├── generate_gene_confusion.py         # Drug-on-mutant cross-domain analysis
+├── generate_mutant_confusion.py      # Mutant: gene hierarchy confusion matrices
+├── generate_drug_confusion.py         # Drug: MoA + 89-class confusion matrices
+├── generate_cross_domain_confusion.py # Cross-domain analysis
 │
 ├── mutant/                            # Mutant (gene) experiment results
 │   └── fold_Plate_1/                  # Fold results (Plate_1 = test plate)
@@ -113,23 +112,12 @@ python3 predict_all_crops.py \
 
 **For Mutant predictions (gene hierarchy):**
 ```bash
-# Use predictions from best accuracy checkpoint
-python3 generate_combined_confusion.py --single_fold Plate_1
-
-# Or specify prediction CSV explicitly
-python3 generate_combined_confusion.py \
-  --single_fold Plate_1 \
-  --prediction_csv predictions_all_crops_mil_best_model_acc_n3.csv
+python3 generate_mutant_confusion.py --single_fold Plate_1
 ```
 
-**For Drug predictions (MoA grouped):**
+**For Drug predictions (MoA grouped + 89-class):**
 ```bash
 python3 generate_drug_confusion.py --fold Plate_1
-```
-
-**For Drug predictions (89-class):**
-```bash
-python3 generate_89class_confusion.py --fold Plate_1
 ```
 
 ---
@@ -281,9 +269,8 @@ pip install numpy scikit-learn pandas tqdm albumentations seaborn
 2. **Crop extraction**: Training uses 3x3 neighborhood (9 crops per image), prediction uses 10x10 grid (100 crops).
 
 3. **Confusion matrices**: 
-   - Use `generate_combined_confusion.py` for **mutants** (gene hierarchy)
-   - Use `generate_drug_confusion.py` for **drugs** (MoA grouped)
-   - Use `generate_89class_confusion.py` for **drugs** (full 89 classes)
+   - Use `generate_mutant_confusion.py` for **mutants** (gene hierarchy)
+   - Use `generate_drug_confusion.py` for **drugs** (MoA + 89-class)
 
 4. **Checkpoint selection**: 
    - Use `checkpoint_epoch.pth` for final/last epoch predictions
