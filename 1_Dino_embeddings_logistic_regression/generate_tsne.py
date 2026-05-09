@@ -26,50 +26,54 @@ def load_embeddings():
     labels = []
     domain = []  # 'mutant' or 'drug'
     
+    # Load gene mapping for mutants
+    gene_mapping_path = os.path.join(BASE_DIR, 'plate_well_id_path.json')
+    with open(gene_mapping_path, 'r') as f:
+        gene_mapping = json.load(f)['P1']
+    
     # Load mutants
     mutants_dir = os.path.join(EMBEDDINGS_DIR, 'Mutants_P1')
     if os.path.exists(mutants_dir):
-        # Load metadata for mutant labels
-        metadata_path = os.path.join(EMBEDDINGS_DIR, 'metadata.json')
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-        
         for well_folder in sorted(glob.glob(os.path.join(mutants_dir, 'Well*'))):
-            well_name = os.path.basename(well_folder)
+            well_name = os.path.basename(well_folder)  # e.g., WellA01
+            # Extract row (A) and col (1, not 01)
+            row = well_name[4]  # A from WellA01
+            col = str(int(well_name[5:]))  # 1 from WellA01 (remove leading zero)
+            
+            # Get gene ID from mapping
+            if row in gene_mapping and col in gene_mapping[row]:
+                gene_id = gene_mapping[row][col]['id']
+            else:
+                gene_id = 'Unknown'
+            
             for emb_file in sorted(glob.glob(os.path.join(well_folder, '*.npy'))):
                 emb = np.load(emb_file)
                 if len(emb.shape) == 1:
                     embeddings.append(emb)
-                    # Get gene name from well
-                    row = well_name[3:5]  # A from WellA01
-                    col = well_name[5:]   # 01 from WellA01
-                    if row in metadata.get('Mutants_P1', {}) and col in metadata['Mutants_P1'][row]:
-                        gene_id = metadata['Mutants_P1'][row][col].get('id', 'Unknown')
-                        labels.append(gene_id)
-                    else:
-                        labels.append('Unknown')
+                    labels.append(gene_id)
                     domain.append('mutant')
+    
+    # Load IC50 mapping for drugs
+    ic50_path = os.path.join(BASE_DIR, 'plate_well_ic50_mapping.json')
+    with open(ic50_path, 'r') as f:
+        ic50_data = json.load(f)
     
     # Load drugs
     drugs_dir = os.path.join(EMBEDDINGS_DIR, 'Drugs_P1')
     if os.path.exists(drugs_dir):
-        # Load IC50 mapping for drug labels
-        ic50_path = os.path.join(BASE_DIR, '..', 'final_mutant_model', 'plate_well_ic50_mapping.json')
-        with open(ic50_path, 'r') as f:
-            ic50_data = json.load(f)
-        
         for well_folder in sorted(glob.glob(os.path.join(drugs_dir, 'Well*'))):
-            well_name = os.path.basename(well_folder)
+            well_name = os.path.basename(well_folder)  # e.g., WellA01 -> A01
+            wellname = well_name[4:]  # A01 (remove 'Well')
+            
             for emb_file in sorted(glob.glob(os.path.join(well_folder, '*.npy'))):
                 emb = np.load(emb_file)
                 if len(emb.shape) == 1:
                     embeddings.append(emb)
-                    # Get drug name from well
-                    if 'P1' in ic50_data and well_name in ic50_data['P1']:
-                        antibiotic = ic50_data['P1'][well_name].get('antibiotic', 'Unknown')
-                        ic50 = ic50_data['P1'][well_name].get('ic50_multiple', '1x')
-                        ic50_str = ic50 if 'x' in str(ic50) else f"{ic50}x"
-                        drug_name = f"{antibiotic}_{ic50_str}"
+                    # Get drug name from IC50 mapping
+                    if 'P1' in ic50_data and wellname in ic50_data['P1']:
+                        antibiotic = ic50_data['P1'][wellname].get('antibiotic', 'Unknown')
+                        ic50 = ic50_data['P1'][wellname].get('ic50_multiple', '1x')
+                        drug_name = f"{antibiotic}_{ic50}"
                         labels.append(drug_name)
                     else:
                         labels.append('Unknown')
@@ -79,22 +83,35 @@ def load_embeddings():
 
 
 def create_color_map(domain, labels):
-    """Create color map - green for mutants, blue for drugs."""
+    """Create color map - green for mutants (with special markers for WT NC/NC), blue for drugs."""
     colors = {}
+    markers = {}
     
     # Assign colors to mutants (genes) - various green shades
     gene_labels = sorted(set([l for l, d in zip(labels, domain) if d == 'mutant']))
     green_shades = plt.cm.Greens(np.linspace(0.3, 0.9, len(gene_labels)))
     for i, gene in enumerate(gene_labels):
         colors[gene] = f'#{int(green_shades[i][0]*255):02x}{int(green_shades[i][1]*255):02x}{int(green_shades[i][2]*255):02x}'
+        markers[gene] = 'o'  # default marker
+    
+    # Override for WT NC (red triangles) and NC (black squares)
+    for gene in gene_labels:
+        base = gene.rsplit('_', 1)[0]
+        if base == 'WT NC':
+            colors[gene] = 'red'
+            markers[gene] = '^'  # triangle
+        elif base == 'NC':
+            colors[gene] = 'black'
+            markers[gene] = 's'  # square
     
     # Assign colors to drugs - various blue shades
     drug_labels = sorted(set([l for l, d in zip(labels, domain) if d == 'drug']))
     blue_shades = plt.cm.Blues(np.linspace(0.3, 0.9, len(drug_labels)))
     for i, drug in enumerate(drug_labels):
         colors[drug] = f'#{int(blue_shades[i][0]*255):02x}{int(blue_shades[i][1]*255):02x}{int(blue_shades[i][2]*255):02x}'
+        markers[drug] = 'o'
     
-    return colors
+    return colors, markers
 
 
 def run_tsne(embeddings, perplexity=30):
@@ -123,7 +140,7 @@ def main():
     tsne_coords = run_tsne(embeddings, perplexity=30)
     
     # Create color map
-    color_map = create_color_map(domain, labels)
+    color_map, marker_map = create_color_map(domain, labels)
     
     # Create DataFrame
     df = pd.DataFrame({
@@ -148,18 +165,55 @@ def main():
     
     fig = go.Figure()
     
-    # Add mutant points (green)
+    # Add mutant points - with special markers for WT NC and NC
+    # Separate by marker type
+    df_wt_nc = df_mutant[df_mutant['Label'].apply(lambda x: x.rsplit('_',1)[0] == 'WT NC')]
+    df_nc = df_mutant[df_mutant['Label'].apply(lambda x: x.rsplit('_',1)[0] == 'NC')]
+    df_other_mutant = df_mutant[~df_mutant['Label'].apply(lambda x: x.rsplit('_',1)[0] in ['WT NC', 'NC'])]
+    
+    # Other mutants (green)
     fig.add_trace(go.Scatter(
-        x=df_mutant['tSNE_1'],
-        y=df_mutant['tSNE_2'],
+        x=df_other_mutant['tSNE_1'],
+        y=df_other_mutant['tSNE_2'],
         mode='markers',
         marker=dict(
             size=8,
             color='green',
             opacity=0.7
         ),
-        text=df_mutant['Label'],
+        text=df_other_mutant['Label'],
         name='Mutant (Gene)',
+        hoverinfo='text'
+    ))
+    
+    # WT NC - red triangles
+    fig.add_trace(go.Scatter(
+        x=df_wt_nc['tSNE_1'],
+        y=df_wt_nc['tSNE_2'],
+        mode='markers',
+        marker=dict(
+            size=12,
+            color='red',
+            symbol='triangle-up',
+            line=dict(width=2, color='darkred')
+        ),
+        text=df_wt_nc['Label'],
+        name='WT NC',
+        hoverinfo='text'
+    ))
+    
+    # NC - black squares
+    fig.add_trace(go.Scatter(
+        x=df_nc['tSNE_1'],
+        y=df_nc['tSNE_2'],
+        mode='markers',
+        marker=dict(
+            size=10,
+            color='black',
+            symbol='square'
+        ),
+        text=df_nc['Label'],
+        name='NC',
         hoverinfo='text'
     ))
     
@@ -179,7 +233,7 @@ def main():
     ))
     
     fig.update_layout(
-        title='t-SNE of DINOv3 Embeddings<br><sub>Green: Mutants/Genes | Blue: Drugs</sub>',
+        title='t-SNE of DINOv3 Embeddings<br><sub>Green circles: Mutants/Genes | Red triangles: WT NC | Black squares: NC | Blue: Drugs</sub>',
         xaxis_title='t-SNE 1',
         yaxis_title='t-SNE 2',
         width=1200,
@@ -200,10 +254,29 @@ def main():
     print("Creating static plot...")
     fig_static, ax = plt.subplots(figsize=(14, 10))
     
-    # Plot mutants in green
+    # Separate mutants by type
+    df_wt_nc_static = df_mutant[df_mutant['Label'].apply(lambda x: x.rsplit('_',1)[0] == 'WT NC')]
+    df_nc_static = df_mutant[df_mutant['Label'].apply(lambda x: x.rsplit('_',1)[0] == 'NC')]
+    df_other_mutant_static = df_mutant[~df_mutant['Label'].apply(lambda x: x.rsplit('_',1)[0] in ['WT NC', 'NC'])]
+    
+    # Plot other mutants in green
     ax.scatter(
-        df_mutant['tSNE_1'], df_mutant['tSNE_2'],
-        c='green', s=30, alpha=0.6, label=f'Mutant (Gene) n={len(df_mutant)}'
+        df_other_mutant_static['tSNE_1'], df_other_mutant_static['tSNE_2'],
+        c='green', s=30, alpha=0.6, label=f'Mutant (Gene) n={len(df_other_mutant_static)}'
+    )
+    
+    # Plot WT NC - red triangles
+    ax.scatter(
+        df_wt_nc_static['tSNE_1'], df_wt_nc_static['tSNE_2'],
+        c='red', marker='^', s=150, edgecolors='darkred', linewidths=2,
+        label=f'WT NC n={len(df_wt_nc_static)}'
+    )
+    
+    # Plot NC - black squares
+    ax.scatter(
+        df_nc_static['tSNE_1'], df_nc_static['tSNE_2'],
+        c='black', marker='s', s=80,
+        label=f'NC n={len(df_nc_static)}'
     )
     
     # Plot drugs in blue
@@ -214,7 +287,7 @@ def main():
     
     ax.set_xlabel('t-SNE 1', fontsize=12)
     ax.set_ylabel('t-SNE 2', fontsize=12)
-    ax.set_title('t-SNE of DINOv3 Embeddings\nGreen: Mutants/Genes | Blue: Drugs', fontsize=14)
+    ax.set_title('t-SNE of DINOv3 Embeddings\nGreen circles: Mutants | Red triangles: WT NC | Black squares: NC | Blue: Drugs', fontsize=14)
     ax.legend(loc='best', fontsize=10)
     plt.tight_layout()
     
