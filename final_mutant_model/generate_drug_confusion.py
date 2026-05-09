@@ -194,16 +194,19 @@ def create_heatmap(cm, labels, output_path, title, accuracy, show_percentage=Tru
         annot = cm
         vmax = None
     
-    plt.figure(figsize=(16, 14))
+    fig, ax = plt.subplots(figsize=(16, 14))
     
     sns.heatmap(cm, annot=annot, fmt='', cmap='Blues', vmax=vmax,
                 xticklabels=labels, yticklabels=labels,
                 cbar_kws={'label': 'Count' if not show_percentage else 'Percentage (%)'},
-                annot_kws={'fontsize': 7 if show_percentage else 9})
+                annot_kws={'fontsize': 7 if show_percentage else 9}, ax=ax)
     
-    plt.xlabel('Predicted', fontsize=12)
-    plt.ylabel('True', fontsize=12)
-    plt.title(f'{title}\nAccuracy: {accuracy:.2%}', fontsize=14)
+    ax.set_xlabel('Predicted', fontsize=12)
+    ax.set_ylabel('True', fontsize=12)
+    ax.set_title(f'{title}\nAccuracy: {accuracy:.2%}', fontsize=14)
+    # Add accuracy on top
+    ax.text(0.5, 1.02, f'Accuracy: {accuracy:.2%}', transform=ax.transAxes, 
+            ha='center', fontsize=14, fontweight='bold', color='darkblue')
     
     plt.xticks(rotation=45, ha='right', fontsize=9)
     plt.yticks(rotation=0, fontsize=9)
