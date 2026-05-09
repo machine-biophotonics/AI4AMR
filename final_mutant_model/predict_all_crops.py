@@ -34,6 +34,8 @@ def main() -> None:
                         help='Group drugs by antibiotic name only, ignoring concentration levels')
     parser.add_argument('--drug_on_mutant', action='store_true', default=False,
                         help='Use drug-trained model to predict on mutant plate data (cross-domain evaluation)')
+    parser.add_argument('--mutant_on_drug', action='store_true', default=False,
+                        help='Use mutant-trained model to predict on drug plate data (cross-domain evaluation)')
     parser.add_argument('--crop_size', type=int, default=224, help='Crop size (default: 224)')
     parser.add_argument('--grid_size', type=int, default=12, help='Grid size (default: 12)')
     parser.add_argument('--extraction_mode', type=str, default='neighborhood', choices=['neighborhood', 'raster'],
@@ -116,6 +118,20 @@ def main() -> None:
         actual_data_mode = 'mutant'
         print(f"\n*** DRUG ON MUTANT MODE ***")
         print(f"  Using drug-trained model to predict on mutant plates")
+    # Handle --mutant_on_drug: use mutant model on drug images
+    elif args.mutant_on_drug:
+        # Load mutant data for classes (model was trained on mutant labels)
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
+            MUTANT_DATA: dict = json.load(f)
+        # Load drug IC50 data for ground truth (drug labels)
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json'), 'r') as f:
+            IC50_DATA: dict = json.load(f)
+        # Set data_mode_folder to mutant_on_drug for output
+        data_mode_folder = 'mutant_on_drug'
+        # Override data_mode for BASE_DIR to point to drug
+        actual_data_mode = 'drug'
+        print(f"\n*** MUTANT ON DRUG MODE ***")
+        print(f"  Using mutant-trained model to predict on drug plates")
     else:
         actual_data_mode = args.data_mode
     
@@ -167,7 +183,7 @@ def main() -> None:
                             antibiotic_clean = antibiotic.replace(' ', '_')
                             drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
         all_classes = sorted(drug_classes)
-    elif args.data_mode == 'mutant':
+    elif args.data_mode == 'mutant' or args.mutant_on_drug:
         mutant_classes: set = set()
         for plate, rows in MUTANT_DATA.items():
             for row, cols in rows.items():
@@ -267,6 +283,14 @@ def main() -> None:
                 fold_key = test_plate  # keep as Plate_1
             else:
                 fold_key = f'Plate_{test_plate.replace("P", "")}'
+        # For mutant_on_drug, load checkpoint from mutant folder
+        elif args.mutant_on_drug:
+            checkpoint_folder = 'mutant'
+            # Convert Plate_X format for checkpoint folder
+            if 'Plate_' in test_plate:
+                fold_key = test_plate  # keep as Plate_1
+            else:
+                fold_key = f'Plate_{test_plate.replace("P", "")}'
         else:
             # Convert P1 -> Plate_1, P2 -> Plate_2 for folder lookup
             checkpoint_folder = data_mode_folder
@@ -319,7 +343,17 @@ def main() -> None:
     )
     model = model.to(device)
     
-    model.load_state_dict(checkpoint['model_state_dict'], strict=True)
+    # For cross-domain, filter classifier weights to avoid dimension mismatch
+    if args.drug_on_mutant:
+        # Drug model on mutant: keep all weights, allow classifier mismatch
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    elif args.mutant_on_drug:
+        # Mutant model on drug: load only backbone and attention, skip classifier (different classes)
+        state_dict = checkpoint['model_state_dict']
+        filtered_state_dict = {k: v for k, v in state_dict.items() if 'classifier' not in k}
+        model.load_state_dict(filtered_state_dict, strict=False)
+    else:
+        model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     model.eval()
     print(f"MILEncoder model loaded successfully (SC-MIL: {use_sc_mil})")
 
@@ -571,8 +605,8 @@ def main() -> None:
                 if col in MUTANT_DATA[plate][row]:
                     return MUTANT_DATA[plate][row][col].get('id', None)
         
-        # For drug mode, use IC50_DATA
-        if args.data_mode in ['drug', 'both'] and plate in IC50_DATA:
+        # For drug mode OR mutant_on_drug mode, use IC50_DATA for ground truth
+        if (args.data_mode in ['drug', 'both'] or args.mutant_on_drug) and plate in IC50_DATA:
             if well in IC50_DATA[plate]:
                 info = IC50_DATA[plate][well]
                 antibiotic = info.get('antibiotic', '')
