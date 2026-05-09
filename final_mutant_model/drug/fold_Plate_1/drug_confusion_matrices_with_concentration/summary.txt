@@ -1,0 +1,35 @@
+Drug Classification Summary (Majority Voting)
+======================================================================
+
+ANTIBIOTIC-LEVEL RESULTS
+----------------------------------------
+Note: Same antibiotic (any concentration) = correct
+
+  0.25x: 0.3476 (34.76%)
+  0.5x: 0.5175 (51.75%)
+  1x: 0.6635 (66.35%)
+  2x: 0.6841 (68.41%)
+  Average: 0.5532
+
+
+MECHANISM OF ACTION (MoA) RESULTS
+----------------------------------------
+Note: Same MoA group = correct
+
+  0.25x: 0.5794 (57.94%)
+  0.5x: 0.7048 (70.48%)
+  1x: 0.7889 (78.89%)
+  2x: 0.8460 (84.60%)
+  Average: 0.7298
+
+
+MoA GROUPING:
+  Cell wall (PBP 2): Avibactam, Clavulanic Acid, Meropenem, Mecillinam, Relebactam
+  Cell wall (PBP 3): Aztreonam, Ceftriaxone, Cefepim
+  Cell wall (PBP 1): Sulbactam, Penicillin, Cefsulodin
+  Ribosome: Doxicyclin, Chloramphenicol, Clarithromycin, Kanamycin
+  Gyrase: Ciprofloxacin, Norfloxacin, Levofloxacin
+  Membrane integrity: Polymyxin B, Colistin
+  RNA polymerase: Rifampicin
+  DNA synthesis: Trimethoprim
+  Control: DMSO

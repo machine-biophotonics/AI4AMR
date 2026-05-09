@@ -1,0 +1,32 @@
+89-Class Drug Classification Summary (Majority Voting)
+======================================================================
+
+Total classes: 89
+Overall accuracy: 0.5268 (52.68%)
+Total predictions: 2016
+
+Top 10 performing classes:
+             class  support  correct  accuracy
+    Avibactam_0.5x       21       21       1.0
+      Aztreonam_1x       21       21       1.0
+      Avibactam_1x       21       21       1.0
+Chloramphenicol_2x       21       21       1.0
+Chloramphenicol_1x       21       21       1.0
+  Ceftriaxone_0.5x       21       21       1.0
+     Cefsulodin_2x       21       21       1.0
+        Cefepim_1x       21       21       1.0
+      Cefepim_0.5x       21       21       1.0
+    Ceftriaxone_1x       21       21       1.0
+
+Bottom 10 performing classes:
+                class  support  correct  accuracy
+       Kanamycin_0.5x       21        0       0.0
+        Colistin_0.5x       21        0       0.0
+Clavulanic_Acid_0.25x       21        0       0.0
+       Colistin_0.25x       21        0       0.0
+   Ciprofloxacin_0.5x       21        0       0.0
+    Polymyxin_B_0.25x       21        0       0.0
+     Rifampicin_0.25x       21        0       0.0
+      Rifampicin_0.5x       21        0       0.0
+      Relebactam_0.5x       21        0       0.0
+       Sulbactam_0.5x       21        0       0.0

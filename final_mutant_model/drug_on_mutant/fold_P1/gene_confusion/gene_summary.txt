@@ -1,0 +1,50 @@
+Gene-Level Analysis Summary (Drug Model on Mutant Plates)
+======================================================================
+
+Overall Gene Match Rate: 6.55%
+
+Gene-level performance:
+             matches  total   rate
+target_gene                       
+folA              14     21  0.667
+lpxA              10     21  0.476
+mrdA               5     42  0.119
+folP               2     21  0.095
+lptA               2     21  0.095
+dnaE               0     21  0.000
+NC                 0     42  0.000
+WT NC              0     42  0.000
+gyrB               0     21  0.000
+ftsI               0     21  0.000
+mrcA               0     21  0.000
+msbA               0     42  0.000
+murA               0     21  0.000
+parC               0     21  0.000
+rplC               0     21  0.000
+rpoA               0     21  0.000
+rpsA               0     21  0.000
+rpsL               0     21  0.000
+secA               0     21  0.000
+secY               0     21  0.000
+
+Antibiotic-level performance:
+     antibiotic           target_genes  num_mutants  correctly_matched  match_rate
+   Trimethoprim             folA, folP           42                 16    0.380952
+       Colistin lpxA, lpxC, lptA, lptC           42                 12    0.285714
+    Polymyxin B lpxA, lpxC, lptA, lptC           42                 12    0.285714
+     Mecillinam                   mrdA           42                  5    0.119048
+       Cefepime ftsI, mrcA, mrcB, mrdA           84                  5    0.059524
+      Meropenem mrdA, ftsI, mrcA, mrcB           84                  5    0.059524
+     Cefsulodin             mrcA, mrcB           21                  0    0.000000
+      Sulbactam       mrcA, mrcB, ftsI           42                  0    0.000000
+     Penicillin       mrcA, mrcB, ftsI           42                  0    0.000000
+    Ceftriaxone       ftsI, mrcA, mrcB           42                  0    0.000000
+      Aztreonam                   ftsI           21                  0    0.000000
+    Doxycycline             rpsA, rpsL           42                  0    0.000000
+ Clarithromycin             rplA, rplC           21                  0    0.000000
+Chloramphenicol             rplA, rplC           21                  0    0.000000
+      Kanamycin             rpsA, rpsL           42                  0    0.000000
+    Norfloxacin gyrA, gyrB, parC, parE           42                  0    0.000000
+   Levofloxacin gyrA, gyrB, parC, parE           42                  0    0.000000
+  Ciprofloxacin gyrA, gyrB, parC, parE           42                  0    0.000000
+     Rifampicin             rpoA, rpoB           21                  0    0.000000
