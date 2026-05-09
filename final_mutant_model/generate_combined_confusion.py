@@ -411,7 +411,9 @@ def main():
     # Handle single fold case
     if args.single_fold:
         folds = [args.single_fold]
-        output_dir = os.path.join(SCRIPT_DIR, 'aggregate', f'fold_{args.single_fold}')
+        # Save within the fold folder by default
+        fold_key = f'fold_P{args.single_fold.replace("P", "")}' if not args.single_fold.startswith('fold_') else args.single_fold
+        output_dir = os.path.join(SCRIPT_DIR, 'mutant', fold_key, 'confusion_matrices')
     elif args.output_dir:
         folds = args.folds.split(',')
         output_dir = args.output_dir
@@ -431,30 +433,29 @@ def main():
     all_fold_data = {}
 
     for fold in folds:
-        fold_dir = os.path.join(SCRIPT_DIR, f'fold_{fold}')
+        # Look in mutant folder for predictions - check fold_P1 format
+        fold_key = f'fold_P{fold.replace("P", "")}' if not fold.startswith('fold_') else fold
+        fold_dir = os.path.join(SCRIPT_DIR, 'mutant', fold_key)
         
         if args.prediction_csv:
             csv_path = os.path.join(fold_dir, args.prediction_csv)
         elif args.csv_name:
             csv_path = os.path.join(fold_dir, args.csv_name)
         else:
-            # Mixed checkpoint: best_model_acc for P1-P5, best_model for P6
-            if args.mixed_checkpoints and fold == 'P6':
+            # Try various CSV file names
+            csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model_acc_n3.csv')
+            if not os.path.exists(csv_path):
                 csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model.csv')
-            else:
-                csv_path = os.path.join(fold_dir, 'predictions_all_crops.csv')
             if not os.path.exists(csv_path):
                 csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model_acc.csv')
             if not os.path.exists(csv_path):
-                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model_auc.csv')
-            if not os.path.exists(csv_path):
-                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_100pos.csv')
-            if not os.path.exists(csv_path):
-                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil.csv')
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops.csv')
             if not os.path.exists(csv_path):
                 csv_path = os.path.join(fold_dir, 'image_predictions_mil.csv')
 
         if not os.path.exists(csv_path):
+            print(f"  Tried: {csv_path}")
+            print(f"  Available files: {os.listdir(fold_dir) if os.path.exists(fold_dir) else 'folder not found'}")
             print(f"Skipping {fold}: no CSV file found")
             continue
 
