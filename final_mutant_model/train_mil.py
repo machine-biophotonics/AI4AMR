@@ -422,7 +422,9 @@ def train_single_fold(test_plate: str) -> None:
                     ab = info.get('antibiotic', '')
                     ic = info.get('ic50_multiple', '')
                     if ab and ic:
-                        drug_classes_from_ic50.add(f'{ab}_{ic}')
+                        # Replace spaces with underscores to match format in class_to_idx
+                        ab_clean = ab.replace(' ', '_')
+                        drug_classes_from_ic50.add(f'{ab_clean}_{ic}')
         
         # Build mutant classes set directly from mutant mapping (source of truth)
         mutant_classes_from_mutant = set()
