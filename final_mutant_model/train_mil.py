@@ -414,26 +414,36 @@ def train_single_fold(test_plate: str) -> None:
     drug_class_indices = set()
     mutant_class_indices = set()
     if args.use_dann and args.data_mode == 'both':
+        # Count actual drugs: 18 antibiotics × 4 concentrations (72) + 6 NC + 6 WT NC + control = 85
+        # Count actual mutants: 32 genes × 3 replicates = 96
+        # But we also have more controls in the data, so total might be slightly different
+        expected_drugs = {'Avibactam', 'Aztreonam', 'Cefepim', 'Cefsulodin', 'Ceftriaxone', 
+                        'Chloramphenicol', 'Ciprofloxacin', 'Clarithromycin', 'Clavulanic_Acid',
+                        'Colistin', 'Doxicyclin', 'Kanamycin', 'Levofloxacin', 'Mecillinam', 
+                        'Meropenem', 'Norfloxacin', 'Penicillin', 'Polymyxin_B', 'Relebactam',
+                        'Rifampicin', 'Sulbactam', 'Trimethoprim'}
+        
         for cls, idx in class_to_idx.items():
-            # Drug classes: antibiotic names like 'Avibactam_*', 'Ciprofloxacin_*'
+            # Drug classes: antibiotic names (uppercase, contains _ and concentration like _0.25x)
             # plus special: 'control', 'NC_*', 'WT NC_*'
-            # Mutant classes: gene names like 'dnaB_*', 'gyrA_*', 'rplC_*'
-            # Rule: first char uppercase = drug (antibiotic), first char lowercase = mutant (gene)
-            first_char_upper = cls[0].isupper()
-            is_special = cls == 'control' or cls.startswith('NC_') or cls.startswith('WT NC_')
-            is_drug = first_char_upper or is_special
+            # Mutant classes: gene names (lowercase like dnaB, gyrA, rplC)
+            
+            is_antibiotic = False
+            if '_' in cls:
+                prefix = cls.split('_')[0]
+                if prefix in expected_drugs:
+                    is_antibiotic = True
+            
+            is_special = cls == 'control' or cls == 'Control' or cls.startswith('NC_') or cls.startswith('WT NC_')
+            
+            is_drug = is_antibiotic or is_special
             
             if is_drug:
                 drug_class_indices.add(idx)
             else:
                 mutant_class_indices.add(idx)
         
-        # Debug: print some examples
-        sample_drugs = [cls for cls, idx in class_to_idx.items() if idx in list(drug_class_indices)[:3]]
-        sample_mutants = [cls for cls, idx in class_to_idx.items() if idx in list(mutant_class_indices)[:3]] if mutant_class_indices else ['NONE']
         print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {len(mutant_class_indices)}")
-        print(f"Sample drugs: {sample_drugs}")
-        print(f"Sample mutants: {sample_mutants}")
     
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
