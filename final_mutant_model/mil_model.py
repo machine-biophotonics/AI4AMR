@@ -83,6 +83,9 @@ class GradientReverse(torch.autograd.Function):
     """
     @staticmethod
     def forward(ctx, x, alpha):
+        # Convert alpha to tensor if needed (save_for_backward requires tensor)
+        if not isinstance(alpha, torch.Tensor):
+            alpha = torch.tensor(alpha, dtype=x.dtype, device=x.device)
         # Save alpha for backward pass
         ctx.save_for_backward(alpha)
         # Forward: identity (no change)
