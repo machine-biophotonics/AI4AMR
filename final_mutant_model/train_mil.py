@@ -412,11 +412,28 @@ def train_single_fold(test_plate: str) -> None:
     
     # For DANN: track which labels are drugs vs mutants
     drug_class_indices = set()
+    mutant_class_indices = set()
     if args.use_dann and args.data_mode == 'both':
         for cls, idx in class_to_idx.items():
-            if cls.startswith('drug_') or not cls.startswith('mutant_'):
+            # Drug classes: antibiotic names like 'Avibactam_*', 'Ciprofloxacin_*'
+            # plus special: 'control', 'NC_*', 'WT NC_*'
+            # Mutant classes: gene names like 'dnaB_*', 'gyrA_*', 'rplC_*'
+            # Rule: first char uppercase = drug (antibiotic), first char lowercase = mutant (gene)
+            first_char_upper = cls[0].isupper()
+            is_special = cls == 'control' or cls.startswith('NC_') or cls.startswith('WT NC_')
+            is_drug = first_char_upper or is_special
+            
+            if is_drug:
                 drug_class_indices.add(idx)
-        print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {num_classes - len(drug_class_indices)}")
+            else:
+                mutant_class_indices.add(idx)
+        
+        # Debug: print some examples
+        sample_drugs = [cls for cls, idx in class_to_idx.items() if idx in list(drug_class_indices)[:3]]
+        sample_mutants = [cls for cls, idx in class_to_idx.items() if idx in list(mutant_class_indices)[:3]] if mutant_class_indices else ['NONE']
+        print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {len(mutant_class_indices)}")
+        print(f"Sample drugs: {sample_drugs}")
+        print(f"Sample mutants: {sample_mutants}")
     
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
@@ -688,7 +705,13 @@ def train_single_fold(test_plate: str) -> None:
             model.train()
             run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
             
-            for images, labels in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
+            for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
+                # Handle both 2-value and 3-value returns from dataset
+                if args.use_dann and args.data_mode == 'both':
+                    images, labels, domain_labels = batch
+                else:
+                    images, labels = batch[0], batch[1]
+                
                 images, labels = images.to(device), labels.to(device)
                 sc_mil_optimizer.zero_grad()
                 
