@@ -414,28 +414,31 @@ def train_single_fold(test_plate: str) -> None:
     drug_class_indices = set()
     mutant_class_indices = set()
     if args.use_dann and args.data_mode == 'both':
-        # Exact antibiotic names from the data (including spaces)
-        expected_antibiotics = {
-            'Avibactam', 'Aztreonam', 'Cefepim', 'Cefsulodin', 'Ceftriaxone',
-            'Chloramphenicol', 'Ciprofloxacin', 'Clarithromycin', 'Clavulanic Acid',
-            'Colistin', 'DMSO', 'Doxicyclin', 'Kanamycin', 'Levofloxacin', 'Mecillinam',
-            'Meropenem', 'Norfloxacin', 'Penicillin', 'Polymyxin B', 'Relebactam',
-            'Rifampicin', 'Sulbactam', 'Trimethoprim'
-        }
+        # Build drug classes set directly from ic50 mapping (source of truth)
+        drug_classes_from_ic50 = set()
+        for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
+            if plate in ic50_data:
+                for well, info in ic50_data[plate].items():
+                    ab = info.get('antibiotic', '')
+                    ic = info.get('ic50_multiple', '')
+                    if ab and ic:
+                        drug_classes_from_ic50.add(f'{ab}_{ic}')
         
+        # Build mutant classes set directly from mutant mapping (source of truth)
+        mutant_classes_from_mutant = set()
+        for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
+            if plate in mutant_data:
+                for row, cols in mutant_data[plate].items():
+                    for col, info in cols.items():
+                        gid = info.get('id', '')
+                        if gid:
+                            mutant_classes_from_mutant.add(gid)
+        
+        # Classify: if class in ic50 mapping → drug, else → mutant
         for cls, idx in class_to_idx.items():
-            is_drug = False
-            
-            # Drug: antibiotic name prefix (e.g., 'Avibactam_0.25x') OR DMSO_control
-            if '_' in cls:
-                prefix = cls.split('_')[0]
-                if prefix in expected_antibiotics:
-                    is_drug = True
-            
-            if is_drug:
+            if cls in drug_classes_from_ic50:
                 drug_class_indices.add(idx)
             else:
-                # Mutant: everything else (gene names like dnaB_1, plus NC_1-6, WT NC_1-6)
                 mutant_class_indices.add(idx)
         
         print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {len(mutant_class_indices)}")
