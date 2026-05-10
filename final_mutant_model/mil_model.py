@@ -200,15 +200,31 @@ class MILEncoder(nn.Module):
         
         # Domain Classifier for DANN (drug vs mutant) with Gradient Reversal Layer
         # GRL: multiply features by -alpha during backward to reverse gradients
-        self.grl_alpha = 1.0  # Fixed alpha (no scheduling as requested)
+        self.grl_alpha = 2.0  # Target GRL alpha (after warmup)
+        self.grl_warmup_epochs = 20  # Ramp up GRL over first 20 epochs
+        self.use_grl_scheduling = True  # Enable GRL scheduling
         
         self.domain_classifier = nn.Sequential(
             nn.Dropout(p=dropout),
-            nn.Linear(self.feature_dim, 128),
+            nn.Linear(self.feature_dim, 32),  # Further reduced to 32 to prevent overfitting
             nn.ReLU(),
             nn.Dropout(p=dropout),
-            nn.Linear(128, 2)  # 0=drug, 1=mutant
+            nn.Linear(32, 2)  # 0=drug, 1=mutant
         )
+    
+    def get_current_grl_alpha(self, epoch: int = 0) -> float:
+        """Compute current GRL alpha with warmup scheduling.
+        
+        Ramps up from 0 to target grl_alpha over warmup period.
+        This prevents domain classifier from overpowering early in training.
+        """
+        if not self.use_grl_scheduling:
+            return self.grl_alpha
+        
+        # Linear ramp up from 0 to grl_alpha over warmup period
+        if epoch < self.grl_warmup_epochs:
+            return self.grl_alpha * (epoch / self.grl_warmup_epochs)
+        return self.grl_alpha
     
     def forward(
         self,
@@ -218,7 +234,8 @@ class MILEncoder(nn.Module):
         return_crop_embeddings: bool = False,
         return_pooled_embeddings: bool = False,
         return_instance_logits: bool = False,
-        return_domain: bool = False
+        return_domain: bool = False,
+        epoch: int = 0
     ) -> tuple | torch.Tensor:
         batch_size, num_crops = x.shape[:2]
         
@@ -245,7 +262,8 @@ class MILEncoder(nn.Module):
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
             if return_domain:
-                grl_features = pooled * (-self.grl_alpha)
+                current_alpha = self.get_current_grl_alpha(epoch)
+                grl_features = pooled * (-current_alpha)
                 domain_logits = self.domain_classifier(grl_features)
                 results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
@@ -267,7 +285,8 @@ class MILEncoder(nn.Module):
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
             if return_domain:
-                grl_features = pooled * (-self.grl_alpha)
+                current_alpha = self.get_current_grl_alpha(epoch)
+                grl_features = pooled * (-current_alpha)
                 domain_logits = self.domain_classifier(grl_features)
                 results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
@@ -299,8 +318,9 @@ class MILEncoder(nn.Module):
             results.append(instance_logits)
         if return_domain:
             # Gradient Reversal Layer (GRL): multiply by -grl_alpha
-            # This reverses gradients during backprop, pushing feature extractor to create domain-invariant features
-            grl_features = pooled * (-self.grl_alpha)
+            # GRL scheduling: ramp up alpha from 0 to target over warmup period
+            current_alpha = self.get_current_grl_alpha(epoch)
+            grl_features = pooled * (-current_alpha)
             domain_logits = self.domain_classifier(grl_features)
             results.append(domain_logits)
         
@@ -477,17 +497,27 @@ class AttentionMILModel(nn.Module):
         )
         
         # Domain Classifier for DANN (drug vs mutant) with Gradient Reversal Layer
-        self.grl_alpha = 1.0  # Fixed alpha (no scheduling)
+        self.grl_alpha = 2.0  # Target GRL alpha (after warmup)
+        self.grl_warmup_epochs = 20  # Ramp up GRL over first 20 epochs
+        self.use_grl_scheduling = True  # Enable GRL scheduling
         
         self.domain_classifier = nn.Sequential(
             nn.Dropout(p=dropout),
-            nn.Linear(feature_dim, 128),
+            nn.Linear(feature_dim, 32),  # Further reduced to 32 to prevent overfitting
             nn.ReLU(),
             nn.Dropout(p=dropout),
-            nn.Linear(128, 2)  # 0=drug, 1=mutant
+            nn.Linear(32, 2)  # 0=drug, 1=mutant
         )
     
-    def forward(self, x, return_attention=False, return_domain=False):
+    def get_current_grl_alpha(self, epoch: int = 0) -> float:
+        """Compute current GRL alpha with warmup scheduling."""
+        if not self.use_grl_scheduling:
+            return self.grl_alpha
+        if epoch < self.grl_warmup_epochs:
+            return self.grl_alpha * (epoch / self.grl_warmup_epochs)
+        return self.grl_alpha
+    
+    def forward(self, x, return_attention=False, return_domain=False, epoch: int = 0):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -506,7 +536,8 @@ class AttentionMILModel(nn.Module):
             if return_attention:
                 return output, attn_weights
             if return_domain:
-                grl_features = pooled * (-self.grl_alpha)
+                current_alpha = self.get_current_grl_alpha(epoch)
+                grl_features = pooled * (-current_alpha)
                 domain_logits = self.domain_classifier(grl_features)
                 return output, domain_logits
             return output
@@ -521,7 +552,8 @@ class AttentionMILModel(nn.Module):
             if return_attention:
                 return output, attn_weights
             if return_domain:
-                grl_features = pooled * (-self.grl_alpha)
+                current_alpha = self.get_current_grl_alpha(epoch)
+                grl_features = pooled * (-current_alpha)
                 domain_logits = self.domain_classifier(grl_features)
                 return output, domain_logits
             return output
@@ -531,13 +563,15 @@ class AttentionMILModel(nn.Module):
             pooled = self.head_proj(pooled)
             output = self.classifier(pooled)
             if return_attention and return_domain:
-                grl_features = pooled * (-self.grl_alpha)
+                current_alpha = self.get_current_grl_alpha(epoch)
+                grl_features = pooled * (-current_alpha)
                 domain_logits = self.domain_classifier(grl_features)
                 return output, attn_weights, domain_logits
             if return_attention:
                 return output, attn_weights
             if return_domain:
-                grl_features = pooled * (-self.grl_alpha)
+                current_alpha = self.get_current_grl_alpha(epoch)
+                grl_features = pooled * (-current_alpha)
                 domain_logits = self.domain_classifier(grl_features)
                 return output, domain_logits
             return output

@@ -133,6 +133,10 @@ parser.add_argument('--use_dann', action='store_true', default=False,
                     help='Use Domain-Adversarial training with data_mode both')
 parser.add_argument('--dann_lambda', type=float, default=1.0,
                     help='Weight for domain loss (constant, no scheduling)')
+parser.add_argument('--domain_entropy_weight', type=float, default=2.0,
+                    help='Weight for domain entropy regularization (higher to force uncertainty)')
+parser.add_argument('--domain_lr_factor', type=float, default=0.1,
+                    help='Domain classifier learning rate factor (e.g., 0.1 = 10x lower than feature extractor)')
 args = parser.parse_args()
 
 # Validate DANN requires data_mode both
@@ -556,20 +560,38 @@ def train_single_fold(test_plate: str) -> None:
         model.backbone.eval()
     
     # Set up optimizer based on whether backbone is frozen
+    # With DANN: domain classifier gets 10x lower LR
     if args.freeze:
         # Only train attention pool + classifier
         attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
-        optimizer = torch.optim.AdamW([
-            {'params': attention_params, 'lr': args.lr}
-        ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        if args.use_dann and args.data_mode == 'both':
+            domain_params = [p for n, p in model.named_parameters() if 'domain_classifier' in n]
+            optimizer = torch.optim.AdamW([
+                {'params': attention_params, 'lr': args.lr},
+                {'params': domain_params, 'lr': args.lr * args.domain_lr_factor}
+            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        else:
+            optimizer = torch.optim.AdamW([
+                {'params': attention_params, 'lr': args.lr}
+            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
     else:
         # Original: backbone + attention + classifier with different LRs
-        backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
-        attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
-        optimizer = torch.optim.AdamW([
-            {'params': backbone_params, 'lr': args.lr * 0.1},
-            {'params': attention_params, 'lr': args.lr}
-        ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        if args.use_dann and args.data_mode == 'both':
+            backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n and 'domain_classifier' not in n]
+            attention_params = [p for n, p in model.named_parameters() if ('attention_pool' in n or 'classifier' in n) and 'domain_classifier' not in n]
+            domain_params = [p for n, p in model.named_parameters() if 'domain_classifier' in n]
+            optimizer = torch.optim.AdamW([
+                {'params': backbone_params, 'lr': args.lr * 0.1},
+                {'params': attention_params, 'lr': args.lr},
+                {'params': domain_params, 'lr': args.lr * args.domain_lr_factor}
+            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        else:
+            backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
+            attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+            optimizer = torch.optim.AdamW([
+                {'params': backbone_params, 'lr': args.lr * 0.1},
+                {'params': attention_params, 'lr': args.lr}
+            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
 
     # AMP scaler for mixed precision training
     use_amp = torch.cuda.is_available()
@@ -699,9 +721,25 @@ def train_single_fold(test_plate: str) -> None:
         train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True,
                                    persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True)
         
-        # Train encoder + attention + classifier jointly
-        sc_mil_params = [p for n, p in model.named_parameters()]
-        sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        # Train encoder + attention + classifier jointly with different LR for domain classifier
+        if args.use_dann and args.data_mode == 'both':
+            # Separate domain classifier parameters from rest (10x lower LR)
+            domain_params = []
+            other_params = []
+            for n, p in model.named_parameters():
+                if 'domain_classifier' in n:
+                    domain_params.append(p)
+                else:
+                    other_params.append(p)
+            
+            sc_mil_optimizer = torch.optim.AdamW([
+                {'params': other_params, 'lr': args.lr},
+                {'params': domain_params, 'lr': args.lr * args.domain_lr_factor}  # 10x lower for domain classifier
+            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+            print(f"DANN: Using {args.lr} for feature extractor, {args.lr * args.domain_lr_factor} for domain classifier")
+        else:
+            sc_mil_params = [p for n, p in model.named_parameters()]
+            sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         if args.warmup_epochs > 0:
             sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
@@ -721,7 +759,7 @@ def train_single_fold(test_plate: str) -> None:
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
-            run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
+            run_cl_loss, run_ce_loss, run_domain_loss, run_domain_acc, correct, total = 0.0, 0.0, 0.0, 0.0, 0, 0
             
             for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
                 # Handle both 2-value and 3-value returns from dataset
@@ -740,21 +778,26 @@ def train_single_fold(test_plate: str) -> None:
                     if args.use_dann and args.data_mode == 'both':
                         model_output = model(images, return_attention=True, return_crop_embeddings=True, 
                                           return_pooled_embeddings=True, return_instance_logits=True,
-                                          return_domain=True)
+                                          return_domain=True, epoch=epoch)
                         # Handle different return formats
                         if args.pooling in ['mean', 'max']:
                             outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
                         else:  # attention
                             outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
                         
-                        # DANN domain loss
-                        domain_loss = F.cross_entropy(domain_logits, domain_labels)
-                        domain_loss_val = domain_loss.item()
+                        # DANN domain loss: NEGATIVE to maximize error (confuse domain classifier)
+                        # This is the key: we want domain classifier to FAIL, not succeed
+                        domain_log_probs = F.log_softmax(domain_logits, dim=1)
+                        domain_loss = -F.nll_loss(domain_log_probs, domain_labels)  # Negative to MAXIMIZE error
+                        
+                        # Entropy regularization: penalize confident domain predictions
+                        domain_entropy = -(domain_log_probs.exp() * domain_log_probs).sum(dim=1).mean()
+                        domain_loss_val = -domain_loss.item()  # Report as positive for logging
                         domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
                         
-                        # Print domain loss periodically
-                        if epoch % 10 == 0:
-                            print(f"  Domain Loss: {domain_loss_val:.4f}, Domain Acc: {domain_acc:.2%}")
+                        # Accumulate domain loss and accuracy for epoch average
+                        run_domain_loss += domain_loss_val
+                        run_domain_acc += domain_acc
                     else:
                         outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
                             images, return_attention=True, return_crop_embeddings=True, 
@@ -808,9 +851,9 @@ def train_single_fold(test_plate: str) -> None:
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
                     
-                    # Add DANN domain loss if enabled
+                    # Add DANN domain loss with entropy regularization if enabled
                     if args.use_dann and args.data_mode == 'both':
-                        loss = loss + args.dann_lambda * domain_loss
+                        loss = loss + args.dann_lambda * domain_loss + args.domain_entropy_weight * domain_entropy
                 
                 sc_mil_scaler.scale(loss).backward()
                 sc_mil_scaler.step(sc_mil_optimizer)
@@ -827,6 +870,12 @@ def train_single_fold(test_plate: str) -> None:
             train_acc = 100. * correct / total
             avg_cl_loss = run_cl_loss / len(train_loader)
             avg_ce_loss = run_ce_loss / len(train_loader)
+            
+            # Print epoch-level domain metrics
+            if args.use_dann and args.data_mode == 'both':
+                avg_domain_loss = run_domain_loss / len(train_loader)
+                avg_domain_acc = run_domain_acc / len(train_loader) * 100
+                print(f"  Domain Loss: {avg_domain_loss:.4f}, Domain Acc: {avg_domain_acc:.1f}%")
             
             # VALIDATION after each SC-MIL epoch
             model.eval()
@@ -899,6 +948,8 @@ def train_single_fold(test_plate: str) -> None:
             train_dataset.set_epoch(epoch)
             model.train()
             run_loss, correct, total = 0.0, 0, 0
+            domain_loss_sum = 0.0
+            domain_acc_sum = 0.0
             
             for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
                 # Dataset always returns (images, labels, domain_labels)
@@ -915,7 +966,7 @@ def train_single_fold(test_plate: str) -> None:
                 with torch.amp.autocast('cuda', enabled=use_amp):
                     if args.use_dann and args.data_mode == 'both':
                         # DANN: return both label and domain predictions
-                        model_output = model(images, return_domain=True)
+                        model_output = model(images, return_domain=True, epoch=epoch)
                         
                         # Handle different return formats based on pooling type
                         if args.pooling in ['mean', 'max']:
@@ -926,16 +977,20 @@ def train_single_fold(test_plate: str) -> None:
                         # Classification loss
                         main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                         
-                        # Domain loss (we want to MAXIMIZE domain confusion, so minimize accuracy)
-                        domain_loss = F.cross_entropy(domain_logits, domain_labels)
+                        # Domain loss: NEGATIVE to maximize error (confuse domain classifier)
+                        domain_log_probs = F.log_softmax(domain_logits, dim=1)
+                        domain_loss = -F.nll_loss(domain_log_probs, domain_labels)  # Negative to MAXIMIZE error
                         
-                        # Combined loss
-                        loss = main_loss + args.dann_lambda * domain_loss
+                        # Entropy regularization: penalize confident domain predictions
+                        domain_entropy = -(domain_log_probs.exp() * domain_log_probs).sum(dim=1).mean()
+                        domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
                         
-                        # Print domain loss for monitoring
-                        if epoch % 10 == 0:
-                            domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
-                            print(f"  Domain Loss: {domain_loss.item():.4f}, Domain Acc: {domain_acc:.2%}")
+                        # Combined loss with entropy regularization
+                        loss = main_loss + args.dann_lambda * domain_loss + args.domain_entropy_weight * domain_entropy
+                        
+                        # Accumulate domain loss and accuracy for epoch average
+                        domain_loss_sum += -domain_loss.item()  # Report as positive for logging
+                        domain_acc_sum += domain_acc
                     else:
                         outputs, attn_weights = model(images, return_attention=True)
                         
@@ -965,6 +1020,12 @@ def train_single_fold(test_plate: str) -> None:
         train_acc = 100. * correct / total
         avg_train_loss = run_loss / len(train_loader)
         
+        # Print epoch-level domain metrics
+        if args.use_dann and args.data_mode == 'both':
+            avg_domain_loss = domain_loss_sum / len(train_loader)
+            avg_domain_acc = domain_acc_sum / len(train_loader) * 100
+            print(f"  Domain Loss: {avg_domain_loss:.4f}, Domain Acc: {avg_domain_acc:.1f}%")
+        
         model.eval()
         val_loss_total = 0.0
         all_preds, all_probs, all_labels = [], [], []
@@ -975,7 +1036,7 @@ def train_single_fold(test_plate: str) -> None:
                 images, labels = images.to(device), labels.to(device)
                 
                 if args.use_dann and args.data_mode == 'both':
-                    model_output = model(images, return_domain=True)
+                    model_output = model(images, return_domain=True, epoch=epoch)
                     if args.pooling in ['mean', 'max']:
                         outputs, _ = model_output
                     else:
@@ -1038,7 +1099,7 @@ def train_single_fold(test_plate: str) -> None:
             images = images.to(device)
             
             if args.use_dann and args.data_mode == 'both':
-                model_output = model(images, return_domain=True)
+                model_output = model(images, return_domain=True, epoch=0)  # Inference mode
                 if args.pooling in ['mean', 'max']:
                     outputs, _ = model_output
                 else:
