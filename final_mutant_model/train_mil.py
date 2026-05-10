@@ -792,14 +792,14 @@ def train_single_fold(test_plate: str) -> None:
                         else:  # attention
                             outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
                         
-                        # DANN domain loss: NEGATIVE to maximize error (confuse domain classifier)
-                        # This is the key: we want domain classifier to FAIL, not succeed
+                        # DANN domain loss: Standard cross-entropy (positive)
+                        # GRL handles gradient reversal - feature extractor tries to maximize domain loss
                         domain_log_probs = F.log_softmax(domain_logits, dim=1)
-                        domain_loss = -F.nll_loss(domain_log_probs, domain_labels)  # Negative to MAXIMIZE error
+                        domain_loss = F.nll_loss(domain_log_probs, domain_labels)  # Positive CE loss
                         
                         # Entropy regularization: penalize confident domain predictions
                         domain_entropy = -(domain_log_probs.exp() * domain_log_probs).sum(dim=1).mean()
-                        domain_loss_val = -domain_loss.item()  # Report as positive for logging
+                        domain_loss_val = domain_loss.item()
                         domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
                         
                         # Accumulate domain loss and accuracy for epoch average
@@ -984,9 +984,9 @@ def train_single_fold(test_plate: str) -> None:
                         # Classification loss
                         main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                         
-                        # Domain loss: NEGATIVE to maximize error (confuse domain classifier)
+                        # Domain loss: Standard cross-entropy (positive) - GRL handles gradient reversal
                         domain_log_probs = F.log_softmax(domain_logits, dim=1)
-                        domain_loss = -F.nll_loss(domain_log_probs, domain_labels)  # Negative to MAXIMIZE error
+                        domain_loss = F.nll_loss(domain_log_probs, domain_labels)  # Positive CE loss
                         
                         # Entropy regularization: penalize confident domain predictions
                         domain_entropy = -(domain_log_probs.exp() * domain_log_probs).sum(dim=1).mean()
@@ -996,7 +996,7 @@ def train_single_fold(test_plate: str) -> None:
                         loss = main_loss + args.dann_lambda * domain_loss + args.domain_entropy_weight * domain_entropy
                         
                         # Accumulate domain loss and accuracy for epoch average
-                        domain_loss_sum += -domain_loss.item()  # Report as positive for logging
+                        domain_loss_sum += domain_loss.item()
                         domain_acc_sum += domain_acc
                     else:
                         outputs, attn_weights = model(images, return_attention=True)
