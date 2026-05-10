@@ -423,18 +423,11 @@ def train_single_fold(test_plate: str) -> None:
             'Rifampicin', 'Sulbactam', 'Trimethoprim'
         }
         
-        # Special control classes (not antibiotics but treat as drugs)
-        special_controls = {'control', 'Control', 'NC_1', 'NC_2', 'NC_3', 'NC_4', 'NC_5', 'NC_6',
-                           'WT NC_1', 'WT NC_2', 'WT NC_3', 'WT NC_4', 'WT NC_5', 'WT NC_6'}
-        
         for cls, idx in class_to_idx.items():
             is_drug = False
             
-            # Check if it's a special control (NC, WT NC, control)
-            if cls in special_controls:
-                is_drug = True
-            # Check if it's an antibiotic (prefix matches)
-            elif '_' in cls:
+            # Drug: antibiotic name prefix (e.g., 'Avibactam_0.25x') OR DMSO_control
+            if '_' in cls:
                 prefix = cls.split('_')[0]
                 if prefix in expected_antibiotics:
                     is_drug = True
@@ -442,6 +435,7 @@ def train_single_fold(test_plate: str) -> None:
             if is_drug:
                 drug_class_indices.add(idx)
             else:
+                # Mutant: everything else (gene names like dnaB_1, plus NC_1-6, WT NC_1-6)
                 mutant_class_indices.add(idx)
         
         print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {len(mutant_class_indices)}")
