@@ -135,6 +135,10 @@ parser.add_argument('--dann_lambda', type=float, default=1.0,
                     help='Weight for domain loss (constant, no scheduling)')
 args = parser.parse_args()
 
+# Validate DANN requires data_mode both
+if args.use_dann and args.data_mode != 'both':
+    raise ValueError("--use_dann requires --data_mode both")
+
 # Determine folder name for results (drug_noconcentration vs drug)
 data_mode_folder = args.data_mode
 if args.data_mode == 'drug' and args.drug_no_concentration:
