@@ -731,10 +731,31 @@ def train_single_fold(test_plate: str) -> None:
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
                     # Single forward pass: get outputs, attn, crop, pooled embeddings, and instance logits
-                    outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
-                        images, return_attention=True, return_crop_embeddings=True, 
-                        return_pooled_embeddings=True, return_instance_logits=True
-                    )
+                    # Plus domain logits for DANN
+                    if args.use_dann and args.data_mode == 'both':
+                        model_output = model(images, return_attention=True, return_crop_embeddings=True, 
+                                          return_pooled_embeddings=True, return_instance_logits=True,
+                                          return_domain=True)
+                        # Handle different return formats
+                        if args.pooling in ['mean', 'max']:
+                            outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
+                        else:  # attention
+                            outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
+                        
+                        # DANN domain loss
+                        domain_loss = F.cross_entropy(domain_logits, domain_labels)
+                        domain_loss_val = domain_loss.item()
+                        domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
+                        
+                        # Print domain loss periodically
+                        if epoch % 10 == 0:
+                            print(f"  Domain Loss: {domain_loss_val:.4f}, Domain Acc: {domain_acc:.2%}")
+                    else:
+                        outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
+                            images, return_attention=True, return_crop_embeddings=True, 
+                            return_pooled_embeddings=True, return_instance_logits=True
+                        )
+                        domain_loss_val = 0.0
                     
                     # ============ CONTRASTIVE LOSSES ============
                     num_crops = crop_embeddings.shape[1]
@@ -781,6 +802,10 @@ def train_single_fold(test_plate: str) -> None:
                     
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                    
+                    # Add DANN domain loss if enabled
+                    if args.use_dann and args.data_mode == 'both':
+                        loss = loss + args.dann_lambda * domain_loss
                 
                 sc_mil_scaler.scale(loss).backward()
                 sc_mil_scaler.step(sc_mil_optimizer)
