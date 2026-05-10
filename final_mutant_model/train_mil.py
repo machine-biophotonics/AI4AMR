@@ -414,29 +414,30 @@ def train_single_fold(test_plate: str) -> None:
     drug_class_indices = set()
     mutant_class_indices = set()
     if args.use_dann and args.data_mode == 'both':
-        # Count actual drugs: 18 antibiotics × 4 concentrations (72) + 6 NC + 6 WT NC + control = 85
-        # Count actual mutants: 32 genes × 3 replicates = 96
-        # But we also have more controls in the data, so total might be slightly different
-        expected_drugs = {'Avibactam', 'Aztreonam', 'Cefepim', 'Cefsulodin', 'Ceftriaxone', 
-                        'Chloramphenicol', 'Ciprofloxacin', 'Clarithromycin', 'Clavulanic_Acid',
-                        'Colistin', 'Doxicyclin', 'Kanamycin', 'Levofloxacin', 'Mecillinam', 
-                        'Meropenem', 'Norfloxacin', 'Penicillin', 'Polymyxin_B', 'Relebactam',
-                        'Rifampicin', 'Sulbactam', 'Trimethoprim'}
+        # Exact antibiotic names from the data (including spaces)
+        expected_antibiotics = {
+            'Avibactam', 'Aztreonam', 'Cefepim', 'Cefsulodin', 'Ceftriaxone',
+            'Chloramphenicol', 'Ciprofloxacin', 'Clarithromycin', 'Clavulanic Acid',
+            'Colistin', 'DMSO', 'Doxicyclin', 'Kanamycin', 'Levofloxacin', 'Mecillinam',
+            'Meropenem', 'Norfloxacin', 'Penicillin', 'Polymyxin B', 'Relebactam',
+            'Rifampicin', 'Sulbactam', 'Trimethoprim'
+        }
+        
+        # Special control classes (not antibiotics but treat as drugs)
+        special_controls = {'control', 'Control', 'NC_1', 'NC_2', 'NC_3', 'NC_4', 'NC_5', 'NC_6',
+                           'WT NC_1', 'WT NC_2', 'WT NC_3', 'WT NC_4', 'WT NC_5', 'WT NC_6'}
         
         for cls, idx in class_to_idx.items():
-            # Drug classes: antibiotic names (uppercase, contains _ and concentration like _0.25x)
-            # plus special: 'control', 'NC_*', 'WT NC_*'
-            # Mutant classes: gene names (lowercase like dnaB, gyrA, rplC)
+            is_drug = False
             
-            is_antibiotic = False
-            if '_' in cls:
+            # Check if it's a special control (NC, WT NC, control)
+            if cls in special_controls:
+                is_drug = True
+            # Check if it's an antibiotic (prefix matches)
+            elif '_' in cls:
                 prefix = cls.split('_')[0]
-                if prefix in expected_drugs:
-                    is_antibiotic = True
-            
-            is_special = cls == 'control' or cls == 'Control' or cls.startswith('NC_') or cls.startswith('WT NC_')
-            
-            is_drug = is_antibiotic or is_special
+                if prefix in expected_antibiotics:
+                    is_drug = True
             
             if is_drug:
                 drug_class_indices.add(idx)
