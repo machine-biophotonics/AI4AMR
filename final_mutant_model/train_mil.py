@@ -137,6 +137,13 @@ parser.add_argument('--domain_entropy_weight', type=float, default=2.0,
                     help='Weight for domain entropy regularization (higher to force uncertainty)')
 parser.add_argument('--domain_lr_factor', type=float, default=0.1,
                     help='Domain classifier learning rate factor (e.g., 0.1 = 10x lower than feature extractor)')
+# Self-supervised contrastive pre-training arguments
+parser.add_argument('--contrastive_epochs', type=int, default=50,
+                    help='Number of epochs for contrastive pre-training')
+parser.add_argument('--contrastive_batch_size', type=int, default=256,
+                    help='Batch size for contrastive pre-training')
+parser.add_argument('--contrastive_temp', type=float, default=0.07,
+                    help='Temperature for contrastive loss')
 args = parser.parse_args()
 
 # Validate DANN requires data_mode both
