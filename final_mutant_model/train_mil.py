@@ -723,6 +723,7 @@ def train_single_fold(test_plate: str) -> None:
                 # Handle both 2-value and 3-value returns from dataset
                 if args.use_dann and args.data_mode == 'both':
                     images, labels, domain_labels = batch
+                    domain_labels = domain_labels.to(device)
                 else:
                     images, labels = batch[0], batch[1]
                 
