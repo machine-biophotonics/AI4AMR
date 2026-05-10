@@ -4,73 +4,29 @@ Multiple Instance Learning (MIL) model for classifying CRISPRi guide experiments
 
 ---
 
-## Project Structure
+## Project Overview
 
-```
-final_mutant_model/
-├── train_mil.py                       # Training script
-├── predict_all_crops.py               # Prediction/evaluation script
-├── mil_model.py                       # Model definitions
-├── supcon_loss.py                    # Supervised Contrastive Loss
-├── plate_well_id_path.json            # Mutant (gene) mapping
-├── plate_well_ic50_mapping.json       # Drug (antibiotic) mapping
-│
-├── generate_mutant_confusion.py      # Mutant: gene hierarchy confusion matrices
-├── generate_drug_confusion.py         # Drug: MoA + 89-class confusion matrices
-├── generate_cross_domain_confusion.py # Cross-domain analysis
-│
-├── mutant/                            # Mutant (gene) experiment results
-│   └── fold_Plate_1/                  # Fold results (Plate_1 = test plate)
-│       ├── checkpoint_epoch.pth       # Last epoch checkpoint
-│       ├── best_model_acc.pth         # Best by validation accuracy
-│       ├── best_model_auc.pth         # Best by validation AUC
-│       ├── best_model_loss.pth        # Best by validation loss
-│       ├── training_results.json      # Training metrics summary
-│       ├── training_sc_mil_*.csv      # SC-MIL training log
-│       ├── predictions_all_crops_mil_checkpoint_epoch_n3.csv
-│       ├── predictions_all_crops_mil_best_model_acc_n3.csv
-│       └── confusion_matrices/        # Confusion matrix outputs
-│           ├── raw_cm_*_guide.png     # Raw counts (guide level)
-│           ├── raw_cm_*_gene.png      # Raw counts (gene level)
-│           ├── raw_cm_*_pathway.png   # Raw counts (pathway level)
-│           ├── raw_cm_*_family.png    # Raw counts (family level)
-│           ├── percent_cm_*_*.png     # Percentage normalized
-│           ├── binary_cm_*_*.png      # Binary (correct/incorrect)
-│           └── combined_metrics.csv   # Summary metrics
-│
-└── drug/                              # Drug (antibiotic) experiment results
-    └── fold_Plate_1/
-        ├── checkpoint_epoch.pth
-        ├── best_model_acc.pth
-        ├── best_model_auc.pth
-        ├── training_results.json
-        ├── training_sc_mil_*.csv
-        ├── predictions_all_crops_mil_best_model_acc_n3.csv
-        └── confusion_matrices/        # Drug confusion outputs
-            ├── confusion_matrix_antibiotic_0.25x.png
-            ├── confusion_matrix_antibiotic_0.5x.png
-            ├── confusion_matrix_antibiotic_1x.png
-            ├── confusion_matrix_antibiotic_2x.png
-            ├── confusion_matrix_moa_0.25x.png
-            ├── confusion_matrix_moa_0.5x.png
-            ├── confusion_matrix_moa_1x.png
-            ├── confusion_matrix_moa_2x.png
-            └── combined_metrics.csv
-```
+This project implements several training approaches for bacterial colony classification:
+
+| Approach | Description | Use Case |
+|----------|-------------|----------|
+| **SC-MIL** | Supervised Contrastive MIL (classification + contrastive loss) | Main model for drug/mutant classification |
+| **DANN** | Domain-Adversarial Neural Network (SC-MIL + domain adaptation) | Cross-domain learning (drug ↔ mutant) |
+| **SimCLR** | Self-supervised contrastive learning | Pre-training, feature visualization |
 
 ---
 
 ## Quick Start
 
-### Training
+### 1. SC-MIL Training (Standard)
 
-**Train on Mutant data (gene/knockdown classification):**
+**Train on Mutant data (gene classification):**
 ```bash
-cd /media/student/Data_SSD_1-TB/2025_12_19\ CRISPRi\ Reference\ Plate\ Imaging/final_mutant_model
+cd final_mutant_model
 python3 train_mil.py --test_plate Plate_1 --data_mode mutant --use_sc_mil
 ```
 
-**Train on Drug data (antibiotic + concentration classification):**
+**Train on Drug data (antibiotic classification):**
 ```bash
 python3 train_mil.py --test_plate Plate_1 --data_mode drug --use_sc_mil
 ```
@@ -80,45 +36,94 @@ python3 train_mil.py --test_plate Plate_1 --data_mode drug --use_sc_mil
 python3 train_mil.py --run_all_folds --data_mode mutant --use_sc_mil
 ```
 
-### Prediction
+---
 
-**Generate predictions on Mutant test plate:**
+### 2. DANN Training (Domain-Adversarial)
+
+Train on **both** drug and mutant data together with domain adaptation:
+
 ```bash
-# Using last checkpoint (epoch 199)
-python3 predict_all_crops.py \
-  --fold Plate_1 \
-  --data_mode mutant \
-  --checkpoint checkpoint_epoch.pth \
-  --crop_neighborhood 3
-
-# Using best accuracy checkpoint
-python3 predict_all_crops.py \
-  --fold Plate_1 \
-  --data_mode mutant \
-  --checkpoint best_model_acc.pth \
-  --crop_neighborhood 3
+python3 train_mil.py \
+  --data_mode both \
+  --use_dann \
+  --dann_lambda 1.0 \
+  --test_plate Plate_1
 ```
 
-**Generate predictions on Drug test plate:**
-```bash
-python3 predict_all_crops.py \
-  --fold Plate_1 \
-  --data_mode drug \
-  --checkpoint checkpoint_epoch.pth \
-  --crop_neighborhood 3
+This learns **domain-invariant features** that work on both drug AND mutant images.
+
+**Parameters:**
+- `--data_mode both` - Load both drug and mutant images (185 classes)
+- `--use_dann` - Enable Domain-Adversarial training
+- `--dann_lambda 1.0` - Weight for domain loss (fixed, no scheduling)
+
+**Expected output:**
+```
+DANN: Drug classes = 89, Mutant classes = 96
 ```
 
-### Confusion Matrix Generation
+---
 
-**For Mutant predictions (gene hierarchy):**
+### 3. SimCLR Self-Supervised Training
+
 ```bash
-python3 generate_mutant_confusion.py --single_fold Plate_1
+cd self_supervised_trial
+python3 train_simclr_raw.py --plate P1 --epochs 200
 ```
 
-**For Drug predictions (MoA grouped + 89-class):**
-```bash
-python3 generate_drug_confusion.py --fold Plate_1
+---
+
+## Training Modes Explained
+
+### SC-MIL (Supervised Contrastive MIL)
+
+| Component | Description |
+|-----------|-------------|
+| **Backbone** | EfficientNet-B0 (ImageNet/MicroNet pretrained) |
+| **Pooling** | Gated Multi-head Attention (4 heads) |
+| **Crops** | 3×3 neighborhood = 9 crops per image |
+| **Loss** | Weighted focal loss + supervised contrastive loss |
+| **Classes** | Mutant: 96 / Drug: 89 |
+
+**How crop extraction works:**
+- 100 possible center positions on each plate image
+- **1 random position** selected per image per epoch
+- At that position: extract **3×3 = 9 crops** (neighborhood)
+- Forward pass processes **9 crops** → attention pooling → output
+- NOT 100 forward passes!
+
+---
+
+### DANN (Domain-Adversarial Neural Network)
+
+Built on top of SC-MIL with additional domain adaptation:
+
+| Component | Description |
+|-----------|-------------|
+| **Base** | SC-MIL (same backbone, pooling, loss) |
+| **Domain Classifier** | Additional binary classifier (drug vs mutant) |
+| **GRL** | Gradient Reversal Layer - reverses domain gradients |
+| **Goal** | Learn domain-invariant features |
+
+**How GRL works:**
 ```
+Forward:  features → domain_classifier → domain_logits (normal)
+Backward: domain_loss gradients → multiply by -1 → features
+```
+
+**Effect:** Feature extractor is punished for creating domain-specific features, forcing it to learn features that work on **both** domains.
+
+---
+
+### SimCLR (Self-Supervised)
+
+| Component | Description |
+|-----------|-------------|
+| **Backbone** | EfficientNet-B0 |
+| **Crops** | 1 random position × 9 neighborhood = 9 crops |
+| **Augmentation** | Random crop, flip, color jitter, blur |
+| **Loss** | SimCLR contrastive loss (NT-Xent) |
+| **No labels** | Learns general visual features only |
 
 ---
 
@@ -128,7 +133,7 @@ python3 generate_drug_confusion.py --fold Plate_1
 |------|-------------|---------|---------------|
 | `mutant` | Mutants_Data/ | 96 genes (e.g., lptA_3, mrdA_2) | plate_well_id_path.json |
 | `drug` | Drugs_Data/ | 89 (antibiotic + concentration) | plate_well_ic50_mapping.json |
-| `both` | Both | Combined | Both JSONs |
+| `both` | Both | 185 (89 drugs + 96 mutants) | Both JSONs |
 
 ---
 
@@ -140,69 +145,63 @@ python3 generate_drug_confusion.py --fold Plate_1
 |----------|---------|-------------|
 | `--test_plate` | Plate_1 | Test plate (Plate_1 to Plate_6) |
 | `--data_mode` | mutant | Data type: mutant, drug, or both |
+| `--use_dann` | OFF | Enable Domain-Adversarial training |
+| `--dann_lambda` | 1.0 | Domain loss weight (constant) |
 | `--use_sc_mil` | ON | Use SC-MIL (joint contrastive + classification) |
 | `--epochs` | 200 | Training epochs |
 | `--batch_size` | 32 | Batch size |
-| `--lr` | 1e-4 | Learning rate |
-| `--neighborhood` | 3 | Crop neighborhood (3=3x3=9 crops, 5=5x5=25) |
-| `--dropout` | 0.5 | Dropout rate |
-| `--sc_mil_weight` | 0.3 | Weight for contrastive loss |
-| `--sc_mil_temp` | 0.07 | Temperature for SupCon loss |
-
-### Prediction (predict_all_crops.py)
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--fold` | P6 | Test fold (Plate_1, Plate_2, etc.) |
-| `--data_mode` | drug | Data type: mutant, drug, or both |
-| `--checkpoint` | best_model_acc.pth | Checkpoint file to use |
-| `--crop_neighborhood` | 3 | Crop neighborhood size |
-| `--mil_mode` | True | Use MIL mode with attention pooling |
+| `--neighborhood` | 3 | Crop neighborhood (3=3×3=9 crops) |
+| `--num_channels` | 1 | Input channels (1=grayscale, 3=RGB) |
+| `--pretrained` | micronet | Pretrained weights (imagenet/micronet) |
 
 ---
 
-## Output Files Explained
+## Crop Extraction Clarification
 
-### Checkpoints
+### Common Misconception: "100 positions = 100 forward passes"
 
-| File | Description |
-|------|-------------|
-| `checkpoint_epoch.pth` | Last epoch (199) - use for final predictions |
-| `best_model_acc.pth` | Best by validation accuracy |
-| `best_model_auc.pth` | Best by validation AUC |
-| `best_model_loss.pth` | Best by lowest validation loss |
+**Correct understanding:**
+- 100 positions = 100 **possible center locations** on the plate
+- Per image per epoch: **1 random position** is selected
+- At that position: extract **3×3 = 9 crops** (neighborhood)
+- Forward pass: **9 crops** → attention pooling → 1 output
 
-### Prediction CSV Format
+```
+Self-Supervised: 9 crops/forward → 1 output
+SC-MIL:           9 crops/forward → 1 output  
+DANN:             9 crops/forward → 1 output
+```
 
-Each row represents one crop prediction:
-- `image_path`: Full path to image file
-- `well`: Well position (e.g., A01, B12)
-- `ground_truth_label`: True label (e.g., lptA_3 or Chloramphenicol_1x)
-- `predicted_class_name`: Model prediction
-- `position_index`: Crop position in grid (0-99)
+**All use the same 9 crops per forward pass!**
 
-### Confusion Matrix Hierarchy (Mutants)
+The speed difference comes from:
+- Self-supervised: 1 loss (contrastive)
+- SC-MIL: 2 losses (classification + contrastive)
+- DANN: 3 losses (classification + contrastive + domain)
 
-| Level | Classes | Description |
-|-------|---------|-------------|
-| guide | 96 | Individual CRISPRi guide (e.g., lptA_3) |
-| gene | 30 | Gene target (e.g., lptA) |
-| pathway | 11 | Biological pathway (e.g., cell wall) |
-| family | 16 | Gene family (e.g., lpt) |
+---
 
-### Confusion Matrix Groups (Drugs)
+## Prediction
 
-| Group | Antibiotics |
-|-------|-------------|
-| Cell wall (PBP 2) | Avibactam, Clavulanic Acid, Meropenem, Mecillinam |
-| Cell wall (PBP 3) | Aztreonam, Ceftriaxone, Cefepim |
-| Cell wall (PBP 1) | Sulbactam, Penicillin, Cefsulodin |
-| Ribosome | Doxicyclin, Chloramphenicol, Clarithromycin, Kanamycin |
-| Gyrase | Ciprofloxacin, Norfloxacin, Levofloxacin |
-| Membrane integrity | Polymyxin B, Colistin |
-| RNA polymerase | Rifampicin |
-| DNA synthesis | Trimethoprim |
-| Control | DMSO |
+```bash
+# Mutant predictions
+python3 predict_all_crops.py --fold Plate_1 --data_mode mutant --checkpoint best_model_acc.pth
+
+# Drug predictions
+python3 predict_all_crops.py --fold Plate_1 --data_mode drug --checkpoint best_model_acc.pth
+```
+
+---
+
+## Confusion Matrix Generation
+
+```bash
+# For mutants (gene hierarchy)
+python3 generate_mutant_confusion.py --single_fold Plate_1
+
+# For drugs (MoA grouped + 89-class)
+python3 generate_drug_confusion.py --fold Plate_1
+```
 
 ---
 
@@ -210,20 +209,12 @@ Each row represents one crop prediction:
 
 **Drug model on Mutant data:**
 ```bash
-python3 predict_all_crops.py \
-  --fold Plate_1 \
-  --data_mode mutant \
-  --drug_on_mutant \
-  --checkpoint best_model_acc.pth
+python3 predict_all_crops.py --fold Plate_1 --data_mode mutant --drug_on_mutant --checkpoint best_model_acc.pth
 ```
 
 **Mutant model on Drug data:**
 ```bash
-python3 predict_all_crops.py \
-  --fold Plate_1 \
-  --data_mode drug \
-  --mutant_on_drug \
-  --checkpoint best_model_acc.pth
+python3 predict_all_crops.py --fold Plate_1 --data_mode drug --mutant_on_drug --checkpoint best_model_acc.pth
 ```
 
 ---
@@ -234,19 +225,52 @@ python3 predict_all_crops.py \
 
 | Metric | Value |
 |--------|-------|
-| Image accuracy (best_model_acc) | ~21-26% |
-| Image accuracy (checkpoint_epoch) | ~26% |
+| Image accuracy | ~21-26% |
 | Gene-level accuracy | ~46-53% |
 | Pathway-level accuracy | ~59-67% |
-| Family-level accuracy | ~55-61% |
 
 ### Drug (Antibiotic Classification)
 
 | Metric | Value |
 |--------|-------|
-| Image accuracy (best_model_acc) | ~43-50% |
+| Image accuracy | ~43-50% |
 | Test AUC | ~0.97 |
 | Test AP | ~0.55 |
+
+---
+
+## Project Structure
+
+```
+final_mutant_model/
+├── train_mil.py                       # Main training script (SC-MIL + DANN)
+├── predict_all_crops.py              # Prediction script
+├── mil_model.py                      # Model definitions
+├── supcon_loss.py                    # Supervised Contrastive Loss
+├── plate_well_id_path.json           # Mutant (gene) mapping
+├── plate_well_ic50_mapping.json       # Drug (antibiotic) mapping
+│
+├── self_supervised_trial/            # Self-supervised experiments
+│   ├── train_simclr_raw.py           # SimCLR training
+│   ├── extract_embeddings.py         # Extract embeddings
+│   ├── plot_tsne.py                  # t-SNE visualization
+│   └── antibiotic_mutant_similarity.py # Cross-domain similarity
+│
+├── generate_mutant_confusion.py      # Mutant confusion matrices
+├── generate_drug_confusion.py        # Drug confusion matrices
+├── generate_cross_domain_confusion.py # Cross-domain analysis
+│
+├── mutant/                            # Mutant experiment results
+│   └── fold_Plate_1/
+│       ├── checkpoint_epoch.pth
+│       ├── best_model_acc.pth
+│       └── training_sc_mil_*.csv
+│
+└── drug/                             # Drug experiment results
+    └── fold_Plate_1/
+        ├── checkpoint_epoch.pth
+        └── training_sc_mil_*.csv
+```
 
 ---
 
@@ -262,17 +286,11 @@ pip install numpy scikit-learn pandas tqdm albumentations seaborn
 
 ---
 
-## Notes
+## Checkpoint Types
 
-1. **Ground truth fix**: The prediction script automatically handles plate key conversion (Plate_1 → P1) for ground truth lookup.
-
-2. **Crop extraction**: Training uses 3x3 neighborhood (9 crops per image), prediction uses 10x10 grid (100 crops).
-
-3. **Confusion matrices**: 
-   - Use `generate_mutant_confusion.py` for **mutants** (gene hierarchy)
-   - Use `generate_drug_confusion.py` for **drugs** (MoA + 89-class)
-
-4. **Checkpoint selection**: 
-   - Use `checkpoint_epoch.pth` for final/last epoch predictions
-   - Use `best_model_acc.pth` for best validation accuracy
-   - Use `best_model_auc.pth` for best validation AUC
+| File | Description |
+|------|-------------|
+| `checkpoint_epoch.pth` | Last epoch (199) - use for final predictions |
+| `best_model_acc.pth` | Best by validation accuracy |
+| `best_model_auc.pth` | Best by validation AUC |
+| `best_model_loss.pth` | Best by lowest validation loss |
