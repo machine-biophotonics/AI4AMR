@@ -95,8 +95,8 @@ class GradientReverse(torch.autograd.Function):
     def backward(ctx, grad_output):
         # Retrieve saved alpha
         alpha, = ctx.saved_tensors
-        # Backward: reverse gradient and scale by alpha
-        return grad_output * (-alpha), None
+        # Backward: negate gradient and multiply by alpha (matches official DANN)
+        return grad_output.neg() * alpha, None
 
 
 def grl_layer(alpha):
