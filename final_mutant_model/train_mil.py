@@ -129,6 +129,10 @@ parser.add_argument('--drug_no_concentration', action='store_true', default=Fals
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
 parser.add_argument('--freeze', action='store_true', default=False,
                     help='Freeze backbone, only train attention pool + classifier head')
+parser.add_argument('--use_dann', action='store_true', default=False,
+                    help='Use Domain-Adversarial training with data_mode both')
+parser.add_argument('--dann_lambda', type=float, default=1.0,
+                    help='Weight for domain loss (constant, no scheduling)')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
@@ -402,9 +406,17 @@ def train_single_fold(test_plate: str) -> None:
     print(f"Number of classes: {num_classes}")
     print(f"Classes: {all_classes}")
     
-    train_paths, train_labels = [], []
-    val_paths, val_labels = [], []
-    test_paths, test_labels = [], []
+    train_paths, train_labels, train_domain_labels = [], [], []
+    val_paths, val_labels, val_domain_labels = [], [], []
+    test_paths, test_labels, test_domain_labels = [], [], []
+    
+    # For DANN: track which labels are drugs vs mutants
+    drug_class_indices = set()
+    if args.use_dann and args.data_mode == 'both':
+        for cls, idx in class_to_idx.items():
+            if cls.startswith('drug_') or not cls.startswith('mutant_'):
+                drug_class_indices.add(idx)
+        print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {num_classes - len(drug_class_indices)}")
     
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
@@ -412,6 +424,10 @@ def train_single_fold(test_plate: str) -> None:
             if label in class_to_idx:
                 train_paths.append(path)
                 train_labels.append(class_to_idx[label])
+                # Domain label: 0 for drug, 1 for mutant
+                if args.use_dann and args.data_mode == 'both':
+                    domain_label = 0 if class_to_idx[label] in drug_class_indices else 1
+                    train_domain_labels.append(domain_label)
     
     for plate in val_plates:
         for path in get_image_paths_for_plate(plate):
@@ -419,6 +435,9 @@ def train_single_fold(test_plate: str) -> None:
             if label in class_to_idx:
                 val_paths.append(path)
                 val_labels.append(class_to_idx[label])
+                if args.use_dann and args.data_mode == 'both':
+                    domain_label = 0 if class_to_idx[label] in drug_class_indices else 1
+                    val_domain_labels.append(domain_label)
     
     for plate in [test_plate_normalized]:
         for path in get_image_paths_for_plate(plate):
@@ -426,10 +445,18 @@ def train_single_fold(test_plate: str) -> None:
             if label in class_to_idx:
                 test_paths.append(path)
                 test_labels.append(class_to_idx[label])
+                if args.use_dann and args.data_mode == 'both':
+                    domain_label = 0 if class_to_idx[label] in drug_class_indices else 1
+                    test_domain_labels.append(domain_label)
     
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
     test_labels = np.array(test_labels)
+    
+    if args.use_dann and args.data_mode == 'both':
+        train_domain_labels = np.array(train_domain_labels)
+        val_domain_labels = np.array(val_domain_labels)
+        test_domain_labels = np.array(test_domain_labels)
     
     print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
     
@@ -439,9 +466,9 @@ def train_single_fold(test_plate: str) -> None:
     class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
-    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
-    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
+    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, domain_labels=train_domain_labels if args.use_dann and args.data_mode == 'both' else None)
+    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, domain_labels=val_domain_labels if args.use_dann and args.data_mode == 'both' else None)
+    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, domain_labels=test_domain_labels if args.use_dann and args.data_mode == 'both' else None)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -805,22 +832,54 @@ def train_single_fold(test_plate: str) -> None:
             model.train()
             run_loss, correct, total = 0.0, 0, 0
             
-            for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+            for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+                # Dataset always returns (images, labels, domain_labels)
+                images, labels, domain_labels = batch
+                
+                if args.use_dann and args.data_mode == 'both':
+                    domain_labels = domain_labels.to(device)
+                else:
+                    domain_labels = None
+                
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    outputs, attn_weights = model(images, return_attention=True)
-                    
-                    # SC-MIL loss: weighted focal loss + optional entropy regularization
-                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                    
-                    # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
-                    if args.entropy_loss_weight > 0:
-                        attn_ent_loss = attention_entropy_loss(attn_weights)
-                        loss = main_loss + args.entropy_loss_weight * attn_ent_loss
+                    if args.use_dann and args.data_mode == 'both':
+                        # DANN: return both label and domain predictions
+                        model_output = model(images, return_domain=True)
+                        
+                        # Handle different return formats based on pooling type
+                        if args.pooling in ['mean', 'max']:
+                            outputs, domain_logits = model_output
+                        else:  # attention
+                            outputs, _, domain_logits = model_output
+                        
+                        # Classification loss
+                        main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                        
+                        # Domain loss (we want to MAXIMIZE domain confusion, so minimize accuracy)
+                        domain_loss = F.cross_entropy(domain_logits, domain_labels)
+                        
+                        # Combined loss
+                        loss = main_loss + args.dann_lambda * domain_loss
+                        
+                        # Print domain loss for monitoring
+                        if epoch % 10 == 0:
+                            domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
+                            print(f"  Domain Loss: {domain_loss.item():.4f}, Domain Acc: {domain_acc:.2%}")
                     else:
-                        loss = main_loss
+                        outputs, attn_weights = model(images, return_attention=True)
+                        
+                        # SC-MIL loss: weighted focal loss + optional entropy regularization
+                        main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                        
+                        # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
+                        if args.entropy_loss_weight > 0:
+                            attn_ent_loss = attention_entropy_loss(attn_weights)
+                            loss = main_loss + args.entropy_loss_weight * attn_ent_loss
+                        else:
+                            loss = main_loss
                 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -843,9 +902,19 @@ def train_single_fold(test_plate: str) -> None:
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+            for batch in tqdm(val_loader, desc='Validating', leave=False):
+                images, labels, _ = batch
                 images, labels = images.to(device), labels.to(device)
-                outputs, _ = model(images, return_attention=True)
+                
+                if args.use_dann and args.data_mode == 'both':
+                    model_output = model(images, return_domain=True)
+                    if args.pooling in ['mean', 'max']:
+                        outputs, _ = model_output
+                    else:
+                        outputs, _, _ = model_output
+                else:
+                    outputs, _ = model(images, return_attention=True)
+                
                 probs = torch.softmax(outputs, dim=1)
                 _, predicted = outputs.max(1)
                 all_preds.extend(predicted.cpu().numpy())
@@ -896,9 +965,19 @@ def train_single_fold(test_plate: str) -> None:
     
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
+        for batch in tqdm(test_loader, desc='Testing', leave=False):
+            images, labels, _ = batch
             images = images.to(device)
-            outputs, _ = model(images, return_attention=True)
+            
+            if args.use_dann and args.data_mode == 'both':
+                model_output = model(images, return_domain=True)
+                if args.pooling in ['mean', 'max']:
+                    outputs, _ = model_output
+                else:
+                    outputs, _, _ = model_output
+            else:
+                outputs, _ = model(images, return_attention=True)
+            
             probs = torch.softmax(outputs, dim=1)
             _, predicted = outputs.max(1)
             all_preds.extend(predicted.cpu().numpy())

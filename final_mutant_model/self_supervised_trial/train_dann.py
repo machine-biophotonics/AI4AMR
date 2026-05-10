@@ -215,11 +215,6 @@ class DomainAdaptationDataset(Dataset):
                         if top - half_n * stride >= 0 and top + half_n * stride + crop_size <= h:
                             self.positions.append((left, top))
         
-        self.normalize = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5], std=[0.5])
-        ])
-        
         if augment:
             self.aug = transforms.Compose([
                 transforms.RandomResizedCrop(crop_size, scale=(0.7, 1.0)),
@@ -252,7 +247,10 @@ class DomainAdaptationDataset(Dataset):
                 left = center_left + dj * self.stride
                 top = center_top + di * self.stride
                 crop = arr[top:top+self.crop_size, left:left+self.crop_size]
-                crops.append(crop)
+                # Convert numpy array to PIL Image for augmentations
+                crop_uint8 = (crop * 255).astype(np.uint8)
+                crop_pil = Image.fromarray(crop_uint8, mode='L')
+                crops.append(crop_pil)
         return crops
     
     def __getitem__(self, idx):
@@ -260,9 +258,20 @@ class DomainAdaptationDataset(Dataset):
         cl, ct = random.choice(self.positions)
         
         crops = self._extract_crops(arr, cl, ct)
-        crops_tensors = torch.stack([
-            self.normalize(self.aug(c) if self.aug else c) for c in crops
-        ])
+        
+        # Apply augmentation and normalize to tensor
+        crops_tensors = []
+        for c in crops:
+            if self.aug:
+                c = self.aug(c)
+            # Convert to tensor manually
+            c_np = np.array(c).astype(np.float32) / 255.0
+            c_tensor = torch.from_numpy(c_np).float().unsqueeze(0)
+            # Normalize: (x - 0.5) / 0.5
+            c_tensor = (c_tensor - 0.5) / 0.5
+            crops_tensors.append(c_tensor)
+        
+        crops_tensors = torch.stack(crops_tensors)
         
         return (
             crops_tensors,  # [9, 1, H, W]

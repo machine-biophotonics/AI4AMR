@@ -118,8 +118,8 @@ def extract_crops(arr, center_left, center_top, crop_size, stride, neighborhood)
 
 
 def normalize_crop(crop):
-    crop_np = (crop * 255).astype(np.uint8)
-    crop_pil = Image.fromarray(crop_np, mode='L')
+    crop_uint8 = (crop * 255).astype(np.uint8)
+    crop_pil = Image.fromarray(crop_uint8, mode='L')
     crop_np = np.array(crop_pil).astype(np.float32) / 255.0
     crop_np = (crop_np - 0.5) / 0.5
     return torch.from_numpy(crop_np).float().unsqueeze(0)

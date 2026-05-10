@@ -1,0 +1,38 @@
+Cross-Domain Similarity Analysis Summary
+============================================================
+
+Analysis: Drug embeddings vs Mutant embeddings
+Fold: Plate_1
+Embedding type: mil
+Top-K matches: 10
+
+Overall Statistics:
+  Total matches: 20160
+  Target gene matches: 1929
+  Overall match rate: 9.57%
+
+Per-Antibiotic Statistics:
+     antibiotic        target_genes  total_matches  target_matches  match_rate
+    Polymyxin_B lpxA,lpxC,lptA,lptC            840             323    0.384524
+     Rifampicin           rpoA,rpoB            840             291    0.346429
+     Penicillin      mrcA,mrcB,ftsI            840             253    0.301190
+     Mecillinam                mrdA            840             208    0.247619
+       Colistin lpxA,lpxC,lptA,lptC            840             185    0.220238
+      Meropenem mrdA,ftsI,mrcA,mrcB            840             163    0.194048
+Chloramphenicol           rplA,rplC            840             157    0.186905
+        Cefepim ftsI,mrcA,mrcB,mrdA            840              95    0.113095
+ Clarithromycin           rplA,rplC            840              73    0.086905
+     Cefsulodin           mrcA,mrcB            840              65    0.077381
+      Sulbactam      mrcA,mrcB,ftsI            840              34    0.040476
+    Ceftriaxone      ftsI,mrcA,mrcB            840              30    0.035714
+   Levofloxacin gyrA,gyrB,parC,parE            840              20    0.023810
+     Doxicyclin           rpsA,rpsL            840              13    0.015476
+  Ciprofloxacin gyrA,gyrB,parC,parE            840               9    0.010714
+      Kanamycin           rpsA,rpsL            840               5    0.005952
+    Norfloxacin gyrA,gyrB,parC,parE            840               3    0.003571
+   Trimethoprim           folA,folP            840               2    0.002381
+      Aztreonam                ftsI            840               0    0.000000
+      Avibactam                                840               0    0.000000
+Clavulanic_Acid                                840               0    0.000000
+     Relebactam                                840               0    0.000000
+        control                               1680               0    0.000000

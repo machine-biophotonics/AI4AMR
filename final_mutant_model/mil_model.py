@@ -197,6 +197,15 @@ class MILEncoder(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
+        
+        # Domain Classifier for DANN (drug vs mutant)
+        self.domain_classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(self.feature_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(128, 2)  # 0=drug, 1=mutant
+        )
     
     def forward(
         self,
@@ -205,7 +214,8 @@ class MILEncoder(nn.Module):
         return_embedding: bool = False,
         return_crop_embeddings: bool = False,
         return_pooled_embeddings: bool = False,
-        return_instance_logits: bool = False
+        return_instance_logits: bool = False,
+        return_domain: bool = False
     ) -> tuple | torch.Tensor:
         batch_size, num_crops = x.shape[:2]
         
@@ -231,6 +241,9 @@ class MILEncoder(nn.Module):
                 instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
+            if return_domain:
+                domain_logits = self.domain_classifier(pooled)
+                results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
         elif self.pooling == 'max':
             pooled, _ = crop_embeddings.max(dim=1)
@@ -249,6 +262,9 @@ class MILEncoder(nn.Module):
                 instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
+            if return_domain:
+                domain_logits = self.domain_classifier(pooled)
+                results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
@@ -276,6 +292,9 @@ class MILEncoder(nn.Module):
             instance_logits = self.classifier(crop_embeddings)
             instance_logits = instance_logits.view(batch_size, num_crops, -1)
             results.append(instance_logits)
+        if return_domain:
+            domain_logits = self.domain_classifier(pooled)
+            results.append(domain_logits)
         
         return results[0] if len(results) == 1 else tuple(results)
     
@@ -448,8 +467,17 @@ class AttentionMILModel(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(feature_dim, num_classes)
         )
+        
+        # Domain Classifier for DANN (drug vs mutant)
+        self.domain_classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(feature_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(128, 2)  # 0=drug, 1=mutant
+        )
     
-    def forward(self, x, return_attention=False):
+    def forward(self, x, return_attention=False, return_domain=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -463,8 +491,13 @@ class AttentionMILModel(nn.Module):
             attn_weights = None
             pooled = self.classifier_dropout(pooled)
             output = self.classifier(pooled)
+            if return_attention and return_domain:
+                return output, attn_weights, None
             if return_attention:
                 return output, attn_weights
+            if return_domain:
+                domain_logits = self.domain_classifier(pooled)
+                return output, domain_logits
             return output
         elif self.pooling == 'max':
             # Max pooling
@@ -472,16 +505,26 @@ class AttentionMILModel(nn.Module):
             attn_weights = None
             pooled = self.classifier_dropout(pooled)
             output = self.classifier(pooled)
+            if return_attention and return_domain:
+                return output, attn_weights, None
             if return_attention:
                 return output, attn_weights
+            if return_domain:
+                domain_logits = self.domain_classifier(pooled)
+                return output, domain_logits
             return output
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
             pooled = pooled.reshape(batch_size, -1)
             pooled = self.head_proj(pooled)
             output = self.classifier(pooled)
+            if return_attention and return_domain:
+                return output, attn_weights, self.domain_classifier(pooled)
             if return_attention:
                 return output, attn_weights
+            if return_domain:
+                domain_logits = self.domain_classifier(pooled)
+                return output, domain_logits
             return output
 
 
@@ -508,11 +551,13 @@ class MultiCropDataset(Dataset):
         extraction_mode: str = 'neighborhood',
         raster_crop_size: int = 500,
         raster_resize_size: int = 256,
+        domain_labels: list[int] | None = None,
         raster_num_crops: int = 25,
         raster_grid_size: int = 2500
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
+        self.domain_labels = domain_labels if domain_labels is not None else [0] * len(labels)
         self.crop_size = crop_size
         self.grid_size = grid_size
         self.neighborhood = neighborhood
@@ -770,7 +815,7 @@ class MultiCropDataset(Dataset):
             
             crops = torch.stack(crops_list)
         
-        return crops, self.labels[idx]
+        return crops, self.labels[idx], self.domain_labels[idx]
 
 
 def extract_well_from_filename(filename: str) -> str | None:
