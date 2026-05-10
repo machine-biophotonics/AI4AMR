@@ -198,7 +198,10 @@ class MILEncoder(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
         
-        # Domain Classifier for DANN (drug vs mutant)
+        # Domain Classifier for DANN (drug vs mutant) with Gradient Reversal Layer
+        # GRL: multiply features by -alpha during backward to reverse gradients
+        self.grl_alpha = 1.0  # Fixed alpha (no scheduling as requested)
+        
         self.domain_classifier = nn.Sequential(
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, 128),
@@ -242,7 +245,8 @@ class MILEncoder(nn.Module):
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
             if return_domain:
-                domain_logits = self.domain_classifier(pooled)
+                grl_features = pooled * (-self.grl_alpha)
+                domain_logits = self.domain_classifier(grl_features)
                 results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
         elif self.pooling == 'max':
@@ -263,7 +267,8 @@ class MILEncoder(nn.Module):
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
             if return_domain:
-                domain_logits = self.domain_classifier(pooled)
+                grl_features = pooled * (-self.grl_alpha)
+                domain_logits = self.domain_classifier(grl_features)
                 results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
         else:  # attention (default)
@@ -293,7 +298,10 @@ class MILEncoder(nn.Module):
             instance_logits = instance_logits.view(batch_size, num_crops, -1)
             results.append(instance_logits)
         if return_domain:
-            domain_logits = self.domain_classifier(pooled)
+            # Gradient Reversal Layer (GRL): multiply by -grl_alpha
+            # This reverses gradients during backprop, pushing feature extractor to create domain-invariant features
+            grl_features = pooled * (-self.grl_alpha)
+            domain_logits = self.domain_classifier(grl_features)
             results.append(domain_logits)
         
         return results[0] if len(results) == 1 else tuple(results)
@@ -468,7 +476,9 @@ class AttentionMILModel(nn.Module):
             nn.Linear(feature_dim, num_classes)
         )
         
-        # Domain Classifier for DANN (drug vs mutant)
+        # Domain Classifier for DANN (drug vs mutant) with Gradient Reversal Layer
+        self.grl_alpha = 1.0  # Fixed alpha (no scheduling)
+        
         self.domain_classifier = nn.Sequential(
             nn.Dropout(p=dropout),
             nn.Linear(feature_dim, 128),
@@ -496,7 +506,8 @@ class AttentionMILModel(nn.Module):
             if return_attention:
                 return output, attn_weights
             if return_domain:
-                domain_logits = self.domain_classifier(pooled)
+                grl_features = pooled * (-self.grl_alpha)
+                domain_logits = self.domain_classifier(grl_features)
                 return output, domain_logits
             return output
         elif self.pooling == 'max':
@@ -510,7 +521,8 @@ class AttentionMILModel(nn.Module):
             if return_attention:
                 return output, attn_weights
             if return_domain:
-                domain_logits = self.domain_classifier(pooled)
+                grl_features = pooled * (-self.grl_alpha)
+                domain_logits = self.domain_classifier(grl_features)
                 return output, domain_logits
             return output
         else:  # attention (default)
@@ -519,11 +531,14 @@ class AttentionMILModel(nn.Module):
             pooled = self.head_proj(pooled)
             output = self.classifier(pooled)
             if return_attention and return_domain:
-                return output, attn_weights, self.domain_classifier(pooled)
+                grl_features = pooled * (-self.grl_alpha)
+                domain_logits = self.domain_classifier(grl_features)
+                return output, attn_weights, domain_logits
             if return_attention:
                 return output, attn_weights
             if return_domain:
-                domain_logits = self.domain_classifier(pooled)
+                grl_features = pooled * (-self.grl_alpha)
+                domain_logits = self.domain_classifier(grl_features)
                 return output, domain_logits
             return output
 
