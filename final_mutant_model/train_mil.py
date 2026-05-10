@@ -805,7 +805,8 @@ def train_single_fold(test_plate: str) -> None:
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-                for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+                for batch in tqdm(val_loader, desc='Validating', leave=False):
+                    images, labels, _ = batch
                     images, labels = images.to(device), labels.to(device)
                     outputs, _ = model(images, return_attention=True)
                     probs = torch.softmax(outputs, dim=1)
