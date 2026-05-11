@@ -132,11 +132,7 @@ parser.add_argument('--freeze', action='store_true', default=False,
 parser.add_argument('--use_dann', action='store_true', default=False,
                     help='Use Domain-Adversarial training with data_mode both')
 parser.add_argument('--dann_lambda', type=float, default=1.0,
-                    help='Weight for domain loss (constant, no scheduling)')
-parser.add_argument('--domain_entropy_weight', type=float, default=2.0,
-                    help='Weight for domain entropy regularization (higher to force uncertainty)')
-parser.add_argument('--domain_lr_factor', type=float, default=0.1,
-                    help='Domain classifier learning rate factor (e.g., 0.1 = 10x lower than feature extractor)')
+                    help='Weight for domain loss (default: 1.0)')
 # Self-supervised contrastive pre-training arguments
 parser.add_argument('--contrastive_epochs', type=int, default=50,
                     help='Number of epochs for contrastive pre-training')
@@ -567,38 +563,18 @@ def train_single_fold(test_plate: str) -> None:
         model.backbone.eval()
     
     # Set up optimizer based on whether backbone is frozen
-    # With DANN: domain classifier gets 10x lower LR
     if args.freeze:
-        # Only train attention pool + classifier
         attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
-        if args.use_dann and args.data_mode == 'both':
-            domain_params = [p for n, p in model.named_parameters() if 'domain_classifier' in n]
-            optimizer = torch.optim.AdamW([
-                {'params': attention_params, 'lr': args.lr},
-                {'params': domain_params, 'lr': args.lr * args.domain_lr_factor}
-            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
-        else:
-            optimizer = torch.optim.AdamW([
-                {'params': attention_params, 'lr': args.lr}
-            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        optimizer = torch.optim.AdamW([
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
     else:
-        # Original: backbone + attention + classifier with different LRs
-        if args.use_dann and args.data_mode == 'both':
-            backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n and 'domain_classifier' not in n]
-            attention_params = [p for n, p in model.named_parameters() if ('attention_pool' in n or 'classifier' in n) and 'domain_classifier' not in n]
-            domain_params = [p for n, p in model.named_parameters() if 'domain_classifier' in n]
-            optimizer = torch.optim.AdamW([
-                {'params': backbone_params, 'lr': args.lr * 0.1},
-                {'params': attention_params, 'lr': args.lr},
-                {'params': domain_params, 'lr': args.lr * args.domain_lr_factor}
-            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
-        else:
-            backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
-            attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
-            optimizer = torch.optim.AdamW([
-                {'params': backbone_params, 'lr': args.lr * 0.1},
-                {'params': attention_params, 'lr': args.lr}
-            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
+        attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
+        optimizer = torch.optim.AdamW([
+            {'params': backbone_params, 'lr': args.lr * 0.1},
+            {'params': attention_params, 'lr': args.lr}
+        ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
 
     # AMP scaler for mixed precision training
     use_amp = torch.cuda.is_available()
@@ -728,25 +704,18 @@ def train_single_fold(test_plate: str) -> None:
         train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True,
                                    persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True)
         
-        # Train encoder + attention + classifier jointly with different LR for domain classifier
+        # DANN: separate feature extractor + classifier from domain classifier
+        # Domain classifier gets 10x lower LR (Sicily paper: prevents disc from overpowering feat extractor)
         if args.use_dann and args.data_mode == 'both':
-            # Separate domain classifier parameters from rest (10x lower LR)
-            domain_params = []
-            other_params = []
-            for n, p in model.named_parameters():
-                if 'domain_classifier' in n:
-                    domain_params.append(p)
-                else:
-                    other_params.append(p)
-            
+            feature_params = [p for n, p in model.named_parameters() if 'domain_classifier' not in n]
+            domain_params = [p for n, p in model.named_parameters() if 'domain_classifier' in n]
             sc_mil_optimizer = torch.optim.AdamW([
-                {'params': other_params, 'lr': args.lr},
-                {'params': domain_params, 'lr': args.lr * args.domain_lr_factor}  # 10x lower for domain classifier
+                {'params': feature_params, 'lr': args.lr},
+                {'params': domain_params, 'lr': args.lr * 0.1}
             ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
-            print(f"DANN: Using {args.lr} for feature extractor, {args.lr * args.domain_lr_factor} for domain classifier")
+            print(f"DANN: feature_lr={args.lr}, domain_lr={args.lr * 0.1}")
         else:
-            sc_mil_params = [p for n, p in model.named_parameters()]
-            sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+            sc_mil_optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         if args.warmup_epochs > 0:
             sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
@@ -754,6 +723,8 @@ def train_single_fold(test_plate: str) -> None:
             )
             sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler([sc_mil_warmup, sc_mil_scheduler])
         sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+        
+        domain_criterion = nn.CrossEntropyLoss()
         
         # Create CSV file for SC-MIL metrics
         timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -768,8 +739,10 @@ def train_single_fold(test_plate: str) -> None:
             model.train()
             run_cl_loss, run_ce_loss, run_domain_loss, run_domain_acc, correct, total = 0.0, 0.0, 0.0, 0.0, 0, 0
             
+            p = float(epoch) / args.sc_mil_epochs
+            alpha = 2. / (1. + np.exp(-10 * p)) - 1
+            
             for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
-                # Handle both 2-value and 3-value returns from dataset
                 if args.use_dann and args.data_mode == 'both':
                     images, labels, domain_labels = batch
                     domain_labels = domain_labels.to(device)
@@ -780,29 +753,18 @@ def train_single_fold(test_plate: str) -> None:
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    # Single forward pass: get outputs, attn, crop, pooled embeddings, and instance logits
-                    # Plus domain logits for DANN
                     if args.use_dann and args.data_mode == 'both':
                         model_output = model(images, return_attention=True, return_crop_embeddings=True, 
                                           return_pooled_embeddings=True, return_instance_logits=True,
-                                          return_domain=True, epoch=epoch)
-                        # Handle different return formats
+                                          return_domain=True, alpha=alpha)
                         if args.pooling in ['mean', 'max']:
                             outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
-                        else:  # attention
+                        else:
                             outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
                         
-                        # DANN domain loss: Standard cross-entropy (positive)
-                        # GRL handles gradient reversal - feature extractor tries to maximize domain loss
-                        domain_log_probs = F.log_softmax(domain_logits, dim=1)
-                        domain_loss = F.nll_loss(domain_log_probs, domain_labels)  # Positive CE loss
-                        
-                        # Entropy regularization: penalize confident domain predictions
-                        domain_entropy = -(domain_log_probs.exp() * domain_log_probs).sum(dim=1).mean()
+                        domain_loss = domain_criterion(domain_logits, domain_labels)
                         domain_loss_val = domain_loss.item()
                         domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
-                        
-                        # Accumulate domain loss and accuracy for epoch average
                         run_domain_loss += domain_loss_val
                         run_domain_acc += domain_acc
                     else:
@@ -858,11 +820,13 @@ def train_single_fold(test_plate: str) -> None:
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
                     
-                    # Add DANN domain loss with entropy regularization if enabled
+                    # Add DANN domain loss
                     if args.use_dann and args.data_mode == 'both':
-                        loss = loss + args.dann_lambda * domain_loss + args.domain_entropy_weight * domain_entropy
+                        loss = loss + args.dann_lambda * domain_loss
                 
                 sc_mil_scaler.scale(loss).backward()
+                sc_mil_scaler.unscale_(sc_mil_optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 sc_mil_scaler.step(sc_mil_optimizer)
                 sc_mil_scaler.update()
                 
@@ -950,6 +914,8 @@ def train_single_fold(test_plate: str) -> None:
     
     # Standard or SC-MIL training loop
     if epoch is None:
+        domain_criterion = nn.CrossEntropyLoss()
+        
         for epoch in range(args.epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
@@ -958,53 +924,34 @@ def train_single_fold(test_plate: str) -> None:
             domain_loss_sum = 0.0
             domain_acc_sum = 0.0
             
+            p = float(epoch) / args.epochs
+            alpha = 2. / (1. + np.exp(-10 * p)) - 1
+            
             for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-                # Dataset always returns (images, labels, domain_labels)
-                images, labels, domain_labels = batch
+                images, labels, domain_labels_batch = batch
                 
                 if args.use_dann and args.data_mode == 'both':
-                    domain_labels = domain_labels.to(device)
-                else:
-                    domain_labels = None
+                    domain_labels_batch = domain_labels_batch.to(device)
                 
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
                     if args.use_dann and args.data_mode == 'both':
-                        # DANN: return both label and domain predictions
-                        model_output = model(images, return_domain=True, epoch=epoch)
-                        
-                        # Handle different return formats based on pooling type
+                        model_output = model(images, return_domain=True, alpha=alpha)
                         if args.pooling in ['mean', 'max']:
                             outputs, domain_logits = model_output
-                        else:  # attention
+                        else:
                             outputs, _, domain_logits = model_output
                         
-                        # Classification loss
                         main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                        
-                        # Domain loss: Standard cross-entropy (positive) - GRL handles gradient reversal
-                        domain_log_probs = F.log_softmax(domain_logits, dim=1)
-                        domain_loss = F.nll_loss(domain_log_probs, domain_labels)  # Positive CE loss
-                        
-                        # Entropy regularization: penalize confident domain predictions
-                        domain_entropy = -(domain_log_probs.exp() * domain_log_probs).sum(dim=1).mean()
-                        domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
-                        
-                        # Combined loss with entropy regularization
-                        loss = main_loss + args.dann_lambda * domain_loss + args.domain_entropy_weight * domain_entropy
-                        
-                        # Accumulate domain loss and accuracy for epoch average
+                        domain_loss = domain_criterion(domain_logits, domain_labels_batch)
+                        loss = main_loss + args.dann_lambda * domain_loss
                         domain_loss_sum += domain_loss.item()
-                        domain_acc_sum += domain_acc
+                        domain_acc_sum += (domain_logits.argmax(1) == domain_labels_batch).float().mean().item()
                     else:
                         outputs, attn_weights = model(images, return_attention=True)
-                        
-                        # SC-MIL loss: weighted focal loss + optional entropy regularization
                         main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                        
-                        # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
                         if args.entropy_loss_weight > 0:
                             attn_ent_loss = attention_entropy_loss(attn_weights)
                             loss = main_loss + args.entropy_loss_weight * attn_ent_loss
@@ -1043,7 +990,7 @@ def train_single_fold(test_plate: str) -> None:
                 images, labels = images.to(device), labels.to(device)
                 
                 if args.use_dann and args.data_mode == 'both':
-                    model_output = model(images, return_domain=True, epoch=epoch)
+                    model_output = model(images, return_domain=True, alpha=alpha)
                     if args.pooling in ['mean', 'max']:
                         outputs, _ = model_output
                     else:
