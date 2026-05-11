@@ -373,14 +373,6 @@ class MILEncoder(nn.Module):
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         return x.view(batch_size, num_crops, -1)
-    
-    def get_contrastive_embedding(self, x):
-        pooled = self.get_projected_features(x)
-        return self.contrastive_head.get_embedding(pooled)
-    
-    def get_backbone_features(self, x):
-        x = self.backbone(x)
-        return x
 
 
 class AttentionMILModel(nn.Module):
@@ -658,7 +650,6 @@ class MultiCropDataset(Dataset):
                             positions.append((left, top))
             self.positions = positions
             self.all_positions = []
-            self.num_neighbors = neighborhood * neighborhood - 1
         self.num_neighbors = neighborhood * neighborhood - 1
         
         # Normalization for 1-channel vs 3-channel
@@ -858,7 +849,7 @@ def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     
     # Determine plate key (P1, P2, etc.)
     for plate_num in range(1, 7):
-        if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\ ' in path_lower:
+        if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\' in path_lower:
             plate_key = f'P{plate_num}'
             break
     else:

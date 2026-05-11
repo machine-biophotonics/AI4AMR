@@ -856,7 +856,10 @@ def train_single_fold(test_plate: str) -> None:
             
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
                 for batch in tqdm(val_loader, desc='Validating', leave=False):
-                    images, labels, _ = batch
+                    if args.use_dann and args.data_mode == 'both':
+                        images, labels, _ = batch
+                    else:
+                        images, labels = batch
                     images, labels = images.to(device), labels.to(device)
                     outputs, _ = model(images, return_attention=True)
                     probs = torch.softmax(outputs, dim=1)
@@ -928,10 +931,11 @@ def train_single_fold(test_plate: str) -> None:
             alpha = 2. / (1. + np.exp(-10 * p)) - 1
             
             for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-                images, labels, domain_labels_batch = batch
-                
                 if args.use_dann and args.data_mode == 'both':
+                    images, labels, domain_labels_batch = batch
                     domain_labels_batch = domain_labels_batch.to(device)
+                else:
+                    images, labels = batch
                 
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
@@ -986,7 +990,10 @@ def train_single_fold(test_plate: str) -> None:
         
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
             for batch in tqdm(val_loader, desc='Validating', leave=False):
-                images, labels, _ = batch
+                if args.use_dann and args.data_mode == 'both':
+                    images, labels, _ = batch
+                else:
+                    images, labels = batch
                 images, labels = images.to(device), labels.to(device)
                 
                 if args.use_dann and args.data_mode == 'both':
@@ -1049,11 +1056,14 @@ def train_single_fold(test_plate: str) -> None:
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
         for batch in tqdm(test_loader, desc='Testing', leave=False):
-            images, labels, _ = batch
+            if args.use_dann and args.data_mode == 'both':
+                images, labels, _ = batch
+            else:
+                images, labels = batch
             images = images.to(device)
             
             if args.use_dann and args.data_mode == 'both':
-                model_output = model(images, return_domain=True, epoch=0)  # Inference mode
+                model_output = model(images, return_domain=True, alpha=0)  # Inference mode
                 if args.pooling in ['mean', 'max']:
                     outputs, _ = model_output
                 else:
