@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Generate DINOv3 ViT-Large Embeddings for Mutant and Drug Images (Plate 1)
+Generate DINOv3 ViT-Large Embeddings for Mutant and Drug Images (ALL Plates P1-P6)
 
 This script:
 1. Loads DINOv3 ViT-Large pretrained model (satellite pretrained)
 2. Extracts 500x500 center crop from each image
 3. Generates CLS token embeddings (1024-dim)
-4. Saves embeddings organized by well
+4. Saves embeddings organized by well and plate
 
 Output structure:
     embeddings/
     ├── metadata.json
-    ├── Mutants_P1/
-    │   └── WellA01/
-    │       └── image_name.npy
-    └── Drugs_P1/
-        └── WellA01/
-            └── image_name.npy
+    ├── Mutants_P1/WellA01/image_name.npy
+    ├── Mutants_P2/WellA01/image_name.npy
+    ...
+    ├── Drugs_P1/WellA01/image_name.npy
+    ├── Drugs_P2/WellA01/image_name.npy
+    ...
 """
 
 import argparse
@@ -52,12 +52,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 OUTPUT_DIR = os.path.join(BASE_DIR, "embeddings")
-MUTANTS_DIR = os.path.join(BASE_DIR, "..", "Mutants_Data", "P1")
-DRUGS_DIR = os.path.join(BASE_DIR, "..", "Drugs_Data", "P1")
+BASE_DATA_DIR = os.path.join(BASE_DIR, "..")
 DINOV3_CHECKPOINT = os.path.join(BASE_DIR, "dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth")
 
 CROP_SIZE = 500
-MODEL_INPUT_SIZE = 500  # No resize - use 500x500 directly
+MODEL_INPUT_SIZE = 500
+
+PLATES = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
 
 def extract_well_from_filename(filename: str) -> Optional[str]:
     """Extract well ID from filename (e.g., WellA01_PointA01_0000 -> WellA01)"""
@@ -236,51 +237,56 @@ def save_embeddings(well_embeddings: Dict, output_subdir: str, data_type: str):
     return saved_files
 
 
-def get_image_paths(data_dir: str, data_type: str) -> List[str]:
-    """Get all image paths from data directory."""
-    
-    if data_type == "mutant":
-        tifocus_path = os.path.join(data_dir, "TIFOCUS")
-        if os.path.exists(tifocus_path):
-            paths = glob.glob(os.path.join(tifocus_path, "*.tif"))
-        else:
-            paths = glob.glob(os.path.join(data_dir, "*.tif"))
+def get_mutant_paths(plate: str) -> List[str]:
+    """Get mutant image paths for a specific plate."""
+    mutant_dir = os.path.join(BASE_DATA_DIR, "Mutants_Data", plate, "TIFOCUS")
+    if os.path.exists(mutant_dir):
+        paths = glob.glob(os.path.join(mutant_dir, "*.tif"))
     else:
-        subdirs = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
-        if subdirs:
-            paths = glob.glob(os.path.join(data_dir, subdirs[0], "*.tiff")) + \
-                    glob.glob(os.path.join(data_dir, subdirs[0], "*.tif"))
-        else:
-            paths = glob.glob(os.path.join(data_dir, "*.tiff")) + \
-                    glob.glob(os.path.join(data_dir, "*.tif"))
-    
+        paths = glob.glob(os.path.join(BASE_DATA_DIR, "Mutants_Data", plate, "*.tif"))
+    return sorted(paths)
+
+
+def get_drug_paths(plate: str) -> List[str]:
+    """Get drug image paths for a specific plate."""
+    drug_dir = os.path.join(BASE_DATA_DIR, "Drugs_Data", plate)
+    paths = []
+    for root, dirs, files in os.walk(drug_dir):
+        for f in files:
+            if f.endswith('.tiff') or f.endswith('.tif'):
+                paths.append(os.path.join(root, f))
     return sorted(paths)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate DINOv3 embeddings for mutant and drug images')
+    parser = argparse.ArgumentParser(description='Generate DINOv3 embeddings for mutant and drug images (all plates P1-P6)')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for embedding extraction')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of DataLoader workers')
+    parser.add_argument('--plates', type=str, default='P1,P2,P3,P4,P5,P6',
+                        help='Comma-separated plates to process (default: all 6)')
     parser.add_argument('--resume', action='store_true', help='Resume interrupted extraction')
     args = parser.parse_args()
-    
+
+    plates_to_process = [p.strip() for p in args.plates.split(',')]
+
     print("\n" + "="*60)
-    print("DINOv3 Embedding Generation (Plate 1)")
+    print("DINOv3 Embedding Generation (ALL Plates P1-P6)")
     print("="*60)
     print(f"\nSettings:")
+    print(f"  Plates: {plates_to_process}")
     print(f"  Center crop: {CROP_SIZE}x{CROP_SIZE}")
-    print(f"  Model input: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE} (no resize)")
+    print(f"  Model input: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE}")
     print(f"  Embedding: CLS token (1024-dim)")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Workers: {args.num_workers}")
-    
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
+
     print(f"\nLoading DINOv3 model...")
     model, embed_dim = load_dinov3_model()
     model = model.to(device)
     model.eval()
-    
+
     all_metadata = {
         'model': 'dinov3_vitl16',
         'checkpoint': 'dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
@@ -289,63 +295,67 @@ def main():
         'model_input_size': MODEL_INPUT_SIZE,
         'embedding_type': 'CLS token',
         'data_type': 'mutant_and_drug',
-        'plate': 'P1',
+        'plates': plates_to_process,
         'mutant_files': [],
         'drug_files': []
     }
-    
-    print(f"\n{'='*40}")
-    print("Processing Mutant Data (P1)")
-    print(f"{'='*40}")
-    
-    mutant_paths = get_image_paths(MUTANTS_DIR, "mutant")
-    print(f"  Found {len(mutant_paths)} mutant images")
-    
-    if len(mutant_paths) > 0:
-        dataset = CropEmbeddingDataset(mutant_paths, crop_size=CROP_SIZE, model_input_size=MODEL_INPUT_SIZE)
-        mutant_well_embeddings, mutant_metadata = extract_embeddings(model, dataset, args.batch_size, args.num_workers)
-        
-        mutant_files = save_embeddings(mutant_well_embeddings, "Mutants_P1", "Mutant")
-        all_metadata['mutant_files'] = mutant_metadata
-        all_metadata['mutant_wells'] = list(mutant_well_embeddings.keys())
-        
-        print(f"  Wells found: {len(mutant_well_embeddings)}")
-        for well, embeds in sorted(mutant_well_embeddings.items()):
-            print(f"    {well}: {len(embeds)} images")
-        
-        gc.collect()
-        torch.cuda.empty_cache()
-    
-    print(f"\n{'='*40}")
-    print("Processing Drug Data (P1)")
-    print(f"{'='*40}")
-    
-    drug_paths = get_image_paths(DRUGS_DIR, "drug")
-    print(f"  Found {len(drug_paths)} drug images")
-    
-    if len(drug_paths) > 0:
-        dataset = CropEmbeddingDataset(drug_paths, crop_size=CROP_SIZE, model_input_size=MODEL_INPUT_SIZE)
-        drug_well_embeddings, drug_metadata = extract_embeddings(model, dataset, args.batch_size, args.num_workers)
-        
-        drug_files = save_embeddings(drug_well_embeddings, "Drugs_P1", "Drug")
-        all_metadata['drug_files'] = drug_metadata
-        all_metadata['drug_wells'] = list(drug_well_embeddings.keys())
-        
-        print(f"  Wells found: {len(drug_well_embeddings)}")
-        for well, embeds in sorted(drug_well_embeddings.items()):
-            print(f"    {well}: {len(embeds)} images")
-        
-        gc.collect()
-        torch.cuda.empty_cache()
-    
+
+    for plate in plates_to_process:
+        print(f"\n{'='*60}")
+        print(f"Processing Plate: {plate}")
+        print(f"{'='*60}")
+
+        print(f"\n--- Mutants_{plate} ---")
+        mutant_paths = get_mutant_paths(plate)
+        print(f"  Found {len(mutant_paths)} mutant images")
+
+        if len(mutant_paths) > 0:
+            dataset = CropEmbeddingDataset(mutant_paths, crop_size=CROP_SIZE, model_input_size=MODEL_INPUT_SIZE)
+            mutant_well_embeddings, mutant_metadata = extract_embeddings(model, dataset, args.batch_size, args.num_workers)
+
+            save_embeddings(mutant_well_embeddings, f"Mutants_{plate}", f"Mutant_{plate}")
+            all_metadata['mutant_files'].extend(mutant_metadata)
+
+            print(f"  Wells: {len(mutant_well_embeddings)}")
+            for well, embeds in sorted(mutant_well_embeddings.items()):
+                print(f"    {well}: {len(embeds)} images")
+
+            gc.collect()
+            torch.cuda.empty_cache()
+        else:
+            print(f"  WARNING: No mutant images found for {plate}!")
+
+        print(f"\n--- Drugs_{plate} ---")
+        drug_paths = get_drug_paths(plate)
+        print(f"  Found {len(drug_paths)} drug images")
+
+        if len(drug_paths) > 0:
+            dataset = CropEmbeddingDataset(drug_paths, crop_size=CROP_SIZE, model_input_size=MODEL_INPUT_SIZE)
+            drug_well_embeddings, drug_metadata = extract_embeddings(model, dataset, args.batch_size, args.num_workers)
+
+            save_embeddings(drug_well_embeddings, f"Drugs_{plate}", f"Drug_{plate}")
+            all_metadata['drug_files'].extend(drug_metadata)
+
+            print(f"  Wells: {len(drug_well_embeddings)}")
+            for well, embeds in sorted(drug_well_embeddings.items()):
+                print(f"    {well}: {len(embeds)} images")
+
+            gc.collect()
+            torch.cuda.empty_cache()
+        else:
+            print(f"  WARNING: No drug images found for {plate}!")
+
     metadata_path = os.path.join(OUTPUT_DIR, "metadata.json")
     with open(metadata_path, 'w') as f:
         json.dump(all_metadata, f, indent=2)
-    
+
     print(f"\n{'='*60}")
     print(f"Embedding generation complete!")
     print(f"Output directory: {OUTPUT_DIR}")
     print(f"Metadata saved to: {metadata_path}")
+    print(f"Total images:")
+    print(f"  Mutants: {len(all_metadata['mutant_files'])}")
+    print(f"  Drugs: {len(all_metadata['drug_files'])}")
     print(f"{'='*60}")
 
 

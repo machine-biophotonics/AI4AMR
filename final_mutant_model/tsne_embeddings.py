@@ -10,6 +10,7 @@ Supports:
 import os
 import sys
 import json
+import re
 import argparse
 import numpy as np
 import matplotlib
@@ -103,8 +104,10 @@ def main():
     parser.add_argument('--fold', type=str, default='P6')
     parser.add_argument('--embeddings', type=str, default=None)
     parser.add_argument('--data_mode', type=str, default='drug',
-                        choices=['drug', 'mutant', 'mutant_on_drug', 'drug_on_mutant', 'combined'])
+                        choices=['drug', 'mutant', 'mutant_on_drug', 'drug_on_mutant', 'combined', 'both'])
     parser.add_argument('--embedding_type', type=str, default='mil')
+    parser.add_argument('--neighborhood', type=int, default=3,
+                        help='Neighborhood size in filename (default: 3)')
     parser.add_argument('--perplexity', type=int, default=30)
     parser.add_argument('--n_iter', type=int, default=5000)
     parser.add_argument('--color_by', type=str, default='gene',
@@ -122,12 +125,175 @@ def main():
     
     if args.output_dir:
         output_dir = args.output_dir
+    elif args.data_mode == 'both':
+        output_dir = os.path.join(SCRIPT_DIR, 'both', f'fold_{fold_key}')
     else:
         output_dir = os.path.join(SCRIPT_DIR, 'combined', f'fold_{combined_fold_key}')
     
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"Output dir: {output_dir}")
+    
+    def is_drug_label(label) -> bool:
+        if not label: return False
+        if label.lower() == 'control': return True
+        if '_' in label:
+            suffix = label.rsplit('_', 1)[1]
+            if suffix.endswith('x') or suffix.endswith('X'):
+                return True
+        return False
+    
+    if args.data_mode == 'both':
+        emb_path = os.path.join(SCRIPT_DIR, 'both', f'fold_{fold_key}', f'embeddings_{fold_key}_{args.embedding_type}_n{args.neighborhood}.npz')
+        
+        print(f"Loading: {emb_path}")
+        if not os.path.exists(emb_path):
+            print(f"ERROR: Not found: {emb_path}")
+            return
+        
+        data = np.load(emb_path)
+        embeddings = data['embeddings']
+        paths = data['paths']
+        
+        # Load label mappings to fix labels (stored labels are wrong — all mutant due to well overlap)
+        ic50_path = os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json')
+        mut_path = os.path.join(SCRIPT_DIR, 'plate_well_id_path.json')
+        IC50 = json.load(open(ic50_path)) if os.path.exists(ic50_path) else {}
+        MUT = json.load(open(mut_path)) if os.path.exists(mut_path) else {}
+        
+        def _fix_label(img_path):
+            path_lower = img_path.lower()
+            if '/drugs_data/' in path_lower:
+                src = 'drug'
+            elif '/mutants_data/' in path_lower:
+                src = 'mutant'
+            else:
+                return 'unknown'
+            match = re.search(r'Well(\w\d+)_', os.path.basename(img_path))
+            well = match.group(1) if match else None
+            if not well:
+                return 'unknown'
+            pk = None
+            for pn in range(1, 7):
+                if f'/p{pn}/' in path_lower:
+                    pk = f'P{pn}'
+                    break
+            if not pk:
+                return 'unknown'
+            if src == 'drug':
+                if pk in IC50 and well in IC50[pk]:
+                    info = IC50[pk][well]
+                    ab = info.get('antibiotic', '')
+                    ic = info.get('ic50_multiple', '')
+                    if ab and ic:
+                        if ic == 'control':
+                            return 'control'
+                        return f"{ab.replace(' ', '_')}_{ic if 'x' in str(ic) else f'{ic}x'}"
+            else:
+                row, col_raw = well[0], well[1:].lstrip('0') or '0'
+                try:
+                    if pk in MUT and row in MUT[pk] and col_raw in MUT[pk][row]:
+                        return MUT[pk][row][col_raw].get('id', None)
+                except:
+                    pass
+            return 'unknown'
+        
+        correct_labels = [_fix_label(p) for p in paths]
+        
+        print(f"Loaded {len(embeddings)} embeddings from both model")
+        
+        def _ctrl_type(label):
+            if not label: return ''
+            l = label.lower()
+            if 'wt' in l or 'wild' in l: return 'WT'
+            if l == 'nc' or l.startswith('nc_'): return 'NC'
+            if 'control' in l: return 'control'
+            return ''
+        
+        def _source(label):
+            if not label: return 'mutant'
+            if label == 'unknown': return 'unknown'
+            if _ctrl_type(label): return 'control'
+            if '_' in label and label.rsplit('_', 1)[1].endswith('x'):
+                return 'drug'
+            return 'mutant'
+        
+        df = pd.DataFrame({'label': correct_labels, 'path': paths})
+        df['source'] = df['label'].apply(_source)
+        df['ctrl_type'] = df['label'].apply(_ctrl_type)
+        
+        n_drug = (df['source'] == 'drug').sum()
+        n_mut = (df['source'] == 'mutant').sum()
+        n_ctrl = (df['source'] == 'control').sum()
+        print(f"  Drug: {n_drug}, Mutant: {n_mut}, Control: {n_ctrl}")
+        
+        print(f"Running t-SNE (perplexity={args.perplexity}, n_iter={args.n_iter})...")
+        tsne = TSNE(n_components=2, perplexity=args.perplexity, max_iter=args.n_iter, random_state=42, init='pca')
+        embeddings_2d = tsne.fit_transform(embeddings)
+        df['x'] = embeddings_2d[:, 0]
+        df['y'] = embeddings_2d[:, 1]
+        
+        csv_path = os.path.join(output_dir, 'tsne_combined.csv')
+        df.to_csv(csv_path, index=False)
+        print(f"Saved CSV: {csv_path}")
+        
+        fig, ax = plt.subplots(figsize=(14, 12))
+        
+        CTRL_MARKERS = {'WT': '*', 'NC': '^', 'control': 's'}
+        
+        drug = df[df['source'] == 'drug']
+        if len(drug):
+            ax.scatter(drug['x'], drug['y'], c=COMBINED_DRUG_COLOR, label='Drug', s=20, alpha=0.6)
+        
+        mutant = df[df['source'] == 'mutant']
+        if len(mutant):
+            ax.scatter(mutant['x'], mutant['y'], c=COMBINED_MUTANT_COLOR, label='Mutant', s=20, alpha=0.6)
+        
+        for ctype, marker in CTRL_MARKERS.items():
+            sub = df[df['ctrl_type'] == ctype]
+            if len(sub):
+                ax.scatter(sub['x'], sub['y'], marker=marker, s=60,
+                          facecolors='none', edgecolors=COMBINED_CONTROL_COLOR, linewidth=2, label=ctype, alpha=0.8)
+        
+        ax.legend(loc='upper left', fontsize=12)
+        ax.set_xlabel('t-SNE 1', fontsize=12)
+        ax.set_ylabel('t-SNE 2', fontsize=12)
+        ax.set_title(f't-SNE: Drug (red) + Mutant (blue) + Control\nFold {fold_key}', fontsize=14)
+        plt.tight_layout()
+        png_path = os.path.join(output_dir, 'tsne_combined_drug_mutant.png')
+        plt.savefig(png_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Saved PNG: {png_path}")
+        
+        fig_html = go.Figure()
+        if len(drug):
+            fig_html.add_trace(go.Scatter(
+                x=drug['x'], y=drug['y'], mode='markers',
+                marker=dict(color=COMBINED_DRUG_COLOR, size=6),
+                name='Drug', text=[f"Label: {l}" for l in drug['label']], hoverinfo='text'))
+        if len(mutant):
+            fig_html.add_trace(go.Scatter(
+                x=mutant['x'], y=mutant['y'], mode='markers',
+                marker=dict(color=COMBINED_MUTANT_COLOR, size=6),
+                name='Mutant', text=[f"Label: {l}" for l in mutant['label']], hoverinfo='text'))
+        PLOTLY_SYMBOLS = {'WT': 'star', 'NC': 'triangle-up', 'control': 'square'}
+        for ctype, sym in PLOTLY_SYMBOLS.items():
+            sub = df[df['ctrl_type'] == ctype]
+            if len(sub):
+                fig_html.add_trace(go.Scatter(
+                    x=sub['x'], y=sub['y'], mode='markers',
+                    marker=dict(color=COMBINED_CONTROL_COLOR, size=10, symbol=sym, line=dict(width=2)),
+                    name=ctype, text=[f"Label: {l}" for l in sub['label']], hoverinfo='text'))
+        fig_html.update_layout(
+            title=f't-SNE: Drug (red) + Mutant (blue) + Control',
+            xaxis_title='t-SNE 1', yaxis_title='t-SNE 2',
+            width=1400, height=1200,
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02, font=dict(size=12)),
+            template='plotly_white')
+        html_path = os.path.join(output_dir, 'tsne_combined_drug_mutant.html')
+        fig_html.write_html(html_path, include_plotlyjs='cdn')
+        print(f"Saved HTML: {html_path}")
+        return
     
     if args.data_mode == 'combined':
         # Load both drug and mutant embeddings

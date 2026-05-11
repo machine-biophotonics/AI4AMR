@@ -11,6 +11,7 @@ import sys
 import json
 import argparse
 import glob
+import re
 from typing import Optional, List
 
 import torch
@@ -62,6 +63,8 @@ def main() -> None:
                         help='Number of input channels (default: 1)')
     parser.add_argument('--pretrained', type=str, default='micronet', choices=['imagenet', 'micronet'],
                         help='Pretrained weights')
+    parser.add_argument('--backbone', type=str, default='efficientnet_b0', choices=['efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'],
+                        help='Backbone architecture (must match training)')
     parser.add_argument('--pooling', type=str, default='attention', choices=['attention', 'simple_attention', 'mean', 'max'],
                         help='Pooling method')
     parser.add_argument('--embedding_type', type=str, default='mil', choices=['backbone', 'mil', 'projected'],
@@ -141,6 +144,29 @@ def main() -> None:
                     if 'id' in info:
                         mutant_classes.add(info['id'])
         all_classes = sorted(mutant_classes)
+    else:  # both
+        drug_classes: set = set()
+        for plate, wells in IC50_DATA.items():
+            for well, info in wells.items():
+                antibiotic = info.get('antibiotic', '')
+                ic50_multiple = info.get('ic50_multiple', '')
+                if antibiotic and ic50_multiple:
+                    if args.drug_no_concentration:
+                        drug_classes.add(antibiotic.replace(' ', '_'))
+                    else:
+                        if ic50_multiple == 'control':
+                            drug_classes.add('control')
+                        else:
+                            ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                            antibiotic_clean = antibiotic.replace(' ', '_')
+                            drug_classes.add(f"{antibiotic_clean}_{ic50_str}")
+        mutant_classes: set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        mutant_classes.add(info['id'])
+        all_classes = sorted(drug_classes | mutant_classes)
     
     classes = {i: name for i, name in enumerate(all_classes)}
     num_classes: int = args.num_classes if args.num_classes is not None else len(classes)
@@ -203,12 +229,13 @@ def main() -> None:
     # Data directory - use data mode
     if args.data_root:
         BASE_DIR = args.data_root
+        image_dir = os.path.join(BASE_DIR, image_plate_key)
     elif actual_data_mode == 'drug':
-        BASE_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data')
+        image_dir = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data', image_plate_key)
+    elif actual_data_mode == 'both':
+        image_dir = None  # Will collect from both dirs below
     else:
-        BASE_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data')
-    
-    image_dir = os.path.join(BASE_DIR, image_plate_key)
+        image_dir = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data', image_plate_key)
     
     crop_size = args.crop_size
     grid_size = args.grid_size
@@ -217,7 +244,10 @@ def main() -> None:
     print(f"Embedding Extraction (MATCHING TRAINING)")
     print(f"  fold: {test_plate}")
     print(f"  checkpoint: {checkpoint_path}")
-    print(f"  image_dir: {image_dir}")
+    if actual_data_mode == 'both':
+        print(f"  image_dir: Drugs_Data/{image_plate_key} + Mutants_Data/{image_plate_key}")
+    else:
+        print(f"  image_dir: {image_dir}")
     print(f"  model_mode: {actual_model_mode}")
     print(f"  data_mode: {actual_data_mode}")
     print(f"  neighborhood: {neighborhood}x{neighborhood} ({num_crops_per_position} crops)")
@@ -231,26 +261,35 @@ def main() -> None:
     
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
+    # Infer exact num_classes from checkpoint to match training architecture
+    ckpt_num_classes = checkpoint['model_state_dict']['classifier.1.weight'].shape[0]
+    print(f"  Checkpoint num_classes: {ckpt_num_classes}")
+    
     has_contrastive = any('contrastive_head' in k for k in checkpoint['model_state_dict'].keys())
     use_sc_mil = has_contrastive or args.use_sc_mil
     
     model = MILEncoder(
-        num_classes=num_classes, 
+        num_classes=ckpt_num_classes, 
         num_heads=args.num_heads, 
         attention_temp=0.5, 
         dropout=args.dropout,
         use_contrastive=use_sc_mil,
         num_channels=args.num_channels,
         pretrained=args.pretrained,
+        backbone=args.backbone,
         pooling=args.pooling
     )
     model = model.to(device)
-    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    missing, unexpected = model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     model.eval()
     
     for param in model.parameters():
         param.requires_grad = False
     
+    if missing:
+        print(f"  Missing keys: {missing}")
+    if unexpected:
+        print(f"  Unexpected keys: {unexpected}")
     print(f"Model loaded and frozen (SC-MIL: {use_sc_mil})")
 
     def extract_mil_crops(img_path: str, crop_size: int, grid_size: int, neighborhood: int):
@@ -338,21 +377,49 @@ def main() -> None:
 
     def get_well_from_filename(img_path: str) -> Optional[str]:
         filename = os.path.basename(img_path)
-        parts = filename.split('_')
-        for part in parts:
-            if part.startswith('Well'):
-                well_str = part.replace('Well', '')
-                if len(well_str) == 3:
-                    return well_str
-                elif len(well_str) == 2:
-                    return well_str[0] + '0' + well_str[1]
-        return None
+        match = re.search(r'Well(\w\d+)_', filename)
+        return match.group(1) if match else None
 
-    def get_label(plate: str, well: Optional[str], mode: str) -> Optional[str]:
+    def get_label(plate: str, well: Optional[str], mode: str, img_path: str = '') -> Optional[str]:
         if not well:
             return None
         
         plate_key = plate
+        
+        if mode == 'both':
+            # Disambiguate by source directory (matches train_mil.py both_extractor)
+            path_lower = img_path.lower()
+            if '/drugs_data/' in path_lower or '\\drugs_data\\' in path_lower:
+                source = 'drug'
+            elif '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
+                source = 'mutant'
+            else:
+                source = 'mutant'  # default fallback
+            
+            if source == 'drug':
+                if plate_key in IC50_DATA and well in IC50_DATA[plate_key]:
+                    info = IC50_DATA[plate_key][well]
+                    antibiotic = info.get('antibiotic', '')
+                    ic50_multiple = info.get('ic50_multiple', '')
+                    if antibiotic and ic50_multiple:
+                        if args.drug_no_concentration:
+                            return antibiotic.replace(' ', '_')
+                        else:
+                            if ic50_multiple == 'control':
+                                return 'control'
+                            ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                            antibiotic_clean = antibiotic.replace(' ', '_')
+                            return f"{antibiotic_clean}_{ic50_str}"
+            else:  # mutant
+                row = well[0]
+                col = well[1:].lstrip('0') or '0'
+                try:
+                    if plate_key in MUTANT_DATA and row in MUTANT_DATA[plate_key]:
+                        if col in MUTANT_DATA[plate_key][row]:
+                            return MUTANT_DATA[plate_key][row][col].get('id', None)
+                except:
+                    pass
+            return None
         
         if mode in ['mutant', 'both']:
             row = well[0]
@@ -381,13 +448,32 @@ def main() -> None:
         
         return None
 
-    if not os.path.exists(image_dir):
-        print(f"ERROR: Image directory not found: {image_dir}")
-        return
-    
-    tif_files = glob.glob(os.path.join(image_dir, '**', '*.tif'), recursive=True)
-    tiff_files = glob.glob(os.path.join(image_dir, '**', '*.tiff'), recursive=True)
-    image_files = list(set(tif_files + tiff_files))
+    if actual_data_mode == 'both':
+        drug_dir = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data', image_plate_key)
+        mutant_dir = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data', image_plate_key)
+        search_dirs = []
+        if os.path.exists(drug_dir):
+            search_dirs.append(drug_dir)
+            print(f"  Including drug images from: {drug_dir}")
+        if os.path.exists(mutant_dir):
+            search_dirs.append(mutant_dir)
+            print(f"  Including mutant images from: {mutant_dir}")
+        if not search_dirs:
+            print(f"ERROR: No data directories found for {image_plate_key}")
+            return
+        image_files = []
+        for d in search_dirs:
+            image_files.extend(glob.glob(os.path.join(d, '**', '*.tif'), recursive=True))
+            image_files.extend(glob.glob(os.path.join(d, '**', '*.tiff'), recursive=True))
+        image_files = list(set(image_files))
+    else:
+        if not os.path.exists(image_dir):
+            print(f"ERROR: Image directory not found: {image_dir}")
+            return
+        image_files = list(set(
+            glob.glob(os.path.join(image_dir, '**', '*.tif'), recursive=True) +
+            glob.glob(os.path.join(image_dir, '**', '*.tiff'), recursive=True)
+        ))
     
     if not image_files:
         print(f"ERROR: No image files found in {image_dir}")
@@ -403,7 +489,7 @@ def main() -> None:
         
         for f in image_files:
             well = get_well_from_filename(f)
-            label = get_label(test_plate, well, actual_data_mode)
+            label = get_label(test_plate, well, actual_data_mode, f)
             if label not in class_to_files:
                 class_to_files[label] = []
             class_to_files[label].append(f)
@@ -429,7 +515,7 @@ def main() -> None:
         
         if embedding is not None:
             well = get_well_from_filename(f)
-            label = get_label(test_plate, well, actual_data_mode)
+            label = get_label(test_plate, well, actual_data_mode, f)
             
             embeddings_list.append(embedding)
             labels_list.append(label if label else 'unknown')
