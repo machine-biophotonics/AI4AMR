@@ -133,6 +133,10 @@ parser.add_argument('--use_dann', action='store_true', default=False,
                     help='Use Domain-Adversarial training with data_mode both')
 parser.add_argument('--dann_lambda', type=float, default=1.0,
                     help='Weight for domain loss (default: 1.0)')
+parser.add_argument('--cross_domain_weight', type=float, default=0.3,
+                    help='Weight for cross-domain contrastive loss that attracts drugs to mutants (default: 0.3)')
+parser.add_argument('--no_dann', action='store_true', default=False,
+                    help='Disable DANN domain alignment (use only cross-domain contrastive)')
 # Self-supervised contrastive pre-training arguments
 parser.add_argument('--contrastive_epochs', type=int, default=50,
                     help='Number of epochs for contrastive pre-training')
@@ -731,13 +735,13 @@ def train_single_fold(test_plate: str) -> None:
         csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
         with open(csv_path_sc_mil, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
+            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_cross_domain_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
         
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
-            run_cl_loss, run_ce_loss, run_domain_loss, run_domain_acc, correct, total = 0.0, 0.0, 0.0, 0.0, 0, 0
+            run_cl_loss, run_ce_loss, run_domain_loss, run_domain_acc, run_cross_domain_loss, correct, total = 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0
             
             p = float(epoch) / args.sc_mil_epochs
             alpha = 2. / (1. + np.exp(-10 * p)) - 1
@@ -796,6 +800,16 @@ def train_single_fold(test_plate: str) -> None:
                     else:
                         bag_sc_loss = 0.0
                     
+                    # ============ CROSS-DOMAIN CONTRASTIVE (drug↔mutant attraction) ============
+                    cross_domain_loss = 0.0
+                    if args.use_dann and args.data_mode == 'both' and args.cross_domain_weight > 0:
+                        # Use domain_labels: 0=drug, 1=mutant
+                        # This attracts drugs to mutants (same domain_label = positive pairs)
+                        # and repels within-domain (different domain_label = negative pairs)
+                        domain_emb = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
+                        domain_sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
+                        cross_domain_loss = domain_sc_criterion(domain_emb, domain_labels)
+                    
                     # ============ CLASSIFICATION LOSSES ============
                     num_crops = crop_embeddings.shape[1]
                     instance_labels = labels.repeat_interleave(num_crops)
@@ -820,8 +834,12 @@ def train_single_fold(test_plate: str) -> None:
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
                     
-                    # Add DANN domain loss
-                    if args.use_dann and args.data_mode == 'both':
+                    # Add cross-domain contrastive loss (drug↔mutant attraction)
+                    if args.cross_domain_weight > 0:
+                        loss = loss + args.cross_domain_weight * cross_domain_loss
+                    
+                    # Add DANN domain loss (optional - can be disabled when cross_domain works alone)
+                    if args.use_dann and args.data_mode == 'both' and not args.no_dann:
                         loss = loss + args.dann_lambda * domain_loss
                 
                 sc_mil_scaler.scale(loss).backward()
@@ -832,6 +850,7 @@ def train_single_fold(test_plate: str) -> None:
                 
                 run_cl_loss += total_sc.item()
                 run_ce_loss += total_focal.item()
+                run_cross_domain_loss += cross_domain_loss.item() if isinstance(cross_domain_loss, torch.Tensor) else 0.0
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
@@ -877,7 +896,12 @@ def train_single_fold(test_plate: str) -> None:
             val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+            avg_cross_domain_loss = run_cross_domain_loss / len(train_loader)
+            print_str = f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}"
+            if args.cross_domain_weight > 0:
+                print_str += f", CrossDomain={avg_cross_domain_loss:.4f}"
+            print_str += f", Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s"
+            print(print_str)
             
             # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
@@ -885,7 +909,7 @@ def train_single_fold(test_plate: str) -> None:
             # Save metrics to CSV
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                writer.writerow([epoch, avg_ce_loss, avg_cl_loss, avg_cross_domain_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
             
             # TensorBoard logging - 2 cards only (SC-MIL)
             # Card 1: Train CE Loss + Val CE Loss
