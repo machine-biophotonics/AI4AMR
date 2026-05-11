@@ -380,67 +380,73 @@ def run_linear_probes(drug_emb, drug_lbl, mut_emb, mut_lbl, output_dir):
     drug_emb_s = scaler.fit_transform(drug_emb).astype(np.float32)
     mut_emb_s = scaler.transform(mut_emb).astype(np.float32)
 
+    # Cross-domain probes:
+    #   Train on drug emb → MOA. Test on mutant emb → assign pseudo-MOA via EXPECTED_MATCHES.
+    #   Train on mutant emb → Pathway. Test on drug emb → assign pseudo-pathway via reverse mapping.
+    ab_to_moa_rev = {ab: moa for moa, abx in MOA_GROUPS.items() for ab in abx}
+    drug_moa_from_mutant = np.array([
+        next((ab_to_moa_rev[ab] for ab, genes in EXPECTED_MATCHES.items() if gene_name(l) in genes), 'Unknown')
+        for l in mut_lbl
+    ])
+    gene_to_pathway_rev = GENE_TO_PATHWAY
+    # For drug labels, get which genes they target → pathway
+    drug_pseudo_pathway = np.array([
+        next((GENE_TO_PATHWAY[g] for ab, genes in EXPECTED_MATCHES.items()
+              if ab_name(l) == ab for g in genes if g in GENE_TO_PATHWAY), 'Unknown')
+        for l in drug_lbl
+    ])
+
     tasks = [
-        ('Drug MOA → self', drug_moas, None, None),
-        ('Mutant Pathway → self', mut_pathways, None, None),
-        ('Drug → Predict Mutant Pathway', drug_pathways, mut_pathways, drug_emb_s),
-        ('Mutant → Predict Drug MOA', mut_moas, drug_moas, mut_emb_s),
+        ('Drug MOA → self (oracle)', drug_moas, drug_emb_s, drug_emb_s, None, 'self'),
+        ('Mutant Pathway → self (oracle)', mut_pathways, mut_emb_s, mut_emb_s, None, 'self'),
+        ('Drug MOA → Mutant (cross)', drug_moas, drug_emb_s, mut_emb_s, drug_moa_from_mutant, 'cross'),
+        ('Mutant Pathway → Drug (cross)', mut_pathways, mut_emb_s, drug_emb_s, drug_pseudo_pathway, 'cross'),
     ]
 
     all_results = []
-    for name, y_train_str, y_test_str, X_other in tasks:
+    for name, y_train_str, X_train_raw, X_test_raw, y_test_str, mode in tasks:
+        # Filter unknowns from train labels
         train_keep = y_train_str != 'Unknown'
-        y_train_str_f = y_train_str[train_keep]
-        unique = sorted(set(y_train_str_f))
+        y_train_f = y_train_str[train_keep]
+        unique = sorted(set(y_train_f))
         n_classes = len(unique)
+        if n_classes == 0:
+            print(f"  {name:40s} | SKIP (no valid labels)")
+            continue
         baseline = 1.0 / n_classes
         cls_map = {u: i for i, u in enumerate(unique)}
-        y_train = np.array([cls_map[y] for y in y_train_str_f])
+        y_train = np.array([cls_map[y] for y in y_train_f])
+        X_train = X_train_raw[train_keep]
 
-        if name == 'Drug MOA → self':
-            X_train = drug_emb_s[train_keep]
+        if mode == 'self':
             train_acc, _ = train_probe(X_train, y_train, None, None, n_classes)
             result = {'probe': name, 'n_train': len(X_train), 'n_classes': n_classes,
                       'random_baseline': f"{baseline:.1%}", 'train_acc': f"{train_acc:.1%}",
                       'test_acc': 'N/A'}
-            print(f"  {name:40s} | train={train_acc:.1%} (baseline={baseline:.1%})")
 
-        elif name == 'Mutant Pathway → self':
-            X_train = mut_emb_s[train_keep]
-            train_acc, _ = train_probe(X_train, y_train, None, None, n_classes)
-            result = {'probe': name, 'n_train': len(X_train), 'n_classes': n_classes,
-                      'random_baseline': f"{baseline:.1%}", 'train_acc': f"{train_acc:.1%}",
-                      'test_acc': 'N/A'}
-            print(f"  {name:40s} | train={train_acc:.1%} (baseline={baseline:.1%})")
-
-        else:
-            # Cross-domain: train on one domain, test on the other
+        elif mode == 'cross':
+            # Filter test labels to only classes seen in training
             test_keep = y_test_str != 'Unknown'
-            y_test_str_f = y_test_str[test_keep]
-            # Only use test labels present in train
-            test_keep2 = np.array([y in unique for y in y_test_str_f])
-            y_test_f = np.array([cls_map.get(y, 0) for y in y_test_str_f])
-            X_test_f = X_other[train_keep][test_keep2] if name == 'Drug → Predict Mutant Pathway' else X_other[test_keep][test_keep2]
-            y_test_f = y_test_f[test_keep2]
+            y_test_f = y_test_str[test_keep]
+            test_keep2 = np.array([y in unique for y in y_test_f])
+            X_test = X_test_raw[test_keep][test_keep2]
+            y_test = np.array([cls_map[y] for y in y_test_f])[test_keep2]
 
-            # For cross-domain: split train into train/val within source domain
-            n_train = len(y_train)
-            perm = np.random.RandomState(42).permutation(n_train)
-            split = int(n_train * 0.8)
-            X_tr, y_tr = X_train[perm[:split]], y_train[perm[:split]]
-            X_val, y_val = X_train[perm[split:]], y_train[perm[split:]]
+            if len(X_test) == 0 or len(np.unique(y_test)) < 2:
+                print(f"  {name:40s} | SKIP (no overlapping classes)")
+                continue
 
-            train_acc, val_acc = train_probe(X_tr, y_tr, X_val, y_val, n_classes)
-            # Evaluate on target domain
-            _, test_acc = train_probe(X_train, y_train, X_test_f, y_test_f, n_classes)
-
-            result = {'probe': name, 'n_train': len(X_train), 'n_test': len(X_test_f),
+            # Train on full source domain, test on target domain
+            _, test_acc = train_probe(X_train, y_train, X_test, y_test, n_classes)
+            result = {'probe': name, 'n_train': len(X_train), 'n_test': len(X_test),
                       'n_classes': n_classes, 'random_baseline': f"{baseline:.1%}",
-                      'val_acc': f"{val_acc:.1%}", 'test_acc': f"{test_acc:.1%}"}
-            print(f"  {name:40s} | train={train_acc:.1%} val={val_acc:.1%} "
-                  f"test={test_acc:.1%} (baseline={baseline:.1%})")
+                      'train_acc': 'N/A', 'test_acc': f"{test_acc:.1%}"}
 
         all_results.append(result)
+        if mode == 'self':
+            print(f"  {name:40s} | train={result['train_acc']} (baseline={baseline:.1%})")
+        else:
+            print(f"  {name:40s} | test={result['test_acc']} (baseline={baseline:.1%})")
 
     df = pd.DataFrame(all_results)
     df.to_csv(os.path.join(output_dir, 'phaseA3_linear_probes.csv'), index=False)
