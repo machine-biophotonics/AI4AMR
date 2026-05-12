@@ -73,21 +73,6 @@ class ContrastiveEncoder(nn.Module):
             return F.normalize(x, dim=1)
 
 
-from torch.autograd import Function
-
-
-class ReverseLayerF(Function):
-    @staticmethod
-    def forward(ctx, x, alpha):
-        ctx.alpha = alpha
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        output = grad_output.neg() * ctx.alpha
-        return output, None
-
-
 class MILEncoder(nn.Module):
     """MIL encoder with optional contrastive head"""
     def __init__(
@@ -212,17 +197,7 @@ class MILEncoder(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
-        
-        self.domain_classifier = nn.Sequential(
-            nn.Linear(self.feature_dim, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(256, 2)
-        )
-
+    
     def forward(
         self,
         x: torch.Tensor,
@@ -230,9 +205,7 @@ class MILEncoder(nn.Module):
         return_embedding: bool = False,
         return_crop_embeddings: bool = False,
         return_pooled_embeddings: bool = False,
-        return_instance_logits: bool = False,
-        return_domain: bool = False,
-        alpha: float = 0.0
+        return_instance_logits: bool = False
     ) -> tuple | torch.Tensor:
         batch_size, num_crops = x.shape[:2]
         
@@ -258,10 +231,6 @@ class MILEncoder(nn.Module):
                 instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
-            if return_domain:
-                grl_features = ReverseLayerF.apply(pooled, alpha)
-                domain_logits = self.domain_classifier(grl_features)
-                results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
         elif self.pooling == 'max':
             pooled, _ = crop_embeddings.max(dim=1)
@@ -280,10 +249,6 @@ class MILEncoder(nn.Module):
                 instance_logits = self.classifier(crop_embeddings)
                 instance_logits = instance_logits.view(batch_size, num_crops, -1)
                 results.append(instance_logits)
-            if return_domain:
-                grl_features = ReverseLayerF.apply(pooled, alpha)
-                domain_logits = self.domain_classifier(grl_features)
-                results.append(domain_logits)
             return results[0] if len(results) == 1 else tuple(results)
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(crop_embeddings, temperature=self.attention_temp)
@@ -306,14 +271,11 @@ class MILEncoder(nn.Module):
         if return_pooled_embeddings:
             results.append(pooled)
         if return_instance_logits:
+            # Instance-level predictions: apply simple classifier to each crop
             batch_size, num_crops = crop_embeddings.shape[:2]
             instance_logits = self.classifier(crop_embeddings)
             instance_logits = instance_logits.view(batch_size, num_crops, -1)
             results.append(instance_logits)
-        if return_domain:
-            grl_features = ReverseLayerF.apply(pooled, alpha)
-            domain_logits = self.domain_classifier(grl_features)
-            results.append(domain_logits)
         
         return results[0] if len(results) == 1 else tuple(results)
     
@@ -373,6 +335,14 @@ class MILEncoder(nn.Module):
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         return x.view(batch_size, num_crops, -1)
+    
+    def get_contrastive_embedding(self, x):
+        pooled = self.get_projected_features(x)
+        return self.contrastive_head.get_embedding(pooled)
+    
+    def get_backbone_features(self, x):
+        x = self.backbone(x)
+        return x
 
 
 class AttentionMILModel(nn.Module):
@@ -478,21 +448,8 @@ class AttentionMILModel(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(feature_dim, num_classes)
         )
-        
-        # Separate dropout for classifier (used in mean/max pooling)
-        self.classifier_dropout = nn.Dropout(p=dropout)
-        
-        self.domain_classifier = nn.Sequential(
-            nn.Linear(feature_dim, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(256, 2)
-        )
-
-    def forward(self, x, return_attention=False, return_domain=False, alpha: float = 0.0):
+    
+    def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -501,48 +458,30 @@ class AttentionMILModel(nn.Module):
         
         # Apply pooling based on self.pooling
         if self.pooling == 'mean':
+            # Mean pooling
             pooled = x.mean(dim=1)
             attn_weights = None
             pooled = self.classifier_dropout(pooled)
             output = self.classifier(pooled)
-            if return_attention and return_domain:
-                return output, attn_weights, None
             if return_attention:
                 return output, attn_weights
-            if return_domain:
-                grl_features = ReverseLayerF.apply(pooled, alpha)
-                domain_logits = self.domain_classifier(grl_features)
-                return output, domain_logits
             return output
         elif self.pooling == 'max':
+            # Max pooling
             pooled, _ = x.max(dim=1)
             attn_weights = None
             pooled = self.classifier_dropout(pooled)
             output = self.classifier(pooled)
-            if return_attention and return_domain:
-                return output, attn_weights, None
             if return_attention:
                 return output, attn_weights
-            if return_domain:
-                grl_features = ReverseLayerF.apply(pooled, alpha)
-                domain_logits = self.domain_classifier(grl_features)
-                return output, domain_logits
             return output
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
             pooled = pooled.reshape(batch_size, -1)
             pooled = self.head_proj(pooled)
             output = self.classifier(pooled)
-            if return_attention and return_domain:
-                grl_features = ReverseLayerF.apply(pooled, alpha)
-                domain_logits = self.domain_classifier(grl_features)
-                return output, attn_weights, domain_logits
             if return_attention:
                 return output, attn_weights
-            if return_domain:
-                grl_features = ReverseLayerF.apply(pooled, alpha)
-                domain_logits = self.domain_classifier(grl_features)
-                return output, domain_logits
             return output
 
 
@@ -569,13 +508,11 @@ class MultiCropDataset(Dataset):
         extraction_mode: str = 'neighborhood',
         raster_crop_size: int = 500,
         raster_resize_size: int = 256,
-        domain_labels: list[int] | None = None,
         raster_num_crops: int = 25,
         raster_grid_size: int = 2500
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
-        self.domain_labels = domain_labels if domain_labels is not None else [0] * len(labels)
         self.crop_size = crop_size
         self.grid_size = grid_size
         self.neighborhood = neighborhood
@@ -650,6 +587,7 @@ class MultiCropDataset(Dataset):
                             positions.append((left, top))
             self.positions = positions
             self.all_positions = []
+            self.num_neighbors = neighborhood * neighborhood - 1
         self.num_neighbors = neighborhood * neighborhood - 1
         
         # Normalization for 1-channel vs 3-channel
@@ -832,7 +770,7 @@ class MultiCropDataset(Dataset):
             
             crops = torch.stack(crops_list)
         
-        return crops, self.labels[idx], self.domain_labels[idx]
+        return crops, self.labels[idx]
 
 
 def extract_well_from_filename(filename: str) -> str | None:
@@ -849,7 +787,7 @@ def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     
     # Determine plate key (P1, P2, etc.)
     for plate_num in range(1, 7):
-        if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\' in path_lower:
+        if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\ ' in path_lower:
             plate_key = f'P{plate_num}'
             break
     else:

@@ -129,23 +129,7 @@ parser.add_argument('--drug_no_concentration', action='store_true', default=Fals
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
 parser.add_argument('--freeze', action='store_true', default=False,
                     help='Freeze backbone, only train attention pool + classifier head')
-parser.add_argument('--use_dann', action='store_true', default=False,
-                    help='Use Domain-Adversarial training with data_mode both')
-parser.add_argument('--dann_lambda', type=float, default=1.0,
-                    help='Weight for domain loss (default: 1.0)')
-
-# Self-supervised contrastive pre-training arguments
-parser.add_argument('--contrastive_epochs', type=int, default=50,
-                    help='Number of epochs for contrastive pre-training')
-parser.add_argument('--contrastive_batch_size', type=int, default=256,
-                    help='Batch size for contrastive pre-training')
-parser.add_argument('--contrastive_temp', type=float, default=0.07,
-                    help='Temperature for contrastive loss')
 args = parser.parse_args()
-
-# Validate DANN requires data_mode both
-if args.use_dann and args.data_mode != 'both':
-    raise ValueError("--use_dann requires --data_mode both")
 
 # Determine folder name for results (drug_noconcentration vs drug)
 data_mode_folder = args.data_mode
@@ -418,48 +402,9 @@ def train_single_fold(test_plate: str) -> None:
     print(f"Number of classes: {num_classes}")
     print(f"Classes: {all_classes}")
     
-    train_paths, train_labels, train_domain_labels = [], [], []
-    val_paths, val_labels, val_domain_labels = [], [], []
-    test_paths, test_labels, test_domain_labels = [], [], []
-    
-    # For DANN: track which labels are drugs vs mutants
-    drug_class_indices = set()
-    mutant_class_indices = set()
-    if args.use_dann and args.data_mode == 'both':
-        # Build drug classes set directly from ic50 mapping (source of truth)
-        drug_classes_from_ic50 = set()
-        for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
-            if plate in ic50_data:
-                for well, info in ic50_data[plate].items():
-                    ab = info.get('antibiotic', '')
-                    ic = info.get('ic50_multiple', '')
-                    if ab and ic:
-                        # Handle 'control' separately (becomes just 'control')
-                        if ic == 'control':
-                            drug_classes_from_ic50.add('control')
-                        else:
-                            # Replace spaces with underscores to match format in class_to_idx
-                            ab_clean = ab.replace(' ', '_')
-                            drug_classes_from_ic50.add(f'{ab_clean}_{ic}')
-        
-        # Build mutant classes set directly from mutant mapping (source of truth)
-        mutant_classes_from_mutant = set()
-        for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
-            if plate in mutant_data:
-                for row, cols in mutant_data[plate].items():
-                    for col, info in cols.items():
-                        gid = info.get('id', '')
-                        if gid:
-                            mutant_classes_from_mutant.add(gid)
-        
-        # Classify: if class in ic50 mapping → drug, else → mutant
-        for cls, idx in class_to_idx.items():
-            if cls in drug_classes_from_ic50:
-                drug_class_indices.add(idx)
-            else:
-                mutant_class_indices.add(idx)
-        
-        print(f"DANN: Drug classes = {len(drug_class_indices)}, Mutant classes = {len(mutant_class_indices)}")
+    train_paths, train_labels = [], []
+    val_paths, val_labels = [], []
+    test_paths, test_labels = [], []
     
     for plate in train_plates:
         for path in get_image_paths_for_plate(plate):
@@ -467,10 +412,6 @@ def train_single_fold(test_plate: str) -> None:
             if label in class_to_idx:
                 train_paths.append(path)
                 train_labels.append(class_to_idx[label])
-                # Domain label: 0 for drug, 1 for mutant
-                if args.use_dann and args.data_mode == 'both':
-                    domain_label = 0 if class_to_idx[label] in drug_class_indices else 1
-                    train_domain_labels.append(domain_label)
     
     for plate in val_plates:
         for path in get_image_paths_for_plate(plate):
@@ -478,9 +419,6 @@ def train_single_fold(test_plate: str) -> None:
             if label in class_to_idx:
                 val_paths.append(path)
                 val_labels.append(class_to_idx[label])
-                if args.use_dann and args.data_mode == 'both':
-                    domain_label = 0 if class_to_idx[label] in drug_class_indices else 1
-                    val_domain_labels.append(domain_label)
     
     for plate in [test_plate_normalized]:
         for path in get_image_paths_for_plate(plate):
@@ -488,18 +426,10 @@ def train_single_fold(test_plate: str) -> None:
             if label in class_to_idx:
                 test_paths.append(path)
                 test_labels.append(class_to_idx[label])
-                if args.use_dann and args.data_mode == 'both':
-                    domain_label = 0 if class_to_idx[label] in drug_class_indices else 1
-                    test_domain_labels.append(domain_label)
     
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
     test_labels = np.array(test_labels)
-    
-    if args.use_dann and args.data_mode == 'both':
-        train_domain_labels = np.array(train_domain_labels)
-        val_domain_labels = np.array(val_domain_labels)
-        test_domain_labels = np.array(test_domain_labels)
     
     print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
     
@@ -509,9 +439,9 @@ def train_single_fold(test_plate: str) -> None:
     class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, domain_labels=train_domain_labels if args.use_dann and args.data_mode == 'both' else None)
-    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, domain_labels=val_domain_labels if args.use_dann and args.data_mode == 'both' else None)
-    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, domain_labels=test_domain_labels if args.use_dann and args.data_mode == 'both' else None)
+    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
+    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
+    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -565,11 +495,13 @@ def train_single_fold(test_plate: str) -> None:
     
     # Set up optimizer based on whether backbone is frozen
     if args.freeze:
+        # Only train attention pool + classifier
         attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
         optimizer = torch.optim.AdamW([
             {'params': attention_params, 'lr': args.lr}
         ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
     else:
+        # Original: backbone + attention + classifier with different LRs
         backbone_params = [p for n, p in model.named_parameters() if 'attention_pool' not in n and 'classifier' not in n]
         attention_params = [p for n, p in model.named_parameters() if 'attention_pool' in n or 'classifier' in n]
         optimizer = torch.optim.AdamW([
@@ -705,18 +637,9 @@ def train_single_fold(test_plate: str) -> None:
         train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True,
                                    persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True)
         
-        # DANN: separate feature extractor + classifier from domain classifier
-        # Domain classifier gets 10x lower LR (Sicily paper: prevents disc from overpowering feat extractor)
-        if args.use_dann and args.data_mode == 'both':
-            feature_params = [p for n, p in model.named_parameters() if 'domain_classifier' not in n]
-            domain_params = [p for n, p in model.named_parameters() if 'domain_classifier' in n]
-            sc_mil_optimizer = torch.optim.AdamW([
-                {'params': feature_params, 'lr': args.lr},
-                {'params': domain_params, 'lr': args.lr * 0.1}
-            ], weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
-            print(f"DANN: feature_lr={args.lr}, domain_lr={args.lr * 0.1}")
-        else:
-            sc_mil_optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
+        # Train encoder + attention + classifier jointly
+        sc_mil_params = [p for n, p in model.named_parameters()]
+        sc_mil_optimizer = torch.optim.AdamW(sc_mil_params, lr=args.lr, weight_decay=args.weight_decay, fused=True if torch.cuda.is_available() else False)
         sc_mil_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(sc_mil_optimizer, T_max=args.sc_mil_epochs)
         if args.warmup_epochs > 0:
             sc_mil_warmup = torch.optim.lr_scheduler.LinearLR(
@@ -724,8 +647,6 @@ def train_single_fold(test_plate: str) -> None:
             )
             sc_mil_scheduler = torch.optim.lr_scheduler.ChainedScheduler([sc_mil_warmup, sc_mil_scheduler])
         sc_mil_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
-        
-        domain_criterion = nn.CrossEntropyLoss()
         
         # Create CSV file for SC-MIL metrics
         timestamp_sc_mil = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -738,42 +659,18 @@ def train_single_fold(test_plate: str) -> None:
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
-            run_cl_loss, run_ce_loss, run_domain_loss, run_domain_acc, correct, total = 0.0, 0.0, 0.0, 0.0, 0, 0
+            run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
             
-            p = float(epoch) / args.sc_mil_epochs
-            alpha = 2. / (1. + np.exp(-10 * p)) - 1
-            
-            for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
-                if args.use_dann and args.data_mode == 'both':
-                    images, labels, domain_labels = batch
-                    domain_labels = domain_labels.to(device)
-                else:
-                    images, labels = batch[0], batch[1]
-                
+            for images, labels in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    if args.use_dann and args.data_mode == 'both':
-                        model_output = model(images, return_attention=True, return_crop_embeddings=True, 
-                                          return_pooled_embeddings=True, return_instance_logits=True,
-                                          return_domain=True, alpha=alpha)
-                        if args.pooling in ['mean', 'max']:
-                            outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
-                        else:
-                            outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits, domain_logits = model_output
-                        
-                        domain_loss = domain_criterion(domain_logits, domain_labels)
-                        domain_loss_val = domain_loss.item()
-                        domain_acc = (domain_logits.argmax(1) == domain_labels).float().mean().item()
-                        run_domain_loss += domain_loss_val
-                        run_domain_acc += domain_acc
-                    else:
-                        outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
-                            images, return_attention=True, return_crop_embeddings=True, 
-                            return_pooled_embeddings=True, return_instance_logits=True
-                        )
-                        domain_loss_val = 0.0
+                    # Single forward pass: get outputs, attn, crop, pooled embeddings, and instance logits
+                    outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
+                        images, return_attention=True, return_crop_embeddings=True, 
+                        return_pooled_embeddings=True, return_instance_logits=True
+                    )
                     
                     # ============ CONTRASTIVE LOSSES ============
                     num_crops = crop_embeddings.shape[1]
@@ -820,14 +717,8 @@ def train_single_fold(test_plate: str) -> None:
                     
                     # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
-                    
-                    # Add DANN domain loss
-                    if args.use_dann and args.data_mode == 'both':
-                        loss = loss + args.dann_lambda * domain_loss
                 
                 sc_mil_scaler.scale(loss).backward()
-                sc_mil_scaler.unscale_(sc_mil_optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 sc_mil_scaler.step(sc_mil_optimizer)
                 sc_mil_scaler.update()
                 
@@ -843,12 +734,6 @@ def train_single_fold(test_plate: str) -> None:
             avg_cl_loss = run_cl_loss / len(train_loader)
             avg_ce_loss = run_ce_loss / len(train_loader)
             
-            # Print epoch-level domain metrics
-            if args.use_dann and args.data_mode == 'both':
-                avg_domain_loss = run_domain_loss / len(train_loader)
-                avg_domain_acc = run_domain_acc / len(train_loader) * 100
-                print(f"  Domain Loss: {avg_domain_loss:.4f}, Domain Acc: {avg_domain_acc:.1f}%")
-            
             # VALIDATION after each SC-MIL epoch
             model.eval()
             val_cl_loss, val_ce_loss = 0.0, 0.0
@@ -856,11 +741,7 @@ def train_single_fold(test_plate: str) -> None:
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-                for batch in tqdm(val_loader, desc='Validating', leave=False):
-                    if args.use_dann and args.data_mode == 'both':
-                        images, labels, _ = batch
-                    else:
-                        images, labels = batch
+                for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                     images, labels = images.to(device), labels.to(device)
                     outputs, _ = model(images, return_attention=True)
                     probs = torch.softmax(outputs, dim=1)
@@ -918,50 +799,28 @@ def train_single_fold(test_plate: str) -> None:
     
     # Standard or SC-MIL training loop
     if epoch is None:
-        domain_criterion = nn.CrossEntropyLoss()
-        
         for epoch in range(args.epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
             run_loss, correct, total = 0.0, 0, 0
-            domain_loss_sum = 0.0
-            domain_acc_sum = 0.0
             
-            p = float(epoch) / args.epochs
-            alpha = 2. / (1. + np.exp(-10 * p)) - 1
-            
-            for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-                if args.use_dann and args.data_mode == 'both':
-                    images, labels, domain_labels_batch = batch
-                    domain_labels_batch = domain_labels_batch.to(device)
-                else:
-                    images, labels = batch
-                
+            for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    if args.use_dann and args.data_mode == 'both':
-                        model_output = model(images, return_domain=True, alpha=alpha)
-                        if args.pooling in ['mean', 'max']:
-                            outputs, domain_logits = model_output
-                        else:
-                            outputs, _, domain_logits = model_output
-                        
-                        main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                        domain_loss = domain_criterion(domain_logits, domain_labels_batch)
-                        loss = main_loss + args.dann_lambda * domain_loss
-                        domain_loss_sum += domain_loss.item()
-                        domain_acc_sum += (domain_logits.argmax(1) == domain_labels_batch).float().mean().item()
+                    outputs, attn_weights = model(images, return_attention=True)
+                    
+                    # SC-MIL loss: weighted focal loss + optional entropy regularization
+                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    
+                    # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
+                    if args.entropy_loss_weight > 0:
+                        attn_ent_loss = attention_entropy_loss(attn_weights)
+                        loss = main_loss + args.entropy_loss_weight * attn_ent_loss
                     else:
-                        outputs, attn_weights = model(images, return_attention=True)
-                        main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                        if args.entropy_loss_weight > 0:
-                            attn_ent_loss = attention_entropy_loss(attn_weights)
-                            loss = main_loss + args.entropy_loss_weight * attn_ent_loss
-                        else:
-                            loss = main_loss
+                        loss = main_loss
                 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -979,33 +838,14 @@ def train_single_fold(test_plate: str) -> None:
         train_acc = 100. * correct / total
         avg_train_loss = run_loss / len(train_loader)
         
-        # Print epoch-level domain metrics
-        if args.use_dann and args.data_mode == 'both':
-            avg_domain_loss = domain_loss_sum / len(train_loader)
-            avg_domain_acc = domain_acc_sum / len(train_loader) * 100
-            print(f"  Domain Loss: {avg_domain_loss:.4f}, Domain Acc: {avg_domain_acc:.1f}%")
-        
         model.eval()
         val_loss_total = 0.0
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-            for batch in tqdm(val_loader, desc='Validating', leave=False):
-                if args.use_dann and args.data_mode == 'both':
-                    images, labels, _ = batch
-                else:
-                    images, labels = batch
+            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
                 images, labels = images.to(device), labels.to(device)
-                
-                if args.use_dann and args.data_mode == 'both':
-                    model_output = model(images, return_domain=True, alpha=alpha)
-                    if args.pooling in ['mean', 'max']:
-                        outputs, _ = model_output
-                    else:
-                        outputs, _, _ = model_output
-                else:
-                    outputs, _ = model(images, return_attention=True)
-                
+                outputs, _ = model(images, return_attention=True)
                 probs = torch.softmax(outputs, dim=1)
                 _, predicted = outputs.max(1)
                 all_preds.extend(predicted.cpu().numpy())
@@ -1056,22 +896,9 @@ def train_single_fold(test_plate: str) -> None:
     
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-        for batch in tqdm(test_loader, desc='Testing', leave=False):
-            if args.use_dann and args.data_mode == 'both':
-                images, labels, _ = batch
-            else:
-                images, labels = batch
+        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
             images = images.to(device)
-            
-            if args.use_dann and args.data_mode == 'both':
-                model_output = model(images, return_domain=True, alpha=0)  # Inference mode
-                if args.pooling in ['mean', 'max']:
-                    outputs, _ = model_output
-                else:
-                    outputs, _, _ = model_output
-            else:
-                outputs, _ = model(images, return_attention=True)
-            
+            outputs, _ = model(images, return_attention=True)
             probs = torch.softmax(outputs, dim=1)
             _, predicted = outputs.max(1)
             all_preds.extend(predicted.cpu().numpy())
