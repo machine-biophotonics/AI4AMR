@@ -100,6 +100,10 @@ def main():
                         help='Group to hold out for leave_one_group_out mode (0-8)')
     parser.add_argument('--n_clusters', type=int, default=None,
                         help='Number of clusters for novel MOA discovery (default: auto)')
+    parser.add_argument('--novelty_threshold', type=float, default=0.7,
+                        help='Cosine sim below this → candidate novel MOA (default: 0.7)')
+    parser.add_argument('--top_n_genes', type=int, default=20,
+                        help='Top N novel candidates to report in console (default: 20)')
     
     args = parser.parse_args()
     
@@ -682,172 +686,308 @@ def compute_group_alignment(drug_emb, mutant_emb, drug_labels, mutant_labels,
 def run_novel_moa_discovery(drug_emb, mutant_emb, drug_labels, mutant_labels,
                            drug_class_names, mutant_class_names, output_dir, args):
     """
-    Discover candidate novel MOAs from mutant-only groups (7, 8).
+    Discover candidate novel MOAs across ALL mutant samples.
     
-    Groups 7 (Protein transport) and 8 (Division septum) have mutant samples
-    but NO corresponding drug MOA. They are natural probes for novel mechanism
-    discovery.
+    For EVERY mutant embedding (all groups, not just 7-8):
+      1. Compute cosine similarity to each drug MOA centroid
+      2. Find the nearest MOA
+      3. If nearest similarity < threshold → flag as "no known MOA match"
+      4. If nearest MOA group ≠ assigned group → flag as "mismatch"
     
-    Pipeline:
-    1. Cluster mutant-only group embeddings
-    2. Find nearest drug MOA centroid for each cluster
-    3. Clusters far from all known MOAs → candidate novel MOAs
-    4. Visualize with distance-to-known-MOA plots
+    Scenarios caught:
+      - Groups 7-8 far from all MOAs → true novel mechanism (no drug known)
+      - Groups 0-6 far from all MOAs → novel mechanism despite known pathway
+      - Groups 0-6 nearest MOA ≠ assigned group → biological prior mismatch
     """
-    print("\n" + "="*60)
-    print("NOVEL MOA DISCOVERY")
-    print("Analyzing mutant-only groups (Protein transport, Division septum)")
-    print("="*60)
+    print("\n" + "="*70)
+    print("NOVEL MOA DISCOVERY (all mutant samples)")
+    print("="*70)
     
     with open(os.path.join(SCRIPT_DIR, 'group_mapping.json'), 'r') as f:
         gm = json.load(f)
     
-    # Map samples to groups
-    def get_mutant_group(label_idx):
+    threshold = args.novelty_threshold
+    top_n = args.top_n_genes
+    
+    # ------------------------------------------------------------------
+    # Build drug MOA centroids
+    # ------------------------------------------------------------------
+    moa_class_embeddings = {}
+    for i in range(len(drug_class_names)):
+        mask = drug_labels == i
+        if mask.sum() == 0:
+            continue
+        name = str(drug_class_names[i])
+        if name == 'control':
+            moa = 'Control'
+        else:
+            ab = name.rsplit('_', 1)[0]
+            moa = gm['ANTIBIOTIC_TO_MOA'].get(ab, 'Unknown')
+        if moa not in moa_class_embeddings:
+            moa_class_embeddings[moa] = []
+        moa_class_embeddings[moa].append(drug_emb[mask].mean(axis=0))
+    
+    moa_centroids = {}
+    for moa, cents in moa_class_embeddings.items():
+        cent = np.mean(cents, axis=0)
+        moa_centroids[moa] = cent / (np.linalg.norm(cent) + 1e-8)
+    
+    moa_names = list(moa_centroids.keys())
+    moa_group_map = {m: gm['MOA_TO_GROUP'].get(m, -1) for m in moa_names}
+    print(f"  Drug MOA centroids: {len(moa_names)} ({', '.join(moa_names)})")
+    print(f"  Novelty threshold:  cosine sim < {threshold}")
+    print(f"  Total mutant samples: {len(mutant_emb)}")
+    
+    # ------------------------------------------------------------------
+    # Helper: get mutant gene and group
+    # ------------------------------------------------------------------
+    def get_mutant_gene_and_group(label_idx):
         name = str(mutant_class_names[label_idx])
         gene = name.rsplit('_', 1)[0] if '_' in name else name
         pathway = gm['GENE_TO_PATHWAY'].get(gene, 'Unknown')
-        return gm['PATHWAY_TO_GROUP'].get(pathway, -1)
+        gid = gm['PATHWAY_TO_GROUP'].get(pathway, -1)
+        return gene, pathway, gid
     
-    mutant_groups = np.array([get_mutant_group(l) for l in mutant_labels])
+    mutant_info = [get_mutant_gene_and_group(l) for l in mutant_labels]
+    mutant_genes = np.array([m[0] for m in mutant_info])
+    mutant_pathways = np.array([m[1] for m in mutant_info])
+    mutant_groups = np.array([m[2] for m in mutant_info])
     
-    # Filter to mutant-only groups (7 = Protein transport, 8 = Division septum)
-    novel_group_ids = [7, 8]
-    from sklearn.cluster import KMeans
-    from sklearn.metrics import silhouette_score
+    # ------------------------------------------------------------------
+    # Per-sample novelty scoring
+    # ------------------------------------------------------------------
+    moa_cent_list = np.array([moa_centroids[m] for m in moa_names])
     
-    for gid in novel_group_ids:
-        mask = mutant_groups == gid
-        n_samples = mask.sum()
-        if n_samples < 5:
-            print(f"  Group {gid} ({GROUP_NAMES.get(gid, '')}): only {n_samples} samples, skipping")
-            continue
+    mutant_norm = mutant_emb / (np.linalg.norm(mutant_emb, axis=1, keepdims=True) + 1e-8)
+    sim_matrix = mutant_norm @ moa_cent_list.T  # [N_mutants, N_MOAs]
+    
+    nearest_moa_idx = sim_matrix.argmax(axis=1)
+    nearest_sim = sim_matrix.max(axis=1)
+    nearest_moa_name = np.array([moa_names[i] for i in nearest_moa_idx])
+    nearest_moa_group = np.array([moa_group_map[moa_names[i]] for i in nearest_moa_idx])
+    
+    is_novel = nearest_sim < threshold
+    is_mismatch = (~is_novel) & (nearest_moa_group != mutant_groups)
+    
+    n_novel = is_novel.sum()
+    n_mismatch = is_mismatch.sum()
+    n_matched = (~is_novel & ~is_mismatch).sum()
+    
+    print(f"\n  Results:")
+    print(f"    Matches known MOA:     {n_matched:5d} ({100*n_matched/len(mutant_emb):.1f}%)")
+    print(f"    Mismatch (wrong MOA):  {n_mismatch:5d} ({100*n_mismatch/len(mutant_emb):.1f}%)")
+    print(f"    CANDIDATE NOVEL MOA:   {n_novel:5d} ({100*n_novel/len(mutant_emb):.1f}%)")
+    
+    # ------------------------------------------------------------------
+    # Build per-sample DataFrame
+    # ------------------------------------------------------------------
+    import pandas as pd
+    sample_records = []
+    for i in range(len(mutant_emb)):
+        sample_records.append({
+            'mutant_label': str(mutant_class_names[mutant_labels[i]]),
+            'gene': mutant_genes[i],
+            'assigned_pathway': mutant_pathways[i],
+            'assigned_group': mutant_groups[i],
+            'assigned_group_name': GROUP_NAMES.get(mutant_groups[i], ''),
+            'nearest_moa': nearest_moa_name[i],
+            'nearest_moa_group': nearest_moa_group[i],
+            'nearest_sim': float(nearest_sim[i]),
+            'is_novel': bool(is_novel[i]),
+            'is_mismatch': bool(is_mismatch[i]),
+        })
+    
+    df_samples = pd.DataFrame(sample_records)
+    df_samples.to_csv(os.path.join(output_dir, 'novel_moa_per_sample.csv'), index=False)
+    print(f"\n  Saved: novel_moa_per_sample.csv ({len(df_samples)} samples)")
+    
+    # ------------------------------------------------------------------
+    # Per-gene aggregation
+    # ------------------------------------------------------------------
+    gene_agg = df_samples.groupby('gene').agg(
+        n_samples=('mutant_label', 'count'),
+        n_novel=('is_novel', 'sum'),
+        n_mismatch=('is_mismatch', 'sum'),
+        mean_sim=('nearest_sim', 'mean'),
+        min_sim=('nearest_sim', 'min'),
+        assigned_pathway=('assigned_pathway', 'first'),
+        assigned_group=('assigned_group', 'first'),
+        nearest_moa_mode=('nearest_moa', lambda x: x.value_counts().index[0]),
+    ).reset_index()
+    gene_agg['novel_frac'] = gene_agg['n_novel'] / gene_agg['n_samples']
+    gene_agg['mismatch_frac'] = gene_agg['n_mismatch'] / gene_agg['n_samples']
+    gene_agg = gene_agg.sort_values('novel_frac', ascending=False)
+    gene_agg.to_csv(os.path.join(output_dir, 'novel_moa_per_gene.csv'), index=False)
+    print(f"  Saved: novel_moa_per_gene.csv ({len(gene_agg)} genes)")
+    
+    # ------------------------------------------------------------------
+    # Console report: top novel candidate genes
+    # ------------------------------------------------------------------
+    print(f"\n  Top {top_n} Novel MOA Candidates (by novel_frac):")
+    print(f"  {'Gene':12s} {'Pathway':28s} {'Grp':3s} {'#Samples':9s} {'Novel%':6s} {'Nearest MOA':22s} {'Mean Sim':8s}")
+    print(f"  {'-'*88}")
+    for _, row in gene_agg[gene_agg['n_novel'] > 0].head(top_n).iterrows():
+        print(f"  {row['gene']:12s} {row['assigned_pathway']:28s} {int(row['assigned_group']):3d} "
+              f"{int(row['n_samples']):4d}/{int(row['n_novel']):3d}    "
+              f"{100*row['novel_frac']:5.0f}%  {row['nearest_moa_mode']:22s} {row['mean_sim']:.3f}")
+    
+    # Also report mismatch candidates
+    mismatches = gene_agg[gene_agg['mismatch_frac'] > 0.3].sort_values('mismatch_frac', ascending=False)
+    if len(mismatches) > 0:
+        print(f"\n  Top Mismatches (assigned group ≠ nearest MOA, >30% of samples):")
+        for _, row in mismatches.head(10).iterrows():
+            print(f"    {row['gene']:12s} (assigned=G{int(row['assigned_group'])}) "
+                  f"→ nearest MOA={row['nearest_moa_mode']} ({100*row['mismatch_frac']:.0f}% of samples)")
+    
+    # ------------------------------------------------------------------
+    # Plot 1: Distance-to-nearest-MOA histogram
+    # ------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bins = np.linspace(0, 1, 51)
+    ax.hist(nearest_sim, bins=bins, color='#2196F3', alpha=0.7, edgecolor='white', linewidth=0.5)
+    ax.axvline(x=threshold, color='red', linestyle='--', linewidth=2,
+               label=f'Novelty threshold ({threshold})')
+    ax.text(threshold + 0.01, ax.get_ylim()[1] * 0.95,
+            f'CANDIDATE NOVEL\n({n_novel} samples)',
+            color='red', fontsize=10, fontweight='bold', va='top')
+    ax.set_xlabel('Cosine Similarity to Nearest Drug MOA', fontsize=12)
+    ax.set_ylabel('Number of Mutant Samples', fontsize=12)
+    ax.set_title('Novel MOA Discovery: Distance to Nearest Known MOA', fontweight='bold')
+    ax.legend(fontsize=11)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'distance_to_nearest_moa_histogram.png'),
+               dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: distance_to_nearest_moa_histogram.png")
+    
+    # ------------------------------------------------------------------
+    # Plot 2: Gene × MOA heatmap (top novel genes)
+    # ------------------------------------------------------------------
+    top_novel_genes = gene_agg[gene_agg['n_novel'] > 0].head(min(30, len(gene_agg)))['gene'].values
+    gene_mask = np.isin(mutant_genes, top_novel_genes)
+    
+    if gene_mask.sum() > 0:
+        sub_sim = sim_matrix[gene_mask]
+        sub_genes = mutant_genes[gene_mask]
         
-        group_emb = mutant_emb[mask]
-        group_labels_filtered = mutant_labels[mask]
-        group_names = [str(mutant_class_names[l]) for l in group_labels_filtered]
+        fig, ax = plt.subplots(figsize=(max(8, len(moa_names) * 0.6),
+                                        max(6, len(np.unique(sub_genes)) * 0.5)))
         
-        print(f"\n  Group {gid}: {GROUP_NAMES.get(gid, '')}")
-        print(f"    Samples: {n_samples}")
+        gene_order = np.unique(sub_genes)
+        heatmap_data = np.zeros((len(gene_order), len(moa_names)))
+        for gi, gene in enumerate(gene_order):
+            gmask = sub_genes == gene
+            heatmap_data[gi] = sub_sim[gmask].mean(axis=0)
         
-        # Compute group centroid
-        group_centroid = group_emb.mean(axis=0)
-        group_centroid = group_centroid / (np.linalg.norm(group_centroid) + 1e-8)
-        
-        # Compute drug MOA centroids
-        moa_centroids = {}
-        for i in range(len(drug_class_names)):
-            mask_d = drug_labels == i
-            if mask_d.sum() > 0:
-                name = str(drug_class_names[i])
-                if name == 'control':
-                    moa = 'Control'
-                else:
-                    ab = name.rsplit('_', 1)[0]
-                    moa = gm['ANTIBIOTIC_TO_MOA'].get(ab, 'Unknown')
-                cent = drug_emb[mask_d].mean(axis=0)
-                cent = cent / (np.linalg.norm(cent) + 1e-8)
-                if moa not in moa_centroids:
-                    moa_centroids[moa] = []
-                moa_centroids[moa].append(cent)
-        
-        # Average per-MOA centroids
-        moa_cent = {}
-        for moa, cents in moa_centroids.items():
-            avg_cent = np.mean(cents, axis=0)
-            moa_cent[moa] = avg_cent / (np.linalg.norm(avg_cent) + 1e-8)
-        
-        # Distance to nearest known MOA
-        moa_names_list = list(moa_cent.keys())
-        sim_to_moa = []
-        for moa_name in moa_names_list:
-            sim = float(np.dot(group_centroid, moa_cent[moa_name]))
-            sim_to_moa.append(sim)
-        
-        nearest_moa = moa_names_list[np.argmax(sim_to_moa)]
-        nearest_sim = max(sim_to_moa)
-        
-        print(f"    Nearest known MOA: {nearest_moa} (cosine sim={nearest_sim:.3f})")
-        
-        # Try clustering with different K
-        best_k = args.n_clusters
-        if best_k is None:
-            best_score = -1
-            best_k = 1
-            for k in range(2, min(6, n_samples // 3 + 2)):
-                km = KMeans(n_clusters=k, random_state=42, n_init=10)
-                labels_cl = km.fit_predict(group_emb)
-                if len(set(labels_cl)) > 1:
-                    score = silhouette_score(group_emb, labels_cl)
-                    print(f"      K={k}: silhouette={score:.3f}")
-                    if score > best_score:
-                        best_score = score
-                        best_k = k
-        
-        print(f"    Best clusters: K={best_k}")
-        
-        # Cluster with best K
-        km = KMeans(n_clusters=best_k, random_state=42, n_init=10)
-        cluster_labels = km.fit_predict(group_emb)
-        
-        # Analyze each cluster
-        cluster_results = []
-        for cid in range(best_k):
-            c_mask = cluster_labels == cid
-            c_size = c_mask.sum()
-            c_cent = group_emb[c_mask].mean(axis=0)
-            c_cent = c_cent / (np.linalg.norm(c_cent) + 1e-8)
-            
-            # Nearest MOA
-            sims = [float(np.dot(c_cent, moa_cent[m])) for m in moa_names_list]
-            nearest_idx = np.argmax(sims)
-            nearest_moa_name = moa_names_list[nearest_idx]
-            nearest_sim_val = sims[nearest_idx]
-            
-            # Top genes in cluster
-            cluster_genes = [group_names[i] for i in range(n_samples) if cluster_labels[i] == cid]
-            top_genes = list(set(cluster_genes))[:5]
-            
-            cluster_results.append({
-                'cluster_id': cid,
-                'size': c_size,
-                'nearest_moa': nearest_moa_name,
-                'nearest_sim': nearest_sim_val,
-                'top_genes': top_genes,
-            })
-            
-            # Novelty score: low similarity to nearest MOA = candidate novel
-            novelty = 1.0 - nearest_sim_val
-            is_novel = novelty > 0.3  # Threshold: < 0.7 cosine sim to any known MOA
-            
-            emoji = "⚡ CANDIDATE NOVEL MOA" if is_novel else ""
-            print(f"      Cluster {cid}: {c_size} samples, "
-                  f"nearest MOA={nearest_moa_name} (sim={nearest_sim_val:.3f}) {emoji}")
-            print(f"        Top genes: {', '.join(top_genes)}")
-        
-        # Save cluster results
-        import pandas as pd
-        df_cl = pd.DataFrame(cluster_results)
-        df_cl.to_csv(os.path.join(output_dir, f'novel_moa_group_{gid}_clusters.csv'), index=False)
-        
-        # Plot: distance of mutant group to known MOA centroids
-        fig, ax = plt.subplots(figsize=(10, max(5, len(moa_names_list) * 0.4)))
-        colors = plt.cm.RdYlGn_r(np.linspace(0.2, 0.8, len(moa_names_list)))
-        bars = ax.barh(range(len(moa_names_list)), sim_to_moa, color=colors)
-        ax.set_yticks(range(len(moa_names_list)))
-        ax.set_yticklabels(moa_names_list, fontsize=9)
-        ax.set_xlabel('Cosine Similarity to Group Centroid')
-        ax.set_title(f'Group {gid} ({GROUP_NAMES.get(gid, "")}): Similarity to Known MOAs',
-                    fontweight='bold')
-        ax.axvline(x=0.7, color='red', linestyle='--', alpha=0.5, label='Novelty threshold')
-        ax.legend(fontsize=9)
+        sns.heatmap(heatmap_data, cmap='RdYlBu_r', center=0,
+                    xticklabels=moa_names, yticklabels=gene_order,
+                    vmin=-0.3, vmax=0.8,
+                    cbar_kws={'label': 'Cosine Similarity'},
+                    ax=ax, linewidths=0.3, linecolor='lightgray')
+        ax.set_xlabel('Drug MOA', fontsize=11)
+        ax.set_ylabel('Mutant Gene (top novel candidates)', fontsize=11)
+        ax.set_title('Gene × MOA Similarity: Novel Candidates', fontweight='bold')
+        plt.setp(ax.get_xticklabels(), rotation=45, ha='right', fontsize=8)
+        plt.setp(ax.get_yticklabels(), fontsize=8)
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'novel_moa_group_{gid}_similarity.png'),
+        plt.savefig(os.path.join(output_dir, 'gene_moa_heatmap.png'),
                    dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"    Saved: novel_moa_group_{gid}_similarity.png")
+        print(f"  Saved: gene_moa_heatmap.png")
+    
+    # ------------------------------------------------------------------
+    # Plot 3: t-SNE colored by novelty status
+    # ------------------------------------------------------------------
+    from sklearn.manifold import TSNE
+    joint_emb = np.vstack([drug_emb, mutant_emb])
+    joint_labels = np.array(['drug'] * len(drug_emb) + ['mutant'] * len(mutant_emb))
+    joint_novelty = np.array([False] * len(drug_emb) + list(is_novel))
+    joint_mismatch = np.array([False] * len(drug_emb) + list(is_mismatch))
+    
+    n_tsne = min(3000, len(joint_emb))
+    rng = np.random.RandomState(42)
+    idx = rng.choice(len(joint_emb), n_tsne, replace=False) if n_tsne < len(joint_emb) else np.arange(len(joint_emb))
+    
+    print(f"  t-SNE on {n_tsne} points...")
+    tsne = TSNE(n_components=2, perplexity=30, random_state=42, n_iter=1000)
+    joint_2d = tsne.fit_transform(joint_emb[idx])
+    
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+    
+    # Left: colored by novelty
+    drug_pts = joint_2d[joint_labels[idx] == 'drug']
+    novel_pts = joint_2d[(joint_labels[idx] == 'mutant') & joint_novelty[idx]]
+    known_pts = joint_2d[(joint_labels[idx] == 'mutant') & ~joint_novelty[idx] & ~joint_mismatch[idx]]
+    mismatch_pts = joint_2d[(joint_labels[idx] == 'mutant') & joint_mismatch[idx]]
+    
+    axes[0].scatter(drug_pts[:, 0], drug_pts[:, 1], c='gray', alpha=0.3, s=8, label='Drugs')
+    axes[0].scatter(known_pts[:, 0], known_pts[:, 1], c='#4CAF50', alpha=0.6, s=15, label='Mutant (matches MOA)')
+    axes[0].scatter(mismatch_pts[:, 0], mismatch_pts[:, 1], c='#FF9800', alpha=0.7, s=15, label='Mutant (mismatch)')
+    axes[0].scatter(novel_pts[:, 0], novel_pts[:, 1], c='#F44336', alpha=0.8, s=20, marker='*',
+                    label=f'CANDIDATE NOVEL MOA ({n_novel})', edgecolors='darkred', linewidths=0.5)
+    axes[0].set_title('Novel MOA Candidates (red = no known MOA match)', fontweight='bold')
+    axes[0].legend(fontsize=9, loc='best')
+    axes[0].axis('off')
+    
+    # Right: colored by assigned group
+    drug_group = np.zeros(len(drug_emb))
+    full_groups = np.concatenate([drug_group, mutant_groups])
+    full_groups_str = full_groups[idx]
+    
+    for gid in sorted(set(int(g) for g in full_groups_str)):
+        mask = full_groups_str == gid
+        if mask.sum() < 3:
+            continue
+        color = GROUP_COLORS.get(gid, '#333333')
+        label = GROUP_NAMES.get(gid, f'G{gid}')
+        marker = 'o' if gid < 7 else '*'
+        size = 20 if gid >= 7 else 12
+        axes[1].scatter(joint_2d[mask, 0], joint_2d[mask, 1],
+                       c=color, alpha=0.6, s=size, label=label, marker=marker,
+                       edgecolors='none')
+    
+    axes[1].set_title('Colored by Assigned Group', fontweight='bold')
+    axes[1].legend(fontsize=8, loc='best', markerscale=1.5)
+    axes[1].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'tsne_novelty.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: tsne_novelty.png")
+    
+    # ------------------------------------------------------------------
+    # Plot 4: Per-group novelty rate
+    # ------------------------------------------------------------------
+    group_stats = df_samples.groupby('assigned_group').agg(
+        n_total=('mutant_label', 'count'),
+        n_novel=('is_novel', 'sum'),
+    ).reset_index()
+    group_stats['novel_rate'] = group_stats['n_novel'] / group_stats['n_total']
+    group_stats['group_name'] = group_stats['assigned_group'].map(GROUP_NAMES)
+    
+    fig, ax = plt.subplots(figsize=(12, 5))
+    colors_bar = ['#F44336' if r > 0.3 else '#4CAF50' for r in group_stats['novel_rate']]
+    bars = ax.bar(group_stats['assigned_group'], group_stats['novel_rate'],
+                  color=colors_bar, edgecolor='black', linewidth=0.5)
+    ax.axhline(y=0.3, color='red', linestyle='--', alpha=0.5,
+               label=f'Novelty threshold (>{threshold} sim)')
+    ax.set_xticks(group_stats['assigned_group'])
+    ax.set_xticklabels([f"G{g}\n{GROUP_NAMES.get(g, '')[:18]}" for g in group_stats['assigned_group']],
+                       rotation=45, ha='right', fontsize=8)
+    ax.set_ylabel('Fraction of Mutants Flagged Novel', fontsize=11)
+    ax.set_title('Novel MOA Candidates per Group', fontweight='bold')
+    for bar, row in zip(bars, group_stats.itertuples()):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                f"{row.n_novel}/{row.n_total}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'per_group_novelty_rate.png'),
+               dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: per_group_novelty_rate.png")
     
     print(f"\nNovel MOA discovery complete! Results saved to {output_dir}")
+    print(f"  Run `--mode novel_moa --novelty_threshold <value>` to adjust sensitivity")
 
 
 def run_leave_one_group_out(drug_emb, mutant_emb, drug_labels, mutant_labels,
