@@ -226,6 +226,159 @@ class SupConLossMIL(nn.Module):
 
 
 # =============================================================================
+# GroupCLIP Loss - Cross-Modal Supervised Contrastive Learning
+# =============================================================================
+# Based on: "Group Contrastive Learning for Weakly Paired Multimodal Data"
+# Gorla et al., arXiv:2602.04021, 2026
+#
+# GroupCLIP bridges CLIP (paired cross-modal) and SupCon (uni-modal supervised)
+# for weakly-paired multi-modal data where only group-level labels connect
+# modalities (no instance-level pairings required).
+#
+# Key difference from SupCon:
+# - Positives come from the OPPOSITE modality with the SAME group label
+# - Negatives come from the opposite modality with DIFFERENT group labels
+# - Normalization is over ALL candidates from the opposite modality (like CLIP)
+#
+# Mathematical formulation (Equation 3 from the paper):
+#   ℓ_i^(m) = -log( Σ_{z_p ∈ P_i^(m)} exp(sim(z_i^(m), z_p)/τ)
+#                  / Σ_{z_a ∈ A_i^(m)} exp(sim(z_i^(m), z_a)/τ) )
+# Where:
+#   P_i^(m): positives from other modality with same group
+#   A_i^(m): all candidates from other modality
+# =============================================================================
+
+
+class GroupCLIPLoss(nn.Module):
+    """
+    GroupCLIP: Cross-Modal Supervised Contrastive Loss.
+    
+    For weakly-paired multi-modal data where only group-level labels
+    connect modalities (no instance-level pairs required).
+    
+    Args:
+        temperature: Softmax temperature (lower = sharper, default 0.07)
+        base_temperature: Base temperature for gradient scaling
+    """
+    
+    def __init__(self, temperature=0.07, base_temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
+        self.base_temperature = base_temperature
+    
+    def forward(self, z1, z2, groups1, groups2):
+        """
+        Args:
+            z1: [N, D] L2-normalized embeddings from modality 1 (drug)
+            z2: [M, D] L2-normalized embeddings from modality 2 (mutant)
+            groups1: [N] shared group labels for modality 1
+            groups2: [M] shared group labels for modality 2
+        
+        Returns:
+            loss: scalar GroupCLIP loss
+        
+        The loss is computed symmetrically:
+        - Modality 1 as anchors, modality 2 as candidates
+        - Modality 2 as anchors, modality 1 as candidates
+        """
+        N, M = z1.shape[0], z2.shape[0]
+        device = z1.device
+        
+        # Cross-modal similarity: [N, M]
+        sim_12 = torch.matmul(z1, z2.T) / self.temperature
+        sim_21 = sim_12.T  # [M, N]
+        
+        # Positive masks: 1 if same group
+        g1 = groups1.contiguous().view(-1, 1)
+        g2 = groups2.contiguous().view(-1, 1)
+        pos_mask_12 = torch.eq(g1, g2.T).float().to(device)  # [N, M]
+        pos_mask_21 = pos_mask_12.T  # [M, N]
+        
+        # --- Modality 1 anchors, Modality 2 candidates ---
+        loss_12 = self._cross_modal_loss(sim_12, pos_mask_12)
+        
+        # --- Modality 2 anchors, Modality 1 candidates ---
+        loss_21 = self._cross_modal_loss(sim_21, pos_mask_21)
+        
+        loss = (loss_12 + loss_21) / 2.0
+        return loss * (self.temperature / self.base_temperature)
+    
+    def _cross_modal_loss(self, sim, pos_mask):
+        """
+        Compute cross-modal contrastive loss for one anchor modality.
+        
+        Args:
+            sim: [N, M] similarity matrix (temperature-scaled)
+            pos_mask: [N, M] binary mask of positive pairs
+        
+        Returns:
+            loss: [N] per-anchor loss (mean-reduced)
+        """
+        # Numerical stability per anchor
+        sim_max, _ = torch.max(sim, dim=1, keepdim=True)
+        sim_stable = sim - sim_max.detach()
+        
+        exp_sim = torch.exp(sim_stable)
+        sum_all = exp_sim.sum(dim=1)
+        sum_pos = (exp_sim * pos_mask).sum(dim=1)
+        
+        sum_pos = torch.where(sum_pos < 1e-9, torch.ones_like(sum_pos), sum_pos)
+        
+        loss = -torch.log(sum_pos / sum_all)
+        return loss.mean()
+
+
+class GroupCLIPLossWithBackTranslation(nn.Module):
+    """
+    GROOVE: Full architecture combining GroupCLIP with backtranslation.
+    
+    Extends GroupCLIP with reconstruction and cycle-consistency losses
+    from the on-the-fly backtranslating autoencoder framework.
+    
+    Reference: Gorla et al., arXiv:2602.04021, Section 3, Equations 5-6.
+    """
+    
+    def __init__(self, temperature=0.07, recon_weight=1.0, gc_weight=1.0, bt_weight=1.0):
+        super().__init__()
+        self.groupclip = GroupCLIPLoss(temperature=temperature)
+        self.recon_weight = recon_weight
+        self.gc_weight = gc_weight
+        self.bt_weight = bt_weight
+        self.mse = nn.MSELoss()
+    
+    def forward(self, z1, z2, groups1, groups2,
+                x1_recon, x1_orig, x2_recon, x2_orig,
+                x1_cycle, x2_cycle):
+        """
+        Full GROOVE loss: GroupCLIP + Reconstruction + Backtranslation.
+        
+        Args:
+            z1, z2: L2-normalized embeddings [N, D], [M, D]
+            groups1, groups2: group labels
+            x1_recon, x1_orig: reconstructed and original modality 1
+            x2_recon, x2_orig: reconstructed and original modality 2
+            x1_cycle, x2_cycle: cycle-reconstructed modality 1 and 2
+        
+        Returns:
+            total_loss, losses_dict
+        """
+        loss_gc = self.groupclip(z1, z2, groups1, groups2)
+        loss_recon = (self.mse(x1_recon, x1_orig) + self.mse(x2_recon, x2_orig)) / 2.0
+        loss_bt = (self.mse(x1_cycle, x1_orig) + self.mse(x2_cycle, x2_orig)) / 2.0
+        
+        total = (self.gc_weight * loss_gc 
+                 + self.recon_weight * loss_recon 
+                 + self.bt_weight * loss_bt)
+        
+        return total, {
+            'groupclip': loss_gc.item(),
+            'reconstruction': loss_recon.item(),
+            'backtranslation': loss_bt.item(),
+            'total': total.item()
+        }
+
+
+# =============================================================================
 # HELPER FUNCTION FOR EASY INTEGRATION
 # =============================================================================
 
@@ -244,6 +397,23 @@ def create_supcon_loss(temperature=0.07, mil_mode=False, num_crops=9):
     if mil_mode:
         return SupConLossMIL(temperature=temperature)
     return SupConLoss(temperature=temperature)
+
+
+def create_groupclip_loss(temperature=0.07, full_groove=False, **kwargs):
+    """
+    Factory function to create GroupCLIP or full GROOVE loss.
+    
+    Args:
+        temperature: Contrastive temperature
+        full_groove: If True, return full GROOVE loss with backtranslation
+        **kwargs: Additional arguments for GROOVE loss
+        
+    Returns:
+        GroupCLIPLoss or GroupCLIPLossWithBackTranslation instance
+    """
+    if full_groove:
+        return GroupCLIPLossWithBackTranslation(temperature=temperature, **kwargs)
+    return GroupCLIPLoss(temperature=temperature)
 
 
 # =============================================================================

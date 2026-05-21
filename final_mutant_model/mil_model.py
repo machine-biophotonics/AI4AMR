@@ -485,6 +485,160 @@ class AttentionMILModel(nn.Module):
             return output
 
 
+class DualMILEncoder(nn.Module):
+    """
+    Dual MIL encoder for GroupCLIP training.
+    
+    Architecture:
+    - One shared backbone (EfficientNet-B0)
+    - Separate attention pooling heads for drug and mutant
+    - Separate classifiers for drug and mutant
+    - Shared GroupCLIP projection head for cross-modal alignment
+    
+    This enables learning a shared morphology space where drugs (with MOA labels)
+    and mutants (with pathway labels) with similar cellular effects cluster together.
+    """
+    def __init__(
+        self,
+        num_drug_classes: int,
+        num_mutant_classes: int,
+        num_heads: int = 4,
+        attention_temp: float = 0.5,
+        dropout: float = 0.5,
+        projection_dim: int = 256,
+        num_channels: int = 1,
+        pretrained: str = "imagenet",
+        backbone: str = "efficientnet_b0",
+        pooling: str = "attention"
+    ) -> None:
+        super().__init__()
+        self.pooling = pooling
+        self.num_heads = num_heads
+        self.feature_dim = 1280
+        
+        # Shared backbone
+        base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
+        self.backbone = nn.Sequential(
+            base_model.features,
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        
+        # Adapt first conv for grayscale
+        if num_channels == 1:
+            original_conv = base_model.features[0][0]
+            original_weights = original_conv.weight.data
+            new_weights = original_weights.sum(dim=1, keepdim=True)
+            self.backbone[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+            self.backbone[0][0].weight.data = new_weights
+        else:
+            self.backbone[0][0] = nn.Conv2d(num_channels, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        
+        # Drug-specific head
+        if pooling == 'simple_attention':
+            self.drug_attention = SimpleAttentionPooling(self.feature_dim, num_heads)
+        else:
+            self.drug_attention = AttentionPooling(self.feature_dim, num_heads)
+        self.drug_head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
+        self.drug_classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(self.feature_dim, num_drug_classes)
+        )
+        
+        # Mutant-specific head
+        if pooling == 'simple_attention':
+            self.mutant_attention = SimpleAttentionPooling(self.feature_dim, num_heads)
+        else:
+            self.mutant_attention = AttentionPooling(self.feature_dim, num_heads)
+        self.mutant_head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
+        self.mutant_classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(self.feature_dim, num_mutant_classes)
+        )
+        
+        # Shared GroupCLIP projection (maps pooled features to contrastive space)
+        self.groupclip_proj = nn.Sequential(
+            nn.Linear(self.feature_dim, projection_dim),
+            nn.ReLU(),
+            nn.Linear(projection_dim, projection_dim)
+        )
+        
+        self.attention_temp = attention_temp
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize head projections and classifiers."""
+        for m in [self.drug_head_proj, self.mutant_head_proj]:
+            nn.init.xavier_uniform_(m.weight, gain=1.0)
+            nn.init.zeros_(m.bias)
+        for m in [self.drug_classifier, self.mutant_classifier]:
+            nn.init.xavier_uniform_(m[1].weight, gain=1.0)
+            nn.init.zeros_(m[1].bias)
+    
+    def _encode_modality(self, x, attention_pool, head_proj, classifier):
+        """Extract pooled features and logits for one modality."""
+        batch_size, num_crops = x.shape[:2]
+        x = x.view(batch_size * num_crops, *x.shape[2:])
+        features = self.backbone(x)
+        features = features.view(batch_size, num_crops, -1)
+        
+        if self.pooling == 'mean':
+            pooled = features.mean(dim=1)
+        elif self.pooling == 'max':
+            pooled, _ = features.max(dim=1)
+        else:
+            pooled, _ = attention_pool(features, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+            pooled = head_proj(pooled)
+        
+        logits = classifier(pooled)
+        return logits, pooled
+    
+    def forward(self, drug_images, mutant_images):
+        """
+        Args:
+            drug_images: [B, N, C, H, W] drug crop batches
+            mutant_images: [B, N, C, H, W] mutant crop batches
+        
+        Returns:
+            drug_logits: [B, num_drug_classes]
+            mutant_logits: [B, num_mutant_classes]
+            drug_embedding: [B, projection_dim] GroupCLIP projection
+            mutant_embedding: [B, projection_dim] GroupCLIP projection
+        """
+        drug_logits, drug_pooled = self._encode_modality(
+            drug_images, self.drug_attention, self.drug_head_proj, self.drug_classifier
+        )
+        mutant_logits, mutant_pooled = self._encode_modality(
+            mutant_images, self.mutant_attention, self.mutant_head_proj, self.mutant_classifier
+        )
+        
+        # GroupCLIP embeddings (L2-normalized)
+        drug_emb = F.normalize(self.groupclip_proj(drug_pooled), p=2, dim=1)
+        mutant_emb = F.normalize(self.groupclip_proj(mutant_pooled), p=2, dim=1)
+        
+        return drug_logits, mutant_logits, drug_emb, mutant_emb
+    
+    def get_embeddings(self, images, modality='drug'):
+        """Extract GroupCLIP embeddings for a single modality in eval mode."""
+        batch_size, num_crops = images.shape[:2]
+        x = images.view(batch_size * num_crops, *images.shape[2:])
+        features = self.backbone(x)
+        features = features.view(batch_size, num_crops, -1)
+        
+        if modality == 'drug':
+            pooled, _ = self.drug_attention(features, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+            pooled = self.drug_head_proj(pooled)
+        else:
+            pooled, _ = self.mutant_attention(features, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+            pooled = self.mutant_head_proj(pooled)
+        
+        emb = F.normalize(self.groupclip_proj(pooled), p=2, dim=1)
+        return emb
+
+
 class MultiCropDataset(Dataset):
     """Cycle-based crop extraction with configurable neighborhood for MIL
     
