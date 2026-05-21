@@ -26,7 +26,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torchvision
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import glob
 import json
 import re
@@ -141,8 +141,8 @@ parser.add_argument('--harmony_n_clust', type=int, default=None,
                     help='Harmony number of soft clusters (default: auto-inferred from data)')
 parser.add_argument('--harmony_refit_interval', type=int, default=5,
                     help='Re-fit Harmony every N epochs during training (default: 5)')
-parser.add_argument('--harmony_batch_var', type=str, default='plate', choices=['plate', 'domain'],
-                    help='Batch variable for Harmony: plate (P1-P6) or domain (drug/mutant). Default: plate')
+parser.add_argument('--harmony_batch_var', type=str, default='plate',
+                    help='Comma-separated batch variable(s) for Harmony: plate,domain,plate,domain. Default: plate')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
@@ -461,6 +461,53 @@ def train_single_fold(test_plate: str) -> None:
     val_dataset.set_epoch(0)
     test_dataset.set_epoch(0)
     
+    # ── Harmony batch labels ─────────────────────────────────────────────────
+    use_harmony = args.use_harmony
+    if use_harmony:
+        batch_vars = [v.strip() for v in args.harmony_batch_var.split(',')]
+        print(f"Harmony batch variable(s): {batch_vars}")
+        
+        from harmony_corrector import HarmonyCorrector
+        
+        def get_batch_labels(paths_list):
+            plates, domains = [], []
+            for p in paths_list:
+                p_lower = p.lower()
+                for pn in range(1, 7):
+                    if f'/p{pn}/' in p_lower or f'\\p{pn}\\' in p_lower:
+                        plates.append(f'P{pn}')
+                        break
+                else:
+                    plates.append('unknown')
+                if 'drugs_data' in p_lower:
+                    domains.append('drug')
+                else:
+                    domains.append('mutant')
+            return plates, domains
+        
+        train_plates, train_domains = get_batch_labels(train_paths)
+        val_plates, val_domains = get_batch_labels(val_paths)
+        test_plates, test_domains = get_batch_labels(test_paths)
+        
+        class HarmonyDataset(Dataset):
+            """Wraps MultiCropDataset to also return batch labels."""
+            def __init__(self, base_dataset, plates, domains):
+                self.base = base_dataset
+                self.plates = plates
+                self.domains = domains
+            def __len__(self):
+                return len(self.base)
+            def __getitem__(self, idx):
+                crops, label = self.base[idx]
+                return crops, label, self.plates[idx], self.domains[idx]
+            def set_epoch(self, epoch):
+                if hasattr(self.base, 'set_epoch'):
+                    self.base.set_epoch(epoch)
+        
+        train_dataset = HarmonyDataset(train_dataset, train_plates, train_domains)
+        val_dataset = HarmonyDataset(val_dataset, val_plates, val_domains)
+        test_dataset = HarmonyDataset(test_dataset, test_plates, test_domains)
+    
     # Windows Python 3.14: MUST use 0 workers due to multiprocessing pickling changes
     if sys.platform.startswith('win'):
         effective_workers = 0
@@ -669,14 +716,35 @@ def train_single_fold(test_plate: str) -> None:
             writer = csv.writer(f)
             writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
         
+        # ── Harmony setup for SC-MIL ───────────────────────────────────────
+        if use_harmony:
+            harmony = HarmonyCorrector(n_pca=args.harmony_n_pca, max_iter=args.harmony_max_iter,
+                                       sigma=args.harmony_sigma, n_clust=args.harmony_n_clust,
+                                       batch_vars=batch_vars)
+            harmony.fitted = False
+        
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
             run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
             
-            for images, labels in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
-                images, labels = images.to(device), labels.to(device)
+            emb_buffer, batch_buffer = [], []
+            
+            for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
+                if use_harmony:
+                    images, labels, plates, domains = batch
+                    images, labels = images.to(device), labels.to(device)
+                    batch_lbls = {}
+                    if 'plate' in batch_vars:
+                        batch_lbls['plate'] = list(plates)
+                    if 'domain' in batch_vars:
+                        batch_lbls['domain'] = list(domains)
+                else:
+                    images, labels = batch
+                    images, labels = images.to(device), labels.to(device)
+                    batch_lbls = None
+                
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
@@ -686,6 +754,19 @@ def train_single_fold(test_plate: str) -> None:
                         return_pooled_embeddings=True, return_instance_logits=True
                     )
                     
+                    # ── Harmony correction of bag embeddings ──
+                    if use_harmony and harmony.fitted:
+                        with torch.no_grad():
+                            corrected_np = harmony.transform(pooled_embeddings.detach().cpu().numpy())
+                            corrected = torch.from_numpy(corrected_np).to(pooled_embeddings.device)
+                        offset = corrected - pooled_embeddings.detach()
+                        pooled_for_classifier = pooled_embeddings + offset
+                        pooled_for_contrast = pooled_for_classifier
+                        outputs = model.classifier(pooled_for_classifier)
+                    else:
+                        pooled_for_classifier = pooled_embeddings
+                        pooled_for_contrast = pooled_embeddings
+                    
                     # ============ CONTRASTIVE LOSSES ============
                     num_crops = crop_embeddings.shape[1]
                     
@@ -694,42 +775,34 @@ def train_single_fold(test_plate: str) -> None:
                         crop_emb_flat = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
                         crop_emb_flat = F.normalize(crop_emb_flat, p=2, dim=-1)
                         instance_labels_exp = labels.repeat_interleave(num_crops)
-                        inst_temp = max(args.sc_mil_temp, 0.1)  # Higher temp for stability
+                        inst_temp = max(args.sc_mil_temp, 0.1)
                         criterion_inst = SupConLoss(temperature=inst_temp, contrast_mode='one')
                         instance_sc_loss = criterion_inst(crop_emb_flat, instance_labels_exp)
                     else:
                         instance_sc_loss = 0.0
                     
-                    # Bag-level contrastive
+                    # Bag-level contrastive (using corrected embeddings if Harmony active)
                     if args.contrastive_level in ['bag', 'both']:
-                        bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
+                        bag_embeddings = F.normalize(pooled_for_contrast, p=2, dim=-1).unsqueeze(1)
                         sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
                         bag_sc_loss = sc_criterion(bag_embeddings, labels)
                     else:
                         bag_sc_loss = 0.0
                     
                     # ============ CLASSIFICATION LOSSES ============
-                    num_crops = crop_embeddings.shape[1]
                     instance_labels = labels.repeat_interleave(num_crops)
                     instance_weights = class_weights[instance_labels]
-                    # Instance-level focal
                     instance_focal = weighted_focal_loss(
                         instance_logits.view(-1, num_classes),
                         instance_labels,
                         instance_weights
                     )
-                    # Bag-level focal
                     bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
                     
                     # ============ COMBINE LOSSES ============
                     w = args.instance_weight
-                    
-                    # Combined focal: instance + bag
                     total_focal = w * instance_focal + (1 - w) * bag_focal
-                    # Combined contrastive: based on contrastive_level
                     total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
-                    
-                    # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
                 
                 sc_mil_scaler.scale(loss).backward()
@@ -741,8 +814,23 @@ def train_single_fold(test_plate: str) -> None:
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
+                
+                # Accumulate for Harmony fitting
+                if use_harmony:
+                    emb_buffer.append(pooled_embeddings.detach().cpu())
+                    batch_buffer.append(batch_lbls)
             
             sc_mil_scheduler.step()
+            
+            # ── Fit Harmony at epoch boundary ──
+            if use_harmony and (epoch + 1) % args.harmony_refit_interval == 0:
+                all_embs = torch.cat(emb_buffer).numpy()
+                all_labels_dict = {k: [] for k in batch_vars}
+                for bl in batch_buffer:
+                    for k in batch_vars:
+                        all_labels_dict[k].extend(bl[k])
+                print(f"  Fitting Harmony on {len(all_embs)} bag embeddings...")
+                harmony.fit(all_embs, all_labels_dict)
             
             train_acc = 100. * correct / total
             avg_cl_loss = run_cl_loss / len(train_loader)
@@ -755,9 +843,26 @@ def train_single_fold(test_plate: str) -> None:
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-                for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+                for batch in tqdm(val_loader, desc='Validating', leave=False):
+                    if use_harmony:
+                        images, labels, plates, domains = batch
+                    else:
+                        images, labels = batch
                     images, labels = images.to(device), labels.to(device)
-                    outputs, _ = model(images, return_attention=True)
+                    
+                    if use_harmony and harmony.fitted:
+                        _, _, _, pooled_embeddings, _ = model(
+                            images, return_attention=True, return_crop_embeddings=True,
+                            return_pooled_embeddings=True, return_instance_logits=True
+                        )
+                        with torch.no_grad():
+                            corrected_np = harmony.transform(pooled_embeddings.detach().cpu().numpy())
+                            corrected = torch.from_numpy(corrected_np).to(pooled_embeddings.device)
+                        offset = corrected - pooled_embeddings.detach()
+                        outputs = model.classifier(pooled_embeddings + offset)
+                    else:
+                        outputs, _ = model(images, return_attention=True)
+                    
                     probs = torch.softmax(outputs, dim=1)
                     _, predicted = outputs.max(1)
                     all_val_preds.extend(predicted.cpu().numpy())
@@ -813,23 +918,49 @@ def train_single_fold(test_plate: str) -> None:
     
     # Standard or SC-MIL training loop
     if epoch is None:
+        if use_harmony:
+            harmony = HarmonyCorrector(n_pca=args.harmony_n_pca, max_iter=args.harmony_max_iter,
+                                       sigma=args.harmony_sigma, n_clust=args.harmony_n_clust,
+                                       batch_vars=batch_vars)
+            harmony.fitted = False
+        
         for epoch in range(args.epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
             run_loss, correct, total = 0.0, 0, 0
             
-            for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-                images, labels = images.to(device), labels.to(device)
+            emb_buffer, batch_buffer = [], []
+            
+            for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+                if use_harmony:
+                    images, labels, plates, domains = batch
+                    images, labels = images.to(device), labels.to(device)
+                    batch_lbls = {}
+                    if 'plate' in batch_vars:
+                        batch_lbls['plate'] = list(plates)
+                    if 'domain' in batch_vars:
+                        batch_lbls['domain'] = list(domains)
+                else:
+                    images, labels = batch
+                    images, labels = images.to(device), labels.to(device)
+                    batch_lbls = None
+                
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    outputs, attn_weights = model(images, return_attention=True)
+                    if use_harmony and harmony.fitted:
+                        outputs, attn_weights, pooled_embs = model(images, return_attention=True, return_pooled_embeddings=True)
+                        with torch.no_grad():
+                            corrected_np = harmony.transform(pooled_embs.detach().cpu().numpy())
+                            corrected = torch.from_numpy(corrected_np).to(pooled_embs.device)
+                        offset = corrected - pooled_embs.detach()
+                        outputs = model.classifier(pooled_embs + offset)
+                    else:
+                        outputs, attn_weights = model(images, return_attention=True)
                     
-                    # SC-MIL loss: weighted focal loss + optional entropy regularization
                     main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
                     
-                    # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
                     if args.entropy_loss_weight > 0:
                         attn_ent_loss = attention_entropy_loss(attn_weights)
                         loss = main_loss + args.entropy_loss_weight * attn_ent_loss
@@ -846,8 +977,22 @@ def train_single_fold(test_plate: str) -> None:
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
+                
+                if use_harmony:
+                    emb_buffer.append(pooled_embs.detach().cpu())
+                    batch_buffer.append(batch_lbls)
         
-        scheduler.step()
+            scheduler.step()
+            
+            # Fit Harmony at epoch boundary
+            if use_harmony and (epoch + 1) % args.harmony_refit_interval == 0:
+                all_embs = torch.cat(emb_buffer).numpy()
+                all_labels_dict = {k: [] for k in batch_vars}
+                for bl in batch_buffer:
+                    for k in batch_vars:
+                        all_labels_dict[k].extend(bl[k])
+                print(f"  Fitting Harmony on {len(all_embs)} bag embeddings...")
+                harmony.fit(all_embs, all_labels_dict)
         
         train_acc = 100. * correct / total
         avg_train_loss = run_loss / len(train_loader)
@@ -857,9 +1002,23 @@ def train_single_fold(test_plate: str) -> None:
         all_preds, all_probs, all_labels = [], [], []
         
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
+            for batch in tqdm(val_loader, desc='Validating', leave=False):
+                if use_harmony:
+                    images, labels, plates, domains = batch
+                else:
+                    images, labels = batch
                 images, labels = images.to(device), labels.to(device)
-                outputs, _ = model(images, return_attention=True)
+                
+                if use_harmony and harmony.fitted:
+                    _, _, pooled_embs = model(images, return_attention=True, return_pooled_embeddings=True)
+                    with torch.no_grad():
+                        corrected_np = harmony.transform(pooled_embs.detach().cpu().numpy())
+                        corrected = torch.from_numpy(corrected_np).to(pooled_embs.device)
+                    offset = corrected - pooled_embs.detach()
+                    outputs = model.classifier(pooled_embs + offset)
+                else:
+                    outputs, _ = model(images, return_attention=True)
+                
                 probs = torch.softmax(outputs, dim=1)
                 _, predicted = outputs.max(1)
                 all_preds.extend(predicted.cpu().numpy())
@@ -910,9 +1069,22 @@ def train_single_fold(test_plate: str) -> None:
     
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
+        for batch in tqdm(test_loader, desc='Testing', leave=False):
+            if use_harmony and harmony.fitted:
+                images, labels, plates, domains = batch
+            else:
+                images, labels = batch
             images = images.to(device)
-            outputs, _ = model(images, return_attention=True)
+            
+            if use_harmony and harmony.fitted:
+                _, _, pooled_embs = model(images, return_attention=True, return_pooled_embeddings=True)
+                corrected_np = harmony.transform(pooled_embs.detach().cpu().numpy())
+                corrected = torch.from_numpy(corrected_np).to(pooled_embs.device)
+                offset = corrected - pooled_embs.detach()
+                outputs = model.classifier(pooled_embs + offset)
+            else:
+                outputs, _ = model(images, return_attention=True)
+            
             probs = torch.softmax(outputs, dim=1)
             _, predicted = outputs.max(1)
             all_preds.extend(predicted.cpu().numpy())
