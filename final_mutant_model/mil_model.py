@@ -639,6 +639,116 @@ class DualMILEncoder(nn.Module):
         return emb
 
 
+class GROOVEModel(DualMILEncoder):
+    """
+    GROOVE: GroupCLIP + Autoencoder Reconstruction + Backtranslation.
+
+    Extends DualMILEncoder with feature-space decoders that reconstruct
+    MIL-pooled features from GroupCLIP embeddings, enabling cycle-consistent
+    cross-modal learning.
+
+    Two-step optimization per iteration (Eq 5-6 from the paper):
+    Step 1: GroupCLIP + CE + reconstruction (update encoders + decoders)
+    Step 2: Cross-modal backtranslation cycle consistency (update all)
+
+    Reference: Gorla et al., "Group Contrastive Learning for Weakly Paired
+               Multimodal Data", arXiv:2602.04021, 2026
+    """
+    def __init__(self, projection_dim=256, recon_hidden=None, **kwargs):
+        super().__init__(projection_dim=projection_dim, **kwargs)
+        self.projection_dim = projection_dim
+
+        if recon_hidden:
+            self.drug_decoder = nn.Sequential(
+                nn.Linear(projection_dim, recon_hidden),
+                nn.ReLU(),
+                nn.Linear(recon_hidden, self.feature_dim)
+            )
+            self.mutant_decoder = nn.Sequential(
+                nn.Linear(projection_dim, recon_hidden),
+                nn.ReLU(),
+                nn.Linear(recon_hidden, self.feature_dim)
+            )
+        else:
+            self.drug_decoder = nn.Linear(projection_dim, self.feature_dim)
+            self.mutant_decoder = nn.Linear(projection_dim, self.feature_dim)
+
+        self._init_decoder_weights()
+
+    def _init_decoder_weights(self):
+        for m in [self.drug_decoder, self.mutant_decoder]:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.5)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Sequential):
+                for layer in m:
+                    if isinstance(layer, nn.Linear):
+                        nn.init.xavier_uniform_(layer.weight, gain=0.5)
+                        nn.init.zeros_(layer.bias)
+
+    def encode_to_latent(self, x, modality='drug'):
+        """Encode images to GroupCLIP latent codes (256-dim normalized).
+        
+        Also returns pooled features for reconstruction.
+        """
+        batch_size, num_crops = x.shape[:2]
+        x = x.view(batch_size * num_crops, *x.shape[2:])
+        features = self.backbone(x)
+        features = features.view(batch_size, num_crops, -1)
+
+        if modality == 'drug':
+            pooled, _ = self.drug_attention(features, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+            pooled = self.drug_head_proj(pooled)
+        else:
+            pooled, _ = self.mutant_attention(features, temperature=self.attention_temp)
+            pooled = pooled.reshape(batch_size, -1)
+            pooled = self.mutant_head_proj(pooled)
+
+        emb = F.normalize(self.groupclip_proj(pooled), p=2, dim=1)
+        return emb, pooled
+
+    def forward_groove_step1(self, drug_images, mutant_images):
+        """
+        Step 1: GroupCLIP + reconstruction + classification.
+        
+        Returns everything needed for loss computation.
+        """
+        drug_logits, mutant_logits, drug_emb, mutant_emb = self(drug_images, mutant_images)
+
+        drug_recon = self.drug_decoder(drug_emb)
+        mutant_recon = self.mutant_decoder(mutant_emb)
+
+        return {
+            'drug_logits': drug_logits,
+            'mutant_logits': mutant_logits,
+            'drug_emb': drug_emb,
+            'mutant_emb': mutant_emb,
+            'drug_recon': drug_recon,
+            'mutant_recon': mutant_recon,
+        }
+
+    def forward_groove_step2(self, drug_emb, mutant_emb):
+        """
+        Step 2: Cross-modal backtranslation cycle consistency.
+        
+        z_d → mutant_decoder → pseudo_mutant_pooled → groupclip_proj → z_d_cycle
+        z_m → drug_decoder → pseudo_drug_pooled → groupclip_proj → z_m_cycle
+        
+        Returns cycle-reconstructed latent codes for MSE consistency loss.
+        """
+        pseudo_mutant_pooled = self.mutant_decoder(drug_emb)
+        pseudo_drug_pooled = self.drug_decoder(mutant_emb)
+
+        z_d_cycle = F.normalize(self.groupclip_proj(pseudo_mutant_pooled), p=2, dim=1)
+        z_m_cycle = F.normalize(self.groupclip_proj(pseudo_drug_pooled), p=2, dim=1)
+
+        return {
+            'z_d_cycle': z_d_cycle,
+            'z_m_cycle': z_m_cycle,
+        }
+
+
 class MultiCropDataset(Dataset):
     """Cycle-based crop extraction with configurable neighborhood for MIL
     

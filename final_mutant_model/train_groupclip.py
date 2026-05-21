@@ -45,7 +45,7 @@ from tqdm import tqdm
 from functools import partial
 from typing import Optional
 
-from mil_model import DualMILEncoder, MultiCropDataset, extract_well_from_filename
+from mil_model import DualMILEncoder, GROOVEModel, MultiCropDataset, extract_well_from_filename
 from supcon_loss import GroupCLIPLoss
 
 SEED = 42
@@ -86,10 +86,17 @@ parser.add_argument('--weight_decay', type=float, default=0.05)
 parser.add_argument('--warmup_epochs', type=int, default=10)
 parser.add_argument('--label_smoothing', type=float, default=0.1)
 
+# Mode
+parser.add_argument('--mode', type=str, default='groupclip', choices=['groupclip', 'groove'],
+                    help='Training mode: groupclip or groove (with reconstruction + backtranslation)')
+
 # Loss weights
 parser.add_argument('--gc_weight', type=float, default=1.0, help='GroupCLIP loss weight')
 parser.add_argument('--ce_weight', type=float, default=1.0, help='Combined CE loss weight')
+parser.add_argument('--recon_weight', type=float, default=1.0, help='Reconstruction loss weight (groove mode)')
+parser.add_argument('--bt_weight', type=float, default=1.0, help='Backtranslation loss weight (groove mode)')
 parser.add_argument('--gc_temp', type=float, default=0.07, help='GroupCLIP temperature')
+parser.add_argument('--recon_hidden', type=int, default=None, help='Decoder hidden dim (default: None = linear)')
 
 # Crop extraction
 parser.add_argument('--neighborhood', type=int, default=3, choices=[3, 5])
@@ -528,18 +535,34 @@ def train_groupclip():
     ) if val_mutant_dataset else None
     
     # Build model
-    model = DualMILEncoder(
-        num_drug_classes=num_drug_classes,
-        num_mutant_classes=num_mutant_classes,
-        num_heads=args.num_heads,
-        dropout=args.dropout,
-        num_channels=args.num_channels,
-        pretrained=args.pretrained,
-        backbone=args.backbone,
-        pooling=args.pooling,
-    ).to(device)
+    use_groove = (args.mode == 'groove')
+    if use_groove:
+        model = GROOVEModel(
+            num_drug_classes=num_drug_classes,
+            num_mutant_classes=num_mutant_classes,
+            num_heads=args.num_heads,
+            dropout=args.dropout,
+            num_channels=args.num_channels,
+            pretrained=args.pretrained,
+            backbone=args.backbone,
+            pooling=args.pooling,
+            projection_dim=256,
+            recon_hidden=args.recon_hidden,
+        ).to(device)
+        print(f"\nModel: GROOVEModel (GroupCLIP + Reconstruction + Backtranslation)")
+    else:
+        model = DualMILEncoder(
+            num_drug_classes=num_drug_classes,
+            num_mutant_classes=num_mutant_classes,
+            num_heads=args.num_heads,
+            dropout=args.dropout,
+            num_channels=args.num_channels,
+            pretrained=args.pretrained,
+            backbone=args.backbone,
+            pooling=args.pooling,
+        ).to(device)
+        print(f"\nModel: DualMILEncoder")
     
-    print(f"\nModel: DualMILEncoder")
     print(f"  Backbone: {args.backbone}")
     print(f"  Pooling: {args.pooling}")
     print(f"  Drug classes: {num_drug_classes}, Mutant classes: {num_mutant_classes}")
@@ -550,6 +573,7 @@ def train_groupclip():
     # Losses
     criterion_gc = GroupCLIPLoss(temperature=args.gc_temp)
     criterion_ce = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    criterion_mse = nn.MSELoss()
     
     # Optimizer
     backbone_params = []
@@ -582,9 +606,14 @@ def train_groupclip():
     with open(csv_path, 'w', newline='') as f:
         import csv
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'gc_loss', 'ce_loss', 'total_loss',
-                        'train_drug_acc', 'train_mutant_acc',
-                        'val_drug_acc', 'val_mutant_acc', 'val_drug_auc', 'val_mutant_auc'])
+        if use_groove:
+            writer.writerow(['epoch', 'gc_loss', 'ce_loss', 'recon_loss', 'bt_loss', 'total_loss',
+                            'train_drug_acc', 'train_mutant_acc',
+                            'val_drug_acc', 'val_mutant_acc', 'val_drug_auc', 'val_mutant_auc'])
+        else:
+            writer.writerow(['epoch', 'gc_loss', 'ce_loss', 'total_loss',
+                            'train_drug_acc', 'train_mutant_acc',
+                            'val_drug_acc', 'val_mutant_acc', 'val_drug_auc', 'val_mutant_auc'])
     
     best_val_auc = 0.0
     best_val_drug_acc = 0.0
@@ -600,13 +629,15 @@ def train_groupclip():
         
         run_gc_loss = 0.0
         run_ce_loss = 0.0
+        run_recon_loss = 0.0
+        run_bt_loss = 0.0
         run_total_loss = 0.0
         drug_correct = 0
         drug_total = 0
         mutant_correct = 0
         mutant_total = 0
         
-        for batch in tqdm(train_loader, desc=f'GroupCLIP Epoch {epoch}', leave=False):
+        for batch in tqdm(train_loader, desc=f'{args.mode.upper()} Epoch {epoch}', leave=False):
             images = batch['images'].to(device)
             class_labels = batch['class_labels'].to(device)
             group_labels = batch['group_labels'].to(device)
@@ -614,51 +645,100 @@ def train_groupclip():
             
             optimizer.zero_grad()
             
-            with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
-                # Separate by modality
-                drug_mask = modalities == 0
-                mutant_mask = modalities == 1
-                
-                drug_imgs = images[drug_mask]
-                mutant_imgs = images[mutant_mask]
-                drug_classes = class_labels[drug_mask]
-                mutant_classes = class_labels[mutant_mask]
-                drug_groups = group_labels[drug_mask]
-                mutant_groups = group_labels[mutant_mask]
-                
-                if drug_imgs.shape[0] < 2 or mutant_imgs.shape[0] < 2:
-                    continue
-                
-                # Forward pass through DualMILEncoder
-                drug_logits, mutant_logits, drug_emb, mutant_emb = model(drug_imgs, mutant_imgs)
-                
-                # GroupCLIP loss
-                loss_gc = criterion_gc(drug_emb, mutant_emb, drug_groups, mutant_groups)
-                
-                # CE losses
-                loss_ce_drug = criterion_ce(drug_logits, drug_classes)
-                loss_ce_mutant = criterion_ce(mutant_logits, mutant_classes)
-                loss_ce = (loss_ce_drug + loss_ce_mutant) / 2.0
-                
-                # Total loss
-                loss = args.gc_weight * loss_gc + args.ce_weight * loss_ce
+            # Separate by modality
+            drug_mask = modalities == 0
+            mutant_mask = modalities == 1
             
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            drug_imgs = images[drug_mask]
+            mutant_imgs = images[mutant_mask]
+            drug_classes_lab = class_labels[drug_mask]
+            mutant_classes_lab = class_labels[mutant_mask]
+            drug_groups = group_labels[drug_mask]
+            mutant_groups = group_labels[mutant_mask]
+            
+            if drug_imgs.shape[0] < 2 or mutant_imgs.shape[0] < 2:
+                continue
+            
+            with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
+                if use_groove:
+                    # =====================================================
+                    # GROOVE Step 1: GroupCLIP + CE + Reconstruction
+                    # =====================================================
+                    out = model.forward_groove_step1(drug_imgs, mutant_imgs)
+                    
+                    loss_gc = criterion_gc(out['drug_emb'], out['mutant_emb'],
+                                           drug_groups, mutant_groups)
+                    
+                    loss_ce_drug = criterion_ce(out['drug_logits'], drug_classes_lab)
+                    loss_ce_mutant = criterion_ce(out['mutant_logits'], mutant_classes_lab)
+                    loss_ce = (loss_ce_drug + loss_ce_mutant) / 2.0
+                    
+                    # Get pooled features for reconstruction targets
+                    with torch.no_grad():
+                        _, drug_pooled = model.encode_to_latent(drug_imgs, 'drug')
+                        _, mutant_pooled = model.encode_to_latent(mutant_imgs, 'mutant')
+                    
+                    loss_recon = (criterion_mse(out['drug_recon'], drug_pooled)
+                                  + criterion_mse(out['mutant_recon'], mutant_pooled)) / 2.0
+                    
+                    loss_step1 = (args.gc_weight * loss_gc
+                                  + args.ce_weight * loss_ce
+                                  + args.recon_weight * loss_recon)
+                    
+                    # Scale, backward, unscale for Step 1
+                    scaler.scale(loss_step1).backward(retain_graph=True)
+                    scaler.unscale_(optimizer)
+                    
+                    # =====================================================
+                    # GROOVE Step 2: Backtranslation cycle consistency
+                    # =====================================================
+                    bt_out = model.forward_groove_step2(out['drug_emb'], out['mutant_emb'])
+                    loss_bt = (criterion_mse(bt_out['z_d_cycle'], out['drug_emb'])
+                               + criterion_mse(bt_out['z_m_cycle'], out['mutant_emb'])) / 2.0
+                    
+                    loss_step2 = args.bt_weight * loss_bt
+                    scaler.scale(loss_step2).backward()
+                    
+                    scaler.step(optimizer)
+                    scaler.update()
+                    
+                    recon_val = loss_recon.item()
+                    bt_val = loss_bt.item()
+                    total_val = (loss_step1 + loss_step2).item()
+                else:
+                    # Standard GroupCLIP: GroupCLIP + CE
+                    drug_logits, mutant_logits, drug_emb, mutant_emb = model(drug_imgs, mutant_imgs)
+                    
+                    loss_gc = criterion_gc(drug_emb, mutant_emb, drug_groups, mutant_groups)
+                    loss_ce_drug = criterion_ce(drug_logits, drug_classes_lab)
+                    loss_ce_mutant = criterion_ce(mutant_logits, mutant_classes_lab)
+                    loss_ce = (loss_ce_drug + loss_ce_mutant) / 2.0
+                    
+                    loss = args.gc_weight * loss_gc + args.ce_weight * loss_ce
+                    
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                    
+                    recon_val = 0.0
+                    bt_val = 0.0
+                    total_val = loss.item()
+                    out = {'drug_logits': drug_logits, 'mutant_logits': mutant_logits}
             
             run_gc_loss += loss_gc.item()
             run_ce_loss += loss_ce.item()
-            run_total_loss += loss.item()
+            run_recon_loss += recon_val
+            run_bt_loss += bt_val
+            run_total_loss += total_val
             
             # Accuracy tracking
-            _, drug_pred = drug_logits.max(1)
-            drug_correct += drug_pred.eq(drug_classes).sum().item()
-            drug_total += drug_classes.size(0)
+            _, drug_pred = out['drug_logits'].max(1)
+            drug_correct += drug_pred.eq(drug_classes_lab).sum().item()
+            drug_total += drug_classes_lab.size(0)
             
-            _, mutant_pred = mutant_logits.max(1)
-            mutant_correct += mutant_pred.eq(mutant_classes).sum().item()
-            mutant_total += mutant_classes.size(0)
+            _, mutant_pred = out['mutant_logits'].max(1)
+            mutant_correct += mutant_pred.eq(mutant_classes_lab).sum().item()
+            mutant_total += mutant_classes_lab.size(0)
         
         scheduler.step()
         
@@ -666,6 +746,8 @@ def train_groupclip():
         train_mutant_acc = 100. * mutant_correct / max(mutant_total, 1)
         avg_gc = run_gc_loss / max(len(train_loader), 1)
         avg_ce = run_ce_loss / max(len(train_loader), 1)
+        avg_recon = run_recon_loss / max(len(train_loader), 1)
+        avg_bt = run_bt_loss / max(len(train_loader), 1)
         avg_total = run_total_loss / max(len(train_loader), 1)
         
         # -----------------------------------------------------------------------
@@ -717,31 +799,51 @@ def train_groupclip():
         
         val_auc_avg = np.nanmean([val_drug_auc, val_mutant_auc])
         
-        print(
-            f"Epoch {epoch:3d}: GC={avg_gc:.4f} CE={avg_ce:.4f} "
-            f"DrugAcc={train_drug_acc:.1f}/{val_drug_acc:.1f} "
-            f"MutAcc={train_mutant_acc:.1f}/{val_mutant_acc:.1f} "
-            f"ValAUC={val_drug_auc:.4f}/{val_mutant_auc:.4f} "
-            f"Time={time.time()-epoch_start:.0f}s"
-        )
+        if use_groove:
+            print(
+                f"Epoch {epoch:3d}: GC={avg_gc:.4f} CE={avg_ce:.4f} "
+                f"Recon={avg_recon:.4f} BT={avg_bt:.4f} "
+                f"DrugAcc={train_drug_acc:.1f}/{val_drug_acc:.1f} "
+                f"MutAcc={train_mutant_acc:.1f}/{val_mutant_acc:.1f} "
+                f"ValAUC={val_drug_auc:.4f}/{val_mutant_auc:.4f} "
+                f"Time={time.time()-epoch_start:.0f}s"
+            )
+        else:
+            print(
+                f"Epoch {epoch:3d}: GC={avg_gc:.4f} CE={avg_ce:.4f} "
+                f"DrugAcc={train_drug_acc:.1f}/{val_drug_acc:.1f} "
+                f"MutAcc={train_mutant_acc:.1f}/{val_mutant_acc:.1f} "
+                f"ValAUC={val_drug_auc:.4f}/{val_mutant_auc:.4f} "
+                f"Time={time.time()-epoch_start:.0f}s"
+            )
         
         # Logging
-        tb_writer.add_scalars('GroupCLIP/Loss', {
+        log_prefix = 'GROOVE' if use_groove else 'GroupCLIP'
+        tb_writer.add_scalars(f'{log_prefix}/Loss', {
             'gc': avg_gc, 'ce': avg_ce, 'total': avg_total
         }, epoch)
-        tb_writer.add_scalars('GroupCLIP/Drug_Acc', {
+        if use_groove:
+            tb_writer.add_scalars(f'{log_prefix}/Loss', {
+                'recon': avg_recon, 'bt': avg_bt
+            }, epoch)
+        tb_writer.add_scalars(f'{log_prefix}/Drug_Acc', {
             'train': train_drug_acc, 'val': val_drug_acc
         }, epoch)
-        tb_writer.add_scalars('GroupCLIP/Mutant_Acc', {
+        tb_writer.add_scalars(f'{log_prefix}/Mutant_Acc', {
             'train': train_mutant_acc, 'val': val_mutant_acc
         }, epoch)
         
         with open(csv_path, 'a', newline='') as f:
             import csv
             writer = csv.writer(f)
-            writer.writerow([epoch, avg_gc, avg_ce, avg_total,
-                           train_drug_acc, train_mutant_acc,
-                           val_drug_acc, val_mutant_acc, val_drug_auc, val_mutant_auc])
+            if use_groove:
+                writer.writerow([epoch, avg_gc, avg_ce, avg_recon, avg_bt, avg_total,
+                               train_drug_acc, train_mutant_acc,
+                               val_drug_acc, val_mutant_acc, val_drug_auc, val_mutant_auc])
+            else:
+                writer.writerow([epoch, avg_gc, avg_ce, avg_total,
+                               train_drug_acc, train_mutant_acc,
+                               val_drug_acc, val_mutant_acc, val_drug_auc, val_mutant_auc])
         
         # Save best models
         ckpt = {
