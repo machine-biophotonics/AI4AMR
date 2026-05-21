@@ -129,6 +129,20 @@ parser.add_argument('--drug_no_concentration', action='store_true', default=Fals
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
 parser.add_argument('--freeze', action='store_true', default=False,
                     help='Freeze backbone, only train attention pool + classifier head')
+parser.add_argument('--use_harmony', action='store_true', default=False,
+                    help='Enable Harmony batch correction for bag embeddings (aligns drug/mutant/plate distributions)')
+parser.add_argument('--harmony_n_pca', type=int, default=50,
+                    help='Number of PCA components for Harmony input (default: 50)')
+parser.add_argument('--harmony_max_iter', type=int, default=10,
+                    help='Harmony max iterations (default: 10)')
+parser.add_argument('--harmony_sigma', type=float, default=0.1,
+                    help='Harmony soft-clustering kernel width sigma (default: 0.1)')
+parser.add_argument('--harmony_n_clust', type=int, default=None,
+                    help='Harmony number of soft clusters (default: auto-inferred from data)')
+parser.add_argument('--harmony_refit_interval', type=int, default=5,
+                    help='Re-fit Harmony every N epochs during training (default: 5)')
+parser.add_argument('--harmony_batch_var', type=str, default='plate', choices=['plate', 'domain'],
+                    help='Batch variable for Harmony: plate (P1-P6) or domain (drug/mutant). Default: plate')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
