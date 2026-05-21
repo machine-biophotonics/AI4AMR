@@ -58,7 +58,7 @@ ANTIBIOTIC_COLORS = {
 
 COMBINED_DRUG_COLOR = '#E41A1C'  # Red
 COMBINED_MUTANT_COLOR = '#377EB8'  # Blue
-COMBINED_CONTROL_COLOR = '#4DAF4A'  # Green
+COMBINED_CONTROL_COLOR = '#000000'  # Black
 
 CONCENTRATION_ORDER = ['0.25x', '0.5x', '1x', '2x', '4x']
 SHADE_FACTORS = {'0.25x': 0.3, '0.5x': 0.5, '1x': 0.7, '2x': 0.9, '4x': 1.0, 'control': 1.0}
@@ -99,6 +99,20 @@ def is_control_or_wt(label: str) -> bool:
     return 'control' in lower or 'wt' in lower or 'wild' in lower or 'nc' in lower
 
 
+def parse_path_info(paths):
+    wells = []
+    images = []
+    for p in paths:
+        match = re.search(r'Well(\w\d+)', p)
+        wells.append(match.group(1) if match else 'unknown')
+        images.append(os.path.basename(p))
+    return wells, images
+
+
+def make_hover(label, well, img):
+    return f"Well: {well}<br>Image: {img}<br>Label: {label}"
+
+
 def main():
     parser = argparse.ArgumentParser(description='t-SNE visualization')
     parser.add_argument('--fold', type=str, default='P6')
@@ -128,7 +142,7 @@ def main():
     elif args.data_mode == 'both':
         output_dir = os.path.join(SCRIPT_DIR, 'both', f'fold_{fold_key}')
     else:
-        output_dir = os.path.join(SCRIPT_DIR, 'combined', f'fold_{combined_fold_key}')
+        output_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{fold_key}')
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -218,7 +232,9 @@ def main():
                 return 'drug'
             return 'mutant'
         
-        df = pd.DataFrame({'label': correct_labels, 'path': paths})
+        wells, images = parse_path_info(paths)
+        
+        df = pd.DataFrame({'label': correct_labels, 'path': paths, 'well': wells, 'image': images})
         df['source'] = df['label'].apply(_source)
         df['ctrl_type'] = df['label'].apply(_ctrl_type)
         
@@ -270,12 +286,12 @@ def main():
             fig_html.add_trace(go.Scatter(
                 x=drug['x'], y=drug['y'], mode='markers',
                 marker=dict(color=COMBINED_DRUG_COLOR, size=6),
-                name='Drug', text=[f"Label: {l}" for l in drug['label']], hoverinfo='text'))
+                name='Drug', text=[make_hover(l, w, i) for l, w, i in zip(drug['label'], drug['well'], drug['image'])], hoverinfo='text'))
         if len(mutant):
             fig_html.add_trace(go.Scatter(
                 x=mutant['x'], y=mutant['y'], mode='markers',
                 marker=dict(color=COMBINED_MUTANT_COLOR, size=6),
-                name='Mutant', text=[f"Label: {l}" for l in mutant['label']], hoverinfo='text'))
+                name='Mutant', text=[make_hover(l, w, i) for l, w, i in zip(mutant['label'], mutant['well'], mutant['image'])], hoverinfo='text'))
         PLOTLY_SYMBOLS = {'WT': 'star', 'NC': 'triangle-up', 'control': 'square'}
         for ctype, sym in PLOTLY_SYMBOLS.items():
             sub = df[df['ctrl_type'] == ctype]
@@ -283,7 +299,7 @@ def main():
                 fig_html.add_trace(go.Scatter(
                     x=sub['x'], y=sub['y'], mode='markers',
                     marker=dict(color=COMBINED_CONTROL_COLOR, size=10, symbol=sym, line=dict(width=2)),
-                    name=ctype, text=[f"Label: {l}" for l in sub['label']], hoverinfo='text'))
+                    name=ctype, text=[make_hover(l, w, i) for l, w, i in zip(sub['label'], sub['well'], sub['image'])], hoverinfo='text'))
         fig_html.update_layout(
             title=f't-SNE: Drug (red) + Mutant (blue) + Control',
             xaxis_title='t-SNE 1', yaxis_title='t-SNE 2',
@@ -308,14 +324,21 @@ def main():
         
         drug_emb = drug_data['embeddings']
         drug_labels = drug_data['labels']
+        drug_paths = drug_data['paths']
         mutant_emb = mutant_data['embeddings']
         mutant_labels = mutant_data['labels']
+        mutant_paths = mutant_data['paths']
         
         print(f"Drug: {len(drug_emb)}, Mutant: {len(mutant_emb)}")
         
         # Combine embeddings
         all_embeddings = np.vstack([drug_emb, mutant_emb])
         all_labels = np.concatenate([drug_labels, mutant_labels])
+        all_paths = np.concatenate([drug_paths, mutant_paths])
+        drug_wells, drug_imgs = parse_path_info(drug_paths)
+        mut_wells, mut_imgs = parse_path_info(mutant_paths)
+        all_wells = drug_wells + mut_wells
+        all_images = drug_imgs + mut_imgs
         
         print(f"Combined: {len(all_embeddings)} embeddings")
         
@@ -330,6 +353,8 @@ def main():
             'x': embeddings_2d[:, 0],
             'y': embeddings_2d[:, 1],
             'label': all_labels,
+            'well': all_wells,
+            'image': all_images,
         })
         
         # Add source column and colors
@@ -402,7 +427,7 @@ def main():
             mode='markers',
             marker=dict(color=COMBINED_DRUG_COLOR, size=6),
             name='Drug',
-            text=[f"Label: {l}" for l in drug_df['label']],
+            text=[make_hover(l, w, i) for l, w, i in zip(drug_df['label'], drug_df['well'], drug_df['image'])],
             hoverinfo='text'
         ))
         
@@ -413,7 +438,7 @@ def main():
             mode='markers',
             marker=dict(color=COMBINED_MUTANT_COLOR, size=6),
             name='Mutant',
-            text=[f"Label: {l}" for l in mutant_df['label']],
+            text=[make_hover(l, w, i) for l, w, i in zip(mutant_df['label'], mutant_df['well'], mutant_df['image'])],
             hoverinfo='text'
         ))
         
@@ -424,7 +449,7 @@ def main():
             mode='markers',
             marker=dict(color=COMBINED_CONTROL_COLOR, size=10, symbol='circle-open', line=dict(width=2)),
             name='Control/WT/NC',
-            text=[f"Label: {l}" for l in ctrl_df['label']],
+            text=[make_hover(l, w, i) for l, w, i in zip(ctrl_df['label'], ctrl_df['well'], ctrl_df['image'])],
             hoverinfo='text'
         ))
         
@@ -459,6 +484,8 @@ def main():
     data = np.load(emb_path)
     embeddings = data['embeddings']
     labels = data['labels']
+    paths = data['paths']
+    wells, images = parse_path_info(paths)
     
     print(f"Loaded {len(embeddings)} embeddings")
     
@@ -471,6 +498,8 @@ def main():
         'x': embeddings_2d[:, 0],
         'y': embeddings_2d[:, 1],
         'label': labels,
+        'well': wells,
+        'image': images,
     })
     
     if args.data_mode == 'drug':
@@ -505,25 +534,36 @@ def main():
         df['hex'] = df.apply(get_mutant_color, axis=1)
         title_prefix = args.data_mode
     
-    csv_path = os.path.join(output_dir, f'tsne_data_{args.color_by}.csv')
+    csv_path = os.path.join(output_dir, f'tsne_data_{title_prefix}.csv')
     df.to_csv(csv_path, index=False)
     print(f"Saved CSV: {csv_path}")
     
     # Create matplotlib figure
     fig_mpl, ax = plt.subplots(figsize=(14, 12))
     
-    for hex_val, group_df in df.groupby('hex'):
-        label_name = 'Control/WT/NC' if hex_val == COMBINED_CONTROL_COLOR else title_prefix
-        ax.scatter(group_df['x'], group_df['y'], c=hex_val, label=label_name, s=15, alpha=0.7)
+    if args.data_mode == 'mutant':
+        nc_df = df[df['gene'] == 'NC']
+        if len(nc_df):
+            ax.scatter(nc_df['x'], nc_df['y'], c='#888888', label='NC', s=15, alpha=0.7)
+        wt_df = df[df['gene'] == 'WT NC']
+        if len(wt_df):
+            ax.scatter(wt_df['x'], wt_df['y'], c='#000000', label='WT NC', s=15, alpha=0.7)
+        for gene, group_df in df[df['hex'] != COMBINED_CONTROL_COLOR].groupby('gene'):
+            color = GENE_COLORS.get(gene, '#888888')
+            ax.scatter(group_df['x'], group_df['y'], c=color, label=gene, s=15, alpha=0.7)
+    else:
+        for hex_val, group_df in df.groupby('hex'):
+            label_name = 'Control/WT/NC' if hex_val == COMBINED_CONTROL_COLOR else title_prefix
+            ax.scatter(group_df['x'], group_df['y'], c=hex_val, label=label_name, s=15, alpha=0.7)
     
-    ax.legend(loc='upper left', fontsize=8, ncol=2)
+    ax.legend(loc='upper left', fontsize=10, ncol=2)
     ax.set_xlabel('t-SNE 1', fontsize=12)
     ax.set_ylabel('t-SNE 2', fontsize=12)
-    ax.set_title(f't-SNE of {title_prefix} embeddings', fontsize=14)
+    ax.set_title('t-SNE of CRISPRi knockdown embeddings', fontsize=14)
     
     plt.tight_layout()
     
-    png_path = os.path.join(output_dir, f'tsne_{args.color_by}_{args.embedding_type}.png')
+    png_path = os.path.join(output_dir, f'tsne_{title_prefix}_mil.png')
     plt.savefig(png_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Saved PNG: {png_path}")
@@ -531,29 +571,49 @@ def main():
     # Interactive HTML
     fig_html = go.Figure()
     
-    for hex_val in df['hex'].unique():
-        subset = df[df['hex'] == hex_val]
-        name = 'Control/WT/NC' if hex_val == COMBINED_CONTROL_COLOR else title_prefix
-        fig_html.add_trace(go.Scatter(
-            x=subset['x'], y=subset['y'],
-            mode='markers',
-            marker=dict(color=hex_val, size=6),
-            name=name,
-            text=[f"Label: {l}" for l in subset['label']],
-            hoverinfo='text'
-        ))
+    if args.data_mode == 'mutant':
+        nc_df = df[df['gene'] == 'NC']
+        if len(nc_df):
+            fig_html.add_trace(go.Scatter(
+                x=nc_df['x'], y=nc_df['y'], mode='markers',
+                marker=dict(color='#888888', size=6), name='NC',
+                text=[make_hover(l, w, i) for l, w, i in zip(nc_df['label'], nc_df['well'], nc_df['image'])],
+                hoverinfo='text'))
+        wt_df = df[df['gene'] == 'WT NC']
+        if len(wt_df):
+            fig_html.add_trace(go.Scatter(
+                x=wt_df['x'], y=wt_df['y'], mode='markers',
+                marker=dict(color='#000000', size=6), name='WT NC',
+                text=[make_hover(l, w, i) for l, w, i in zip(wt_df['label'], wt_df['well'], wt_df['image'])],
+                hoverinfo='text'))
+        for gene, subset in df[df['hex'] != COMBINED_CONTROL_COLOR].groupby('gene'):
+            color = GENE_COLORS.get(gene, '#888888')
+            fig_html.add_trace(go.Scatter(
+                x=subset['x'], y=subset['y'], mode='markers',
+                marker=dict(color=color, size=6), name=gene,
+                text=[make_hover(l, w, i) for l, w, i in zip(subset['label'], subset['well'], subset['image'])],
+                hoverinfo='text'))
+    else:
+        for hex_val in df['hex'].unique():
+            subset = df[df['hex'] == hex_val]
+            name = 'Control/WT/NC' if hex_val == COMBINED_CONTROL_COLOR else title_prefix
+            fig_html.add_trace(go.Scatter(
+                x=subset['x'], y=subset['y'], mode='markers',
+                marker=dict(color=hex_val, size=6), name=name,
+                text=[make_hover(l, w, i) for l, w, i in zip(subset['label'], subset['well'], subset['image'])],
+                hoverinfo='text'))
     
     fig_html.update_layout(
-        title=f't-SNE of {title_prefix} embeddings',
+        title='t-SNE of CRISPRi knockdown embeddings',
         xaxis_title='t-SNE 1',
         yaxis_title='t-SNE 2',
         width=1400,
         height=1200,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02, font=dict(size=8)),
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=1.02, font=dict(size=10)),
         template='plotly_white'
     )
     
-    html_path = os.path.join(output_dir, f'tsne_{args.color_by}_{args.embedding_type}.html')
+    html_path = os.path.join(output_dir, f'tsne_{title_prefix}_mil.html')
     fig_html.write_html(html_path, include_plotlyjs='cdn')
     print(f"Saved HTML: {html_path}")
 
