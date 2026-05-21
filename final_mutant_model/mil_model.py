@@ -449,32 +449,40 @@ class AttentionMILModel(nn.Module):
             nn.Linear(feature_dim, num_classes)
         )
     
-    def forward(self, x, return_attention=False, return_pooled_embeddings=False):
+    def forward(self, x, return_attention=False):
         batch_size, num_crops = x.shape[:2]
         
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
         
+        # Apply pooling based on self.pooling
         if self.pooling == 'mean':
+            # Mean pooling
             pooled = x.mean(dim=1)
             attn_weights = None
+            pooled = self.classifier_dropout(pooled)
+            output = self.classifier(pooled)
+            if return_attention:
+                return output, attn_weights
+            return output
         elif self.pooling == 'max':
+            # Max pooling
             pooled, _ = x.max(dim=1)
             attn_weights = None
+            pooled = self.classifier_dropout(pooled)
+            output = self.classifier(pooled)
+            if return_attention:
+                return output, attn_weights
+            return output
         else:  # attention (default)
             pooled, attn_weights = self.attention_pool(x, temperature=self.attention_temp)
             pooled = pooled.reshape(batch_size, -1)
             pooled = self.head_proj(pooled)
-        
-        output = self.classifier(pooled)
-        
-        results = [output]
-        if return_attention:
-            results.append(attn_weights)
-        if return_pooled_embeddings:
-            results.append(pooled)
-        return results[0] if len(results) == 1 else tuple(results)
+            output = self.classifier(pooled)
+            if return_attention:
+                return output, attn_weights
+            return output
 
 
 class MultiCropDataset(Dataset):
