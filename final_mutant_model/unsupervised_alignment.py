@@ -168,6 +168,21 @@ def extract_gene_base(label):
     return label
 
 
+def pool_centroids_by_name(centroids, names, extract_fn):
+    """Average centroids grouped by name (antibiotic or gene).
+    Controls ('control', 'WT NC', 'NC') are kept as-is."""
+    groups = {}
+    for i, name in enumerate(names):
+        base = extract_fn(name)
+        # Keep control labels as-is
+        if name == 'control' or base in ('WT NC', 'NC'):
+            base = name
+        groups.setdefault(base, []).append(centroids[i])
+    pooled_centroids = np.array([np.mean(v, axis=0) for _, v in sorted(groups.items())])
+    pooled_names = sorted(groups.keys())
+    return pooled_centroids, pooled_names
+
+
 def is_drug_label(label):
     return '_' in label and label.rsplit('_', 1)[1].endswith('x')
 
@@ -519,6 +534,10 @@ def main():
                         default='both/fold_Plate_1/embeddings_Plate_1_mil_n3.npz')
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--k_mnn', type=int, default=3, help='k for MNN')
+    parser.add_argument('--pool', action='store_true', default=True,
+                        help='Pool centroids by antibiotic/gene name (average over concentrations/replicates)')
+    parser.add_argument('--no-pool', action='store_false', dest='pool',
+                        help='Keep per-concentration/per-replicate centroids')
     args = parser.parse_args()
 
     output_dir = args.output_dir or os.path.join(
@@ -573,6 +592,14 @@ def main():
     mut_order = np.argsort(mut_names)
     mut_centroids = mut_centroids[mut_order]
     mut_names = [mut_names[i] for i in mut_order]
+
+    # ── Pool centroids by antibiotic/gene name (cleaner signal) ──
+    if args.pool:
+        print("  Pooling centroids by antibiotic/gene name...")
+        drug_centroids, drug_names = pool_centroids_by_name(
+            drug_centroids, drug_names, extract_antibiotic_name)
+        mut_centroids, mut_names = pool_centroids_by_name(
+            mut_centroids, mut_names, extract_gene_base)
 
     # Extract drug antibiotic names and mutant gene bases
     drug_ab_names = [extract_antibiotic_name(n) for n in drug_names]
@@ -722,7 +749,258 @@ def main():
     print(f"\n  Saved: {csv_path}")
     print(f"  Saved: {os.path.join(output_dir, 'summary.json')}")
 
+    # ── L1/L2/L3 Grouped Heatmaps ──
+    print("\n═══ Generating L1/L2/L3 grouped alignment heatmaps ═══")
+    generate_alignment_heatmaps(embeddings, paths, output_dir)
+
     print("\nDone!")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  L1/L2/L3 Grouped Alignment Heatmaps
+# ═══════════════════════════════════════════════════════════════════════════
+
+def plot_grouped_heatmap(sim_matrix, row_labels, col_labels,
+                          row_groups, col_groups, row_group_colors,
+                          col_group_colors, title, output_path):
+    """Plot a similarity matrix with group boxes around same-group entries.
+    
+    Args:
+        sim_matrix: np.ndarray (n_rows, n_cols) - cosine similarity values
+        row_labels: list of str - row names (sorted by group)
+        col_labels: list of str - column names (sorted by group)
+        row_groups: dict {label: group_name} - group assignment per row
+        col_groups: dict {label: group_name} - group assignment per column
+        title: str
+        output_path: str
+    """
+    n_rows, n_cols = sim_matrix.shape
+    
+    fig, ax = plt.subplots(figsize=(max(14, n_cols * 0.22), max(12, n_rows * 0.22)))
+    
+    sns.heatmap(sim_matrix, xticklabels=col_labels, yticklabels=row_labels,
+                ax=ax, cmap='RdBu_r', center=0, vmin=-0.5, vmax=0.5,
+                cbar_kws={'label': 'Cosine Similarity', 'shrink': 0.8},
+                linewidths=0.3, linecolor='white', square=True,
+                annot=False)
+    
+    # Draw green group boxes on row axis
+    row_unique_groups = []
+    for lbl in row_labels:
+        g = row_groups.get(lbl, 'Other')
+        if g not in row_unique_groups:
+            row_unique_groups.append(g)
+    
+    col_unique_groups = []
+    for lbl in col_labels:
+        g = col_groups.get(lbl, 'Other')
+        if g not in col_unique_groups:
+            col_unique_groups.append(g)
+    
+    # Row group boxes (vertical strips on rows)
+    for grp in row_unique_groups:
+        indices = [i for i, lbl in enumerate(row_labels) if row_groups.get(lbl, 'Other') == grp]
+        if len(indices) <= 1:
+            continue
+        min_i, max_i = min(indices), max(indices)
+        rect = mpatches.Rectangle(
+            (-0.5, min_i), n_cols, max_i - min_i + 1,
+            linewidth=2.5, edgecolor='#2ecc71', facecolor='none', zorder=10)
+        ax.add_patch(rect)
+    
+    # Col group boxes (horizontal strips on columns)
+    for grp in col_unique_groups:
+        indices = [j for j, lbl in enumerate(col_labels) if col_groups.get(lbl, 'Other') == grp]
+        if len(indices) <= 1:
+            continue
+        min_j, max_j = min(indices), max(indices)
+        rect = mpatches.Rectangle(
+            (min_j, -0.5), max_j - min_j + 1, n_rows,
+            linewidth=2.5, edgecolor='#2ecc71', facecolor='none', zorder=10)
+        ax.add_patch(rect)
+    
+    ax.set_xlabel('Mutant', fontsize=12)
+    ax.set_ylabel('Drug', fontsize=12)
+    ax.set_title(title, fontsize=13, fontweight='bold')
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=5)
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=5)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {output_path}")
+
+
+def generate_alignment_heatmaps(embeddings, paths, output_dir):
+    """Generate L1/L2/L3 grouped heatmaps for drug↔mutant cosine similarity.
+    
+    L1: per-class (89 drugs × 96 mutants) — all labels
+    L2: pooled (23 antibiotics × 30 genes)
+    L3: aggregated by MoA × Pathway (8 × 10)
+    """
+    IC50, MUT = load_jsons()
+    labels = np.array([fix_label(p, IC50, MUT) for p in paths])
+    
+    drug_mask = np.array([is_drug_label(l) for l in labels])
+    mut_mask = np.array([is_mutant_label(l) for l in labels])
+    control_mask = labels == 'control'
+    
+    # ── Control-centered similarity ──
+    def compute_centroids(emb, lbls):
+        unique_labels = np.unique(lbls)
+        centroids = []
+        for ul in unique_labels:
+            centroids.append(emb[lbls == ul].mean(axis=0))
+        return np.array(centroids), list(unique_labels)
+    
+    def pool_centroids(centroids, names, extract_fn, keep_controls=True):
+        groups = {}
+        for i, name in enumerate(names):
+            base = extract_fn(name)
+            if keep_controls and (name == 'control' or base in ('WT NC', 'NC')):
+                base = name
+            groups.setdefault(base, []).append(centroids[i])
+        pooled = np.array([np.mean(v, axis=0) for _, v in sorted(groups.items())])
+        pooled_names = sorted(groups.keys())
+        return pooled, pooled_names
+    
+    drug_emb = embeddings[drug_mask | control_mask]
+    drug_lbl = labels[drug_mask | control_mask]
+    drug_centroids_raw, drug_names_raw = compute_centroids(drug_emb, drug_lbl)
+    
+    mut_emb = embeddings[mut_mask]
+    mut_lbl = labels[mut_mask]
+    mut_centroids_raw, mut_names_raw = compute_centroids(mut_emb, mut_lbl)
+    
+    # Sort
+    drug_order = np.argsort(drug_names_raw)
+    drug_centroids_raw = drug_centroids_raw[drug_order]
+    drug_names_raw = [drug_names_raw[i] for i in drug_order]
+    
+    mut_order = np.argsort(mut_names_raw)
+    mut_centroids_raw = mut_centroids_raw[mut_order]
+    mut_names_raw = [mut_names_raw[i] for i in mut_order]
+    
+    # ── Pooled ──
+    drug_centroids_pooled, drug_names_pooled = pool_centroids(
+        drug_centroids_raw, drug_names_raw, extract_antibiotic_name)
+    mut_centroids_pooled, mut_names_pooled = pool_centroids(
+        mut_centroids_raw, mut_names_raw, extract_gene_base)
+    
+    # ── MoA × Pathway aggregation ──
+    def aggregate_by_group(centroids, names, group_dict, control_name='control'):
+        groups = {}
+        for i, name in enumerate(names):
+            if name == control_name:
+                grp = 'Control'
+            else:
+                grp = group_dict.get(name, 'Other')
+            groups.setdefault(grp, []).append(centroids[i])
+        agg = np.array([np.mean(v, axis=0) for _, v in sorted(groups.items())])
+        agg_names = sorted(groups.keys())
+        return agg, agg_names
+    
+    drug_moa_centroids, moa_names = aggregate_by_group(
+        drug_centroids_pooled, drug_names_pooled, ANTIBIOTIC_TO_MOA)
+    mut_pathway_centroids, pathway_names = aggregate_by_group(
+        mut_centroids_pooled, mut_names_pooled, GENE_TO_PATHWAY)
+    
+    # ── Control-center for fair comparison ──
+    def control_center(centroids, names, control_name='control'):
+        ctrl_idx = [i for i, n in enumerate(names) if n == control_name]
+        ref = centroids[ctrl_idx].mean(axis=0) if ctrl_idx else centroids.mean(axis=0)
+        centered = centroids - ref
+        norms = np.linalg.norm(centered, axis=1, keepdims=True) + 1e-8
+        return centered / norms
+    
+    def compute_sim(centroids_a, names_a, centroids_b, names_b):
+        ctrl_a = 'control' if 'control' in names_a else names_a[0]
+        ctrl_b = 'WT NC' if 'WT NC' in names_b else ('NC' if 'NC' in names_b else names_b[0])
+        norm_a = control_center(centroids_a, names_a, ctrl_a)
+        norm_b = control_center(centroids_b, names_b, ctrl_b)
+        return norm_a @ norm_b.T
+    
+    # ── Row/col group mappings ──
+    def build_row_groups(names, group_dict, control_name='control'):
+        return {n: group_dict.get(n, 'Other') if n != control_name else 'Control'
+                for n in names}
+    
+    def build_col_groups(names, group_dict):
+        return {n: group_dict.get(n, 'Other') for n in names}
+    
+    # ── L1: per-class ──
+    sim_l1 = compute_sim(drug_centroids_raw, drug_names_raw,
+                         mut_centroids_raw, mut_names_raw)
+    drug_ab_names_l1 = [extract_antibiotic_name(n) for n in drug_names_raw]
+    row_groups_l1 = {}
+    for i, n in enumerate(drug_names_raw):
+        ab = drug_ab_names_l1[i]
+        if n == 'control':
+            row_groups_l1[n] = 'Control'
+        else:
+            row_groups_l1[n] = ANTIBIOTIC_TO_MOA.get(ab, 'Other')
+    
+    mut_gene_names_l1 = [extract_gene_base(n) for n in mut_names_raw]
+    col_groups_l1 = {}
+    for i, n in enumerate(mut_names_raw):
+        gene = mut_gene_names_l1[i]
+        col_groups_l1[n] = GENE_TO_PATHWAY.get(gene, 'Other')
+    
+    # Sort L1 by group
+    drug_idx_sorted = sorted(
+        range(len(drug_names_raw)),
+        key=lambda i: (row_groups_l1.get(drug_names_raw[i], 'Z'), drug_names_raw[i]))
+    mut_idx_sorted = sorted(
+        range(len(mut_names_raw)),
+        key=lambda i: (col_groups_l1.get(mut_names_raw[i], 'Z'), mut_names_raw[i]))
+    drug_names_l1_sorted = [drug_names_raw[i] for i in drug_idx_sorted]
+    mut_names_l1_sorted = [mut_names_raw[i] for i in mut_idx_sorted]
+    
+    sim_l1_sorted = sim_l1[np.ix_(drug_idx_sorted, mut_idx_sorted)]
+    
+    plot_grouped_heatmap(
+        sim_l1_sorted, list(drug_names_l1_sorted), list(mut_names_l1_sorted),
+        row_groups_l1, col_groups_l1, None, None,
+        f'L1: Drug × Mutant Cosine Similarity\n(labels sorted by group, {len(drug_names_l1_sorted)}×{len(mut_names_l1_sorted)})',
+        os.path.join(output_dir, 'heatmap_L1_drug_mutant.png'))
+    
+    # ── L2: pooled ──
+    sim_l2 = compute_sim(drug_centroids_pooled, drug_names_pooled,
+                         mut_centroids_pooled, mut_names_pooled)
+    row_groups_l2 = build_row_groups(drug_names_pooled, ANTIBIOTIC_TO_MOA)
+    col_groups_l2 = build_col_groups(mut_names_pooled, GENE_TO_PATHWAY)
+    
+    drug_l2_idx = sorted(
+        range(len(drug_names_pooled)),
+        key=lambda i: (row_groups_l2.get(drug_names_pooled[i], 'Z'), drug_names_pooled[i]))
+    mut_l2_idx = sorted(
+        range(len(mut_names_pooled)),
+        key=lambda i: (col_groups_l2.get(mut_names_pooled[i], 'Z'), mut_names_pooled[i]))
+    drug_l2_sorted = [drug_names_pooled[i] for i in drug_l2_idx]
+    mut_l2_sorted = [mut_names_pooled[i] for i in mut_l2_idx]
+    
+    sim_l2_sorted = sim_l2[np.ix_(drug_l2_idx, mut_l2_idx)]
+    
+    plot_grouped_heatmap(
+        sim_l2_sorted, list(drug_l2_sorted), list(mut_l2_sorted),
+        row_groups_l2, col_groups_l2, None, None,
+        f'L2: Antibiotic × Gene Cosine Similarity\n(pooled by name, sorted by MoA/Pathway, {len(drug_l2_sorted)}×{len(mut_l2_sorted)})',
+        os.path.join(output_dir, 'heatmap_L2_antibiotic_gene.png'))
+    
+    # ── L3: MoA × Pathway ──
+    drug_moa_norm = control_center(drug_moa_centroids, moa_names, 'Control')
+    mut_pathway_norm = control_center(mut_pathway_centroids, pathway_names, 'WT/NC')
+    sim_l3 = drug_moa_norm @ mut_pathway_norm.T
+    
+    # Build MoA group colors (each MoA gets a row with itself as group)
+    moa_to_moa = {m: m for m in moa_names}
+    pathway_to_pathway = {p: p for p in pathway_names}
+    
+    plot_grouped_heatmap(
+        sim_l3, moa_names, pathway_names,
+        moa_to_moa, pathway_to_pathway, None, None,
+        f'L3: MoA × Pathway Cosine Similarity\n(aggregated, {len(moa_names)}×{len(pathway_names)})',
+        os.path.join(output_dir, 'heatmap_L3_moa_pathway.png'))
 
 
 if __name__ == '__main__':

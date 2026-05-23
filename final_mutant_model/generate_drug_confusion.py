@@ -15,6 +15,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, accuracy_score
 from collections import Counter
@@ -452,33 +453,48 @@ def create_89class_confusion_matrix(predictions_csv: str, output_dir: str) -> fl
     return accuracy
 
 
-def create_heatmap(cm, labels, output_path, title, accuracy, show_percentage=True):
+def create_heatmap(cm, labels, output_path, title, accuracy, std_acc=None, show_percentage=True):
     """Create a properly normalized confusion matrix heatmap."""
     
+    n = len(labels)
+    
     if show_percentage:
-        # Row-normalize (each row sums to 1)
         cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
         cm_display = np.round(cm_normalized * 100, 1)
         
-        # Create annotation with both count and percentage
-        annot = np.array([[f"{cm_display[i,j]}%\n({cm[i,j]})" if cm[i,j] > 0 else "0%" 
-                           for j in range(len(labels))] for i in range(len(labels))])
+        annot = np.array([[f"{cm_display[i,j]}%\n({cm[i,j]})" if cm[i,j] > 0 else "0%"
+                           for j in range(n)] for i in range(n)])
         
-        vmax = 100  # Percentage scale
+        vmax = 100
+        data_for_heatmap = cm_display
+        cbar_label = 'Percentage (%)'
     else:
         annot = cm
         vmax = None
+        data_for_heatmap = cm
+        cbar_label = 'Count'
     
-    fig, ax = plt.subplots(figsize=(16, 14))
+    n_max_on_diagonal = 0
+    for i in range(n):
+        row = cm[i, :]
+        if row.sum() > 0:
+            if row.argmax() == i:
+                n_max_on_diagonal += 1
     
-    sns.heatmap(cm, annot=annot, fmt='', cmap='Blues', vmax=vmax,
+    pct_on_diagonal = 100.0 * n_max_on_diagonal / n if n > 0 else 0
+    acc_str = f' | Acc: {100*accuracy:.1f}%' + (f'\u00b1{100*std_acc:.1f}%' if std_acc is not None else '')
+    
+    fig, ax = plt.subplots(figsize=(max(16, n * 0.3), max(14, n * 0.25)))
+    
+    sns.heatmap(data_for_heatmap, annot=annot, fmt='', cmap='Blues', vmax=vmax,
                 xticklabels=labels, yticklabels=labels,
-                cbar_kws={'label': 'Count' if not show_percentage else 'Percentage (%)'},
+                cbar_kws={'label': cbar_label},
                 annot_kws={'fontsize': 7 if show_percentage else 9}, ax=ax)
     
     ax.set_xlabel('Predicted', fontsize=12)
     ax.set_ylabel('True', fontsize=12)
-    ax.set_title(f'{title}\nAccuracy: {accuracy:.2%}', fontsize=14)
+    ax.set_title(f'{title}\n(Max on Diagonal: {n_max_on_diagonal}/{n} ({pct_on_diagonal:.1f}%){acc_str})',
+                 fontsize=13, fontweight='bold')
     
     plt.xticks(rotation=45, ha='right', fontsize=9)
     plt.yticks(rotation=0, fontsize=9)
@@ -623,30 +639,248 @@ def create_drug_confusion_matrices(predictions_csv, output_dir):
     print(f"Majority voted predictions: {voted_csv}")
 
 
+# ========== Aggregate Multi-Level Confusion (crop/image/well × concentration × antibiotic/moa) ==========
+
+
+def aggregate_image_to_well(df_voted):
+    """Majority vote across images within each well."""
+    well_results = []
+    for well, group in df_voted.groupby('well'):
+        gt_label = group['ground_truth_label'].iloc[0]
+        gt_ab = group['gt_antibiotic'].iloc[0]
+        gt_conc = group['gt_concentration'].iloc[0]
+        gt_moa = group['gt_moa'].iloc[0]
+
+        preds = group['pred_antibiotic'].value_counts()
+        majority_ab = preds.index[0] if len(preds) > 0 else 'Unknown'
+
+        full_preds = group['predicted_class_name'].value_counts()
+        majority_full_pred = full_preds.index[0] if len(full_preds) > 0 else 'Unknown'
+
+        well_results.append({
+            'well': well,
+            'ground_truth_label': gt_label,
+            'gt_antibiotic': gt_ab,
+            'gt_concentration': gt_conc,
+            'gt_moa': gt_moa,
+            'predicted_class_name': majority_full_pred,
+            'pred_antibiotic': majority_ab,
+            'pred_moa': get_moa_group(majority_ab),
+        })
+    return pd.DataFrame(well_results)
+
+
+def create_drug_aggregate_confusion(all_fold_data, output_dir):
+    """Per-concentration confusion matrices at crop/image/well levels, aggregated across folds.
+    Computes per-fold accuracies for proper mean±std, then sums CMs for the aggregate matrix."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    concentrations = ['0.25x', '0.5x', '1x', '2x']
+    n_folds = len(all_fold_data)
+    fold_keys = list(all_fold_data.keys())
+
+    moa_order = ["Cell wall (PBP 2)", "Cell wall (PBP 3)", "Cell wall (PBP 1)",
+                 "Ribosome", "Gyrase", "Membrane integrity", "RNA polymerase",
+                 "DNA synthesis", "Control"]
+
+    for level_name in ['crop', 'image', 'well']:
+        # Collect global label sets across all folds
+        all_ab_set = set()
+        all_moa_set = set(moa_order)
+        for fk in fold_keys:
+            df = all_fold_data[fk][level_name]
+            df = df[(df['gt_antibiotic'] != 'Unknown') & (df['pred_antibiotic'] != 'Unknown')]
+            all_ab_set.update(df['gt_antibiotic'].unique())
+            all_ab_set.update(df['pred_antibiotic'].unique())
+        all_ab_set.discard('DMSO')
+        all_antibiotics = ['DMSO'] + sorted(all_ab_set)
+        moa_labels = [m for m in moa_order if m in all_moa_set]
+
+        ab_to_idx = {l: i for i, l in enumerate(all_antibiotics)}
+        moa_to_idx = {l: i for i, l in enumerate(moa_labels)}
+
+        for conc in concentrations:
+            # Per-fold accuracies for std dev
+            fold_ab_accs = []
+            fold_moa_accs = []
+            cm_sum = np.zeros((len(all_antibiotics), len(all_antibiotics)), dtype=np.float64)
+            cm_moa_sum = np.zeros((len(moa_labels), len(moa_labels)), dtype=np.float64)
+
+            for fk in fold_keys:
+                df = all_fold_data[fk][level_name]
+                df = df[(df['gt_antibiotic'] != 'Unknown') & (df['pred_antibiotic'] != 'Unknown')]
+                mask = (df['gt_concentration'] == conc) | (df['gt_antibiotic'] == 'DMSO')
+                df_conc = df[mask]
+
+                if len(df_conc) == 0:
+                    continue
+
+                gt = df_conc['gt_antibiotic'].map(ab_to_idx).values
+                pred = df_conc['pred_antibiotic'].map(ab_to_idx).values
+                fold_ab_accs.append(np.mean(gt == pred))
+                cm_sum += confusion_matrix(gt, pred, labels=range(len(all_antibiotics)))
+
+                gt_m = df_conc['gt_moa'].map(moa_to_idx).values
+                pred_m = df_conc['pred_moa'].map(moa_to_idx).values
+                fold_moa_accs.append(np.mean(gt_m == pred_m))
+                cm_moa_sum += confusion_matrix(gt_m, pred_m, labels=range(len(moa_labels)))
+
+            mean_ab = np.mean(fold_ab_accs) if fold_ab_accs else 0
+            std_ab = np.std(fold_ab_accs) if len(fold_ab_accs) > 1 else 0
+            mean_moa = np.mean(fold_moa_accs) if fold_moa_accs else 0
+            std_moa = np.std(fold_moa_accs) if len(fold_moa_accs) > 1 else 0
+
+            create_heatmap(cm_sum, all_antibiotics,
+                           os.path.join(output_dir, f'aggregate_confusion_matrix_{level_name}_{conc}.png'),
+                           f'{level_name.capitalize()} - {conc} ({n_folds} folds)',
+                           mean_ab, std_acc=std_ab, show_percentage=True)
+            cm_df = pd.DataFrame(cm_sum, index=all_antibiotics, columns=all_antibiotics)
+            cm_df.to_csv(os.path.join(output_dir, f'aggregate_confusion_matrix_{level_name}_{conc}.csv'))
+
+            create_heatmap(cm_moa_sum, moa_labels,
+                           os.path.join(output_dir, f'aggregate_confusion_matrix_moa_{level_name}_{conc}.png'),
+                           f'{level_name.capitalize()} MoA - {conc} ({n_folds} folds)',
+                           mean_moa, std_acc=std_moa, show_percentage=True)
+            cm_moa_df = pd.DataFrame(cm_moa_sum, index=moa_labels, columns=moa_labels)
+            cm_moa_df.to_csv(os.path.join(output_dir, f'aggregate_confusion_matrix_moa_{level_name}_{conc}.csv'))
+
+            print(f"  {level_name}/{conc}: Ab={100*mean_ab:.2f}%\u00b1{100*std_ab:.2f}%  MoA={100*mean_moa:.2f}%\u00b1{100*std_moa:.2f}%")
+
+        # Save summary with fold-wise stats
+        summary_path = os.path.join(output_dir, f'summary_{level_name}.txt')
+        with open(summary_path, 'w') as f:
+            f.write(f"Drug Classification Summary - {level_name.capitalize()} Level ({n_folds} folds)\n")
+            f.write("=" * 70 + "\n\n")
+            f.write("ANTIBIOTIC-LEVEL\n" + "-" * 40 + "\n")
+            for conc in concentrations:
+                accs = []
+                for fk in fold_keys:
+                    df = all_fold_data[fk][level_name]
+                    df = df[(df['gt_antibiotic'] != 'Unknown') & (df['pred_antibiotic'] != 'Unknown')]
+                    mask = (df['gt_concentration'] == conc) | (df['gt_antibiotic'] == 'DMSO')
+                    df_conc = df[mask]
+                    if len(df_conc) > 0:
+                        accs.append(accuracy_score(df_conc['gt_antibiotic'], df_conc['pred_antibiotic']))
+                if accs:
+                    f.write(f"  {conc}: {np.mean(accs):.4f} \u00b1 {np.std(accs):.4f} ({100*np.mean(accs):.2f}% \u00b1 {100*np.std(accs):.2f}%)\n")
+            f.write(f"\nMoA-LEVEL\n" + "-" * 40 + "\n")
+            for conc in concentrations:
+                accs = []
+                for fk in fold_keys:
+                    df = all_fold_data[fk][level_name]
+                    df = df[(df['gt_antibiotic'] != 'Unknown') & (df['pred_antibiotic'] != 'Unknown')]
+                    mask = (df['gt_concentration'] == conc) | (df['gt_antibiotic'] == 'DMSO')
+                    df_conc = df[mask]
+                    if len(df_conc) > 0:
+                        accs.append(accuracy_score(df_conc['gt_moa'], df_conc['pred_moa']))
+                if accs:
+                    f.write(f"  {conc}: {np.mean(accs):.4f} \u00b1 {np.std(accs):.4f} ({100*np.mean(accs):.2f}% \u00b1 {100*np.std(accs):.2f}%)\n")
+
+    print(f"\nSaved to {output_dir}/")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate drug confusion matrices')
     parser.add_argument('--fold', type=str, default='P6')
+    parser.add_argument('--folds', type=str, default=None,
+                        help='Comma-separated folds (e.g., P1,P2,P3,P4,P5,P6) for multi-fold aggregation')
     parser.add_argument('--checkpoint', type=str, default='best_model_acc.pth')
     parser.add_argument('--data_mode', type=str, default='drug')
     parser.add_argument('--neighborhood', type=int, default=3,
                         help='Neighborhood size (3 for 3x3=9 crops)')
-    
+    parser.add_argument('--csv_name', type=str, default=None,
+                        help='Specific CSV filename to load (e.g., predictions_all_crops_mil_checkpoint_epoch_n3.csv)')
+
     args = parser.parse_args()
-    
-    fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, f'fold_{args.fold}')
+
+    # Multi-fold aggregation mode
+    if args.folds:
+        folds = args.folds.split(',')
+        fold_keys = []
+        for f in folds:
+            if f.startswith('fold_'):
+                fold_keys.append(f)
+            elif 'Plate_' in f:
+                fold_keys.append(f'fold_{f}')
+            else:
+                fold_keys.append(f'fold_Plate_{f.replace("P", "")}')
+
+        csv_name = args.csv_name if args.csv_name else 'predictions_all_crops_mil_checkpoint_epoch_n3.csv'
+        all_fold_data = {}
+
+        print(f"Loading {len(folds)} folds with CSV: {csv_name}")
+        for fold, fk in zip(folds, fold_keys):
+            fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, fk)
+            csv_path = os.path.join(fold_dir, csv_name)
+            if not os.path.exists(csv_path):
+                print(f"  WARNING: {csv_path} not found, skipping {fold}")
+                continue
+            print(f"  Loading {fold}...")
+            df = pd.read_csv(csv_path)
+            if 'ground_truth_label' not in df.columns:
+                print(f"  WARNING: no ground_truth_label in {fold}, skipping")
+                continue
+
+            # Crop-level: raw predictions with added hierarchy columns
+            df_crop = df.copy()
+            ab_conc = df_crop['ground_truth_label'].apply(
+                lambda x: get_antibiotic_and_concentration(x))
+            df_crop['gt_antibiotic'] = [a[0] for a in ab_conc]
+            df_crop['gt_concentration'] = [a[1] for a in ab_conc]
+            df_crop['gt_moa'] = df_crop['gt_antibiotic'].map(get_moa_group)
+
+            pred_ab_conc = df_crop['predicted_class_name'].apply(
+                lambda x: get_antibiotic_and_concentration(x))
+            df_crop['pred_antibiotic'] = [a[0] for a in pred_ab_conc]
+            df_crop['pred_moa'] = df_crop['pred_antibiotic'].map(get_moa_group)
+
+            # Image-level: majority vote per image
+            df_voted = majority_vote_per_image(df)
+
+            # Well-level: majority vote per well
+            df_well = aggregate_image_to_well(df_voted)
+
+            all_fold_data[fold] = {
+                'crop': df_crop,
+                'image': df_voted,
+                'well': df_well,
+            }
+
+        if len(all_fold_data) == 0:
+            print("ERROR: No valid folds loaded!")
+            return
+
+        output_dir = os.path.join(SCRIPT_DIR, 'aggregate', 'drug_combined')
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"\nAggregating across {len(all_fold_data)} folds, output: {output_dir}")
+        create_drug_aggregate_confusion(all_fold_data, output_dir)
+        return
+
+    # Single-fold mode
+    fold_input = args.fold
+    if fold_input.startswith('fold_'):
+        fold_key = fold_input
+    elif 'Plate_' in fold_input:
+        fold_key = f'fold_{fold_input}'
+    else:
+        fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
+    fold_dir = os.path.join(SCRIPT_DIR, args.data_mode, fold_key)
     checkpoint_name = args.checkpoint.replace('.pth', '')
-    
-    predictions_csv = os.path.join(fold_dir, f'predictions_all_crops_mil_{checkpoint_name}_n{args.neighborhood}.csv')
-    
-    if not os.path.exists(predictions_csv):
-        predictions_csv = os.path.join(fold_dir, f'predictions_all_crops_mil_{checkpoint_name}.csv')
-    
+
+    if args.csv_name:
+        predictions_csv = os.path.join(fold_dir, args.csv_name)
+    else:
+        predictions_csv = os.path.join(fold_dir, f'predictions_all_crops_mil_{checkpoint_name}_n{args.neighborhood}.csv')
+        if not os.path.exists(predictions_csv):
+            predictions_csv = os.path.join(fold_dir, f'predictions_all_crops_mil_{checkpoint_name}.csv')
+
     if not os.path.exists(predictions_csv):
         print(f"ERROR: Predictions file not found: {predictions_csv}")
         return
-    
+
     output_dir = os.path.join(fold_dir, 'drug_confusion_matrices_with_concentration')
-    
+    print(f"Processing single fold {args.fold}, output: {output_dir}")
+
     create_drug_confusion_matrices(predictions_csv, output_dir)
     create_89class_confusion_matrix(predictions_csv, output_dir)
 
