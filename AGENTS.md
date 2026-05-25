@@ -267,7 +267,7 @@ Each training run saves 4 best models:
 │   └── fold_P{1-6}/
 │
 ├── 5_flow_matching/               # Flow matching with ΔFM, REPA, SupCon contrastive
-│   ├── flow_model.py                # FlowUNet + RepaProjector + ContrastiveProjection
+│   ├── flow_model.py                # FlowUNet + ContrastiveProjection
 │   ├── train_flow.py                # Training with all losses
 │   ├── mil_model.py                 # Data loader
 │   ├── dit_model.py                 # DiT variant
@@ -282,7 +282,7 @@ Each training run saves 4 best models:
 
 ## Flow Matching (5_flow_matching/)
 
-Conditional Flow Matching (CFM) with multiple auxiliary losses on the UNet/DiT bottleneck.
+Conditional Flow Matching (CFM) with auxiliary losses on the UNet **encoder bottleneck** (mid_block, CORAL-style) and decoder free.
 
 ### Losses (all additive)
 
@@ -290,21 +290,25 @@ Conditional Flow Matching (CFM) with multiple auxiliary losses on the UNet/DiT b
 |------|------|---------|-------------|
 | MSE flow | (always) | — | Conditional flow matching objective |
 | ΔFM repulsive | `--delta_fm_weight` | 0.05 | Contrastive flow v_pred repulsion |
-| REPA | `--repa_weight` | 0.0 | Feature alignment with DINOv2 |
-| Aux CE (185-way) | `--aux_weight` | 0.0 | Linear classifier on bottleneck features |
-| **SupCon contrastive** | `--contrastive_weight` | 0.0 | Supervised contrastive loss on bottleneck projector |
+| Aux CE (185-way) | `--aux_weight` | 0.0 | Linear probe on encoder bottleneck (DDAE-style) |
+| **SupCon contrastive** | `--contrastive_weight` | 0.0 | Supervised contrastive on encoder bottleneck (CORAL-style) |
 
-### Supervised Contrastive Loss
+### Feature source
 
-Pulls all control samples together while separating all non-control classes (and controls from non-controls).
+Both `AuxProjectionHead` and `ContrastiveProjection` operate on the **encoder bottleneck** (UNet `mid_block`) — the most compressed representation before upsampling. Features are global-average-pooled to 256-dim. This matches CORAL (NeurIPS 2025) which applies contrastive regularization on the encoder bottleneck.
 
-- **Projection head**: 256→256 (LayerNorm+ReLU)→128, discarded after training (CORAL-style)
+### Supervised Contrastive Loss (CORAL-style)
+
+- **Projection head**: single `Linear(256, 128)` — minimal linear projection, discarded after training
 - **Label scheme**: all controls → label 0, each non-control → class_id+1 (unique)
 - **Control classes** (13 total): drug-plate `control`, mutant-plate `NC_1..6`, `WT NC_1..6`
 - **Temperature**: `--contrastive_temperature` (default 0.1)
 
 ```bash
-python3 train_flow.py --model_type unet --contrastive_weight 0.1
-python3 train_flow.py --model_type dit --contrastive_weight 0.1 --contrastive_temperature 0.05
+# DFM + SupCon contrastive (CORAL-style)
+python3 train_flow.py --model_type unet --contrastive_weight 0.1 --delta_fm_weight 0.5 --lognormal
+
+# DFM + aux CE + SupCon contrastive
+python3 train_flow.py --model_type unet --aux_weight 0.1 --contrastive_weight 0.1 --delta_fm_weight 0.5
 ```
 ```

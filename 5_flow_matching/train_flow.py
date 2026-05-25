@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Train Conditional Flow Matching with ΔFM + REPA + DiT backbone.
+"""Train Conditional Flow Matching with DFM + contrastive + aux CE.
 
 Usage:
     python3 train_flow.py --model_type unet --epochs 100
-    python3 train_flow.py --model_type dit --dit_size S --repa_weight 0.5 --lognormal
-    python3 train_flow.py --model_type dit --dit_size B --repa_weight 0.5 --delta_fm_weight 0.05
+    python3 train_flow.py --model_type unet --aux_weight 0.1 --contrastive_weight 0.1
+    python3 train_flow.py --model_type unet --delta_fm_weight 0.5 --lognormal
 
 Features:
-    - ΔFM contrastive flow matching (Stoica et al., ICCV 2025)
-    - REPA representation alignment (Yu et al., 2024)
+    - DFM contrastive flow matching (velocity repulsion, Stoica et al., ICCV 2025)
+    - Auxiliary linear probe classification (DDAE-style)
+    - Supervised Contrastive bottleneck loss (CORAL-style, NeurIPS 2025)
     - DiT transformer backbone (Peebles & Xie, 2023)
     - Lognormal timestep sampling (fine-detail bias)
     - Classifier-free guidance (CFG)
@@ -32,7 +33,7 @@ from datetime import datetime
 import csv
 
 from mil_model import FlowCropDataset, load_labels
-from flow_model import FlowUNet, RepaProjector, AuxProjectionHead, ContrastiveProjection, compute_flow_loss, sample as unet_sample
+from flow_model import FlowUNet, AuxProjectionHead, ContrastiveProjection, compute_flow_loss, sample as unet_sample
 from dit_model import DiT, build_dit
 
 SEED = 42
@@ -72,17 +73,9 @@ parser.add_argument('--dit_size', type=str, default='S', choices=['S', 'B'],
 parser.add_argument('--block_channels', type=str, default='32,64,128,256',
                     help='UNet block channels (ignored for dit)')
 
-# ΔFM
+# DFM
 parser.add_argument('--delta_fm_weight', type=float, default=0.05,
-                    help='ΔFM repulsive weight λ (0=disabled, default 0.05)')
-
-# REPA
-parser.add_argument('--repa_weight', type=float, default=0.0,
-                    help='REPA alignment weight α (0=disabled, default 0.5 recommended)')
-parser.add_argument('--repa_encoder', type=str, default='dinov2_vits14',
-                    help='DINOv2 encoder: dinov2_vits14 (21M) or dinov2_vitb14 (86M)')
-parser.add_argument('--repa_return_layer', type=int, default=-1,
-                    help='DiT layer for REPA features (-1 = last, ignored for UNet)')
+                    help='DFM repulsive weight l (0=disabled, default 0.05)')
 
 # Lognormal timestep sampling
 parser.add_argument('--lognormal', action='store_true', default=False,
@@ -102,7 +95,7 @@ parser.add_argument('--null_label', type=int, default=-1)
 parser.add_argument('--clip_grad_norm', type=float, default=5.0,
                     help='Gradient clipping max norm (default 5.0)')
 
-# Auxiliary 185-way classification on bottleneck features (DDAE++ / CORAL-style)
+# Auxiliary 185-way classification on bottleneck features (DDAE / CORAL-style)
 parser.add_argument('--aux_weight', type=float, default=0.0,
                     help='Weight for auxiliary 185-class CE loss on bottleneck (0=disabled, default 0.0)')
 
@@ -133,7 +126,7 @@ writer = SummaryWriter(log_dir=OUTPUT_DIR)
 
 print("=" * 60)
 print(f"Flow Matching Training — backbone={args.model_type}")
-print(f"  ΔFM={args.delta_fm_weight}, REPA={args.repa_weight}, aux={args.aux_weight}, "
+print(f"  DFM={args.delta_fm_weight}, aux={args.aux_weight}, "
       f"contrastive={args.contrastive_weight}, lognormal={args.lognormal}")
 if args.train_plates:
     print(f"  Plates — train: {args.train_plates}", end='')
@@ -211,27 +204,19 @@ if args.model_type == 'unet':
     ).to(device)
     model.unet = torch.compile(model.unet, mode="reduce-overhead")
     print("  UNet compiled with torch.compile (reduce-overhead)")
-    repa_projector = RepaProjector(block_channels[-1], 384).to(device) if args.repa_weight > 0 else None
     sample_fn = unet_sample
 else:
     model = build_dit(
         args.dit_size,
         in_channels=1, img_size=224, patch_size=16,
         num_classes=num_classes,
-        repa_return_layer=args.repa_return_layer,
     ).to(device)
-    if args.repa_weight > 0:
-        repa_projector = nn.Linear(model.blocks[args.repa_return_layer].norm1.normalized_shape[0], 384).to(device)
-    else:
-        repa_projector = None
     sample_fn = unet_sample  # same interface: sample(model, ...)
 
 n_params = sum(p.numel() for p in model.parameters())
-repa_params = sum(p.numel() for p in (repa_projector.parameters() if repa_projector else []))
-repn = f" + {repa_params:,} (REPA proj)" if repa_params else ""
-print(f"  Params: {n_params:,}{repn}")
+print(f"  Params: {n_params:,}")
 
-# Auxiliary 185-way classifier on bottleneck (DDAE++ / CORAL style)
+# Auxiliary 185-way classifier on bottleneck (DDAE / CORAL style)
 feat_dim = block_channels[-1] if args.model_type == 'unet' else 256
 aux_head = AuxProjectionHead(feat_dim=feat_dim, num_classes=num_classes).to(device) if args.aux_weight > 0 else None
 if aux_head:
@@ -240,7 +225,7 @@ if aux_head:
 contrastive_projector = ContrastiveProjection(feat_dim=feat_dim, proj_dim=args.contrastive_proj_dim).to(device) if args.contrastive_weight > 0 else None
 if contrastive_projector:
     print(f"  ContrastiveProjection: {sum(p.numel() for p in contrastive_projector.parameters()):,} params "
-          f"(feat={feat_dim} → proj={args.contrastive_proj_dim}, τ={args.contrastive_temperature})")
+          f"(feat={feat_dim} -> proj={args.contrastive_proj_dim}, t={args.contrastive_temperature})")
 
 # Identify control class indices: drug control + NC_1..NC_6 + WT NC_1..WT NC_6
 control_keywords = {'control', 'NC_1', 'NC_2', 'NC_3', 'NC_4', 'NC_5', 'NC_6',
@@ -249,20 +234,8 @@ control_indices = {label_to_idx[name] for name in control_keywords if name in la
 if contrastive_projector:
     print(f"  Control indices: {sorted(control_indices)} ({len(control_indices)} classes)")
 
-# DINOv2 for REPA
-dinov2_model = None
-if args.repa_weight > 0:
-    print(f"  Loading {args.repa_encoder} ...")
-    dinov2_model = torch.hub.load('facebookresearch/dinov2', args.repa_encoder).to(device)
-    dinov2_model.eval()
-    for p in dinov2_model.parameters():
-        p.requires_grad = False
-    print(f"  DINOv2 loaded ({sum(p.numel() for p in dinov2_model.parameters()):,} params, frozen)")
-
 if args.delta_fm_weight > 0:
-    print(f"  ΔFM: λ={args.delta_fm_weight}")
-if args.repa_weight > 0:
-    print(f"  REPA: α={args.repa_weight}, encoder={args.repa_encoder}")
+    print(f"  DFM: l={args.delta_fm_weight}")
 if args.lognormal:
     print(f"  Lognormal t-sampling: mean={args.lognormal_mean}, std={args.lognormal_std}")
 print(f"  CFG: label_dropout={args.label_dropout}, cfg_scale={args.cfg_scale}")
@@ -283,13 +256,7 @@ def add_weight_decay(model, wd=0.05):
         {'params': no_decay, 'weight_decay': 0.0},
     ]
 
-trainable_params = list(model.parameters())
-if repa_projector:
-    trainable_params += list(repa_projector.parameters())
-
 param_groups = add_weight_decay(model, args.weight_decay)
-if repa_projector:
-    param_groups.append({'params': repa_projector.parameters(), 'weight_decay': 0.0})
 if aux_head:
     param_groups.append({'params': aux_head.parameters(), 'weight_decay': 0.0})
 if contrastive_projector:
@@ -319,8 +286,6 @@ if args.resume:
     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     scheduler.load_state_dict(ckpt['scheduler_state_dict'])
     start_epoch = ckpt['epoch'] + 1
-    if 'repa_projector_state_dict' in ckpt and repa_projector:
-        repa_projector.load_state_dict(ckpt['repa_projector_state_dict'])
     print(f"  Resumed epoch {ckpt['epoch']}")
 elif args.fine_tune:
     ckpt = torch.load(args.fine_tune, map_location='cpu', weights_only=False)
@@ -329,8 +294,6 @@ elif args.fine_tune:
     sd = {k.replace('_orig_mod.', ''): v for k, v in sd.items()}
     model.load_state_dict(sd)
     start_epoch = 0  # restart from epoch 0
-    if 'repa_projector_state_dict' in ckpt and repa_projector:
-        repa_projector.load_state_dict(ckpt['repa_projector_state_dict'])
     print(f"  Fine-tuning from checkpoint (epoch {ckpt['epoch']}, val_loss={ckpt.get('val_loss', 'N/A'):.6f})")
 
 TARGET_NAMES = [
@@ -352,7 +315,7 @@ print(f"  AMP: {amp_dtype}")
 metrics_path = os.path.join(OUTPUT_DIR, 'metrics.csv')
 with open(metrics_path, 'w', newline='') as f:
     w = csv.writer(f)
-    w.writerow(['epoch', 'train_flow_loss', 'train_delta_fm_repulsive', 'train_repa_loss',
+    w.writerow(['epoch', 'train_flow_loss', 'train_delta_fm_repulsive',
                 'train_cls_loss', 'train_cls_acc', 'train_contrastive_loss', 'train_total_loss',
                 'val_loss', 'val_flow_loss', 'val_aux_loss', 'val_aux_acc', 'val_delta_fm',
                 'lr', 'grad_norm', 'time_s'])
@@ -362,12 +325,9 @@ for epoch in range(start_epoch, args.epochs):
     val_ds.set_epoch(epoch)
 
     model.train()
-    if repa_projector:
-        repa_projector.train()
 
     train_flow_loss = 0.0
     train_delta_fm = 0.0
-    train_repa = 0.0
     train_cls = 0.0
     train_cls_acc = 0.0
     train_contrastive = 0.0
@@ -384,9 +344,6 @@ for epoch in range(start_epoch, args.epochs):
             loss, info = compute_flow_loss(
                 model, imgs, class_labels=class_ids,
                 delta_fm_weight=args.delta_fm_weight,
-                repa_weight=args.repa_weight,
-                repa_projector=repa_projector,
-                dinov2_model=dinov2_model,
                 label_dropout_prob=args.label_dropout,
                 null_label=args.null_label,
                 lognormal_sampling=args.lognormal,
@@ -403,15 +360,12 @@ for epoch in range(start_epoch, args.epochs):
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-        if repa_projector:
-            torch.nn.utils.clip_grad_norm_(repa_projector.parameters(), args.clip_grad_norm)
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
 
         train_flow_loss += info.get('flow_loss', loss.item())
         train_delta_fm += info.get('delta_fm_repulsive', 0.0)
-        train_repa += info.get('repa_loss', 0.0)
         train_cls += info.get('aux_loss', 0.0)
         train_cls_acc += info.get('aux_acc', 0.0)
         train_contrastive += info.get('contrastive_loss', 0.0)
@@ -425,16 +379,14 @@ for epoch in range(start_epoch, args.epochs):
 
     train_flow_loss /= max(1, train_steps)
     train_delta_fm /= max(1, train_steps)
-    train_repa /= max(1, train_steps)
     train_cls /= max(1, train_steps)
     train_cls_acc /= max(1, train_steps)
     train_contrastive /= max(1, train_steps)
     train_grad_norm /= max(1, train_steps)
-    train_total_loss = train_flow_loss - args.delta_fm_weight * train_delta_fm + args.repa_weight * train_repa + args.aux_weight * train_cls + args.contrastive_weight * train_contrastive
+    train_total_loss = train_flow_loss - args.delta_fm_weight * train_delta_fm + args.aux_weight * train_cls + args.contrastive_weight * train_contrastive
     epoch_time = time.time() - t0
     writer.add_scalar('train/flow_loss', train_flow_loss, epoch)
     writer.add_scalar('train/delta_fm_repulsive', train_delta_fm, epoch)
-    writer.add_scalar('train/repa_loss', train_repa, epoch)
     writer.add_scalar('train/aux_loss', train_cls, epoch)
     writer.add_scalar('train/aux_acc', train_cls_acc, epoch)
     writer.add_scalar('train/contrastive_loss', train_contrastive, epoch)
@@ -461,9 +413,6 @@ for epoch in range(start_epoch, args.epochs):
                 vloss, vinfo = compute_flow_loss(
                     model, imgs, class_labels=class_ids,
                     delta_fm_weight=args.delta_fm_weight,
-                    repa_weight=args.repa_weight,
-                    repa_projector=repa_projector,
-                    dinov2_model=dinov2_model,
                     label_dropout_prob=0.0,
                     lognormal_sampling=args.lognormal,
                     aux_head=aux_head,
@@ -493,17 +442,17 @@ for epoch in range(start_epoch, args.epochs):
     writer.add_scalar('val/delta_fm', val_delta, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
-    aux_str = f"aux={train_cls:.6f} acc={train_cls_acc:.3f}" if args.aux_weight > 0 else "aux=━"
+    aux_str = f"aux={train_cls:.6f} acc={train_cls_acc:.3f}" if args.aux_weight > 0 else "aux=-"
     contrastive_str = f"con={train_contrastive:.6f}" if args.contrastive_weight > 0 else ""
     val_aux_str = f"vaux={val_cls:.6f} vacc={val_cls_acc:.3f}" if args.aux_weight > 0 else ""
-    print(f"  E{epoch+1:03d} flow={train_flow_loss:.6f} ΔFM={train_delta_fm:.6f} "
-          f"REPA={train_repa:.6f} {aux_str} {contrastive_str} val={val_loss:.6f} "
+    print(f"  E{epoch+1:03d} flow={train_flow_loss:.6f} DFM={train_delta_fm:.6f} "
+          f"{aux_str} {contrastive_str} val={val_loss:.6f} "
           f"{val_aux_str} grad={train_grad_norm:.4f} ({epoch_time:.0f}s)")
 
     with open(metrics_path, 'a', newline='') as f:
         w = csv.writer(f)
         w.writerow([epoch+1, f'{train_flow_loss:.6f}', f'{train_delta_fm:.6f}',
-                    f'{train_repa:.6f}', f'{train_cls:.6f}', f'{train_cls_acc:.4f}',
+                    f'{train_cls:.6f}', f'{train_cls_acc:.4f}',
                     f'{train_contrastive:.6f}', f'{train_total_loss:.6f}',
                     f'{val_loss:.6f}', f'{val_flow:.6f}', f'{val_cls:.6f}', f'{val_cls_acc:.4f}', f'{val_delta:.6f}',
                     f'{lr_now:.2e}', f'{train_grad_norm:.4f}', f'{epoch_time:.0f}'])
@@ -554,8 +503,6 @@ for epoch in range(start_epoch, args.epochs):
             'val_loss': val_loss,
             'args': vars(args),
         }
-        if repa_projector:
-            ckpt['repa_projector_state_dict'] = repa_projector.state_dict()
         if aux_head:
             ckpt['aux_head_state_dict'] = aux_head.state_dict()
         if contrastive_projector:

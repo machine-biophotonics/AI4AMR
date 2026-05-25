@@ -7,7 +7,7 @@ from diffusers import UNet2DModel
 class AuxProjectionHead(nn.Module):
     """185-way linear classifier on pooled bottleneck features.
 
-    Pooled bottleneck (feat_dim) → Linear(feat_dim, num_classes)
+    Pooled bottleneck (feat_dim) -> Linear(feat_dim, num_classes)
     Standard linear probe design (DDAE-style), no normalization.
     Trained with CrossEntropy alongside the flow matching objective.
     Removed after training — the backbone retains the structured features.
@@ -20,31 +20,13 @@ class AuxProjectionHead(nn.Module):
         return self.fc(x)
 
 
-class RepaProjector(nn.Module):
-    """Projects UNet bottleneck features to DINOv2 representation space.
-
-    Takes (B, C_mid, H, W) conv features and projects to (B, N, D_dinov2)
-    patch-level features using a 1x1 conv + reshape.
-    """
-    def __init__(self, in_channels: int, out_dim: int = 384):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_dim, kernel_size=1)
-        self.norm = nn.LayerNorm(out_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        x = self.conv(x)            # (B, D, H, W)
-        x = x.flatten(2).transpose(1, 2)  # (B, N, D) where N = H*W
-        x = self.norm(x)
-        return x
-
-
 class FlowUNet(nn.Module):
     """UNet2DModel wrapper for Conditional Flow Matching.
 
     Supports:
-        - ΔFM contrastive regularization
-        - REPA representation alignment with DINOv2
+        - ΔFM contrastive flow matching (velocity repulsion)
+        - Supervised Contrastive bottleneck loss (CORAL-style)
+        - Auxiliary linear probe classification (DDAE-style)
         - Classifier-free guidance (CFG)
         - Midpoint ODE solver
 
@@ -91,11 +73,9 @@ class FlowUNet(nn.Module):
         )
         self.unet.enable_gradient_checkpointing()
 
+        # Hook on mid_block (encoder bottleneck) — CORAL-style feature extraction
         self._mid_feat = None
-        for name, module in self.unet.named_modules():
-            if name == 'up_blocks.0':
-                self._mid_handle = module.register_forward_hook(self._mid_hook)
-                break
+        self._mid_handle = self.unet.mid_block.register_forward_hook(self._mid_hook)
 
     def _mid_hook(self, module, input, output):
         self._mid_feat = output[0] if isinstance(output, tuple) else output
@@ -139,24 +119,17 @@ class FlowUNet(nn.Module):
 
 
 class ContrastiveProjection(nn.Module):
-    """Projection head for Supervised Contrastive Loss (CORAL-style).
+    """Minimal projection head for Supervised Contrastive Loss (CORAL-style).
 
-    Pooled bottleneck (feat_dim) → Linear → LayerNorm → ReLU → Linear(proj_dim)
+    Pooled bottleneck (feat_dim) -> Linear(feat_dim, proj_dim)
     Discarded after training — only the backbone retains the structured features.
     """
     def __init__(self, feat_dim: int = 256, proj_dim: int = 128):
         super().__init__()
-        self.fc1 = nn.Linear(feat_dim, feat_dim)
-        self.norm = nn.LayerNorm(feat_dim)
-        self.act = nn.ReLU(inplace=True)
-        self.fc2 = nn.Linear(feat_dim, proj_dim)
+        self.fc = nn.Linear(feat_dim, proj_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(x)
-        x = self.norm(x)
-        x = self.act(x)
-        x = self.fc2(x)
-        return x
+        return self.fc(x)
 
 
 def supervised_contrastive_loss(
@@ -167,8 +140,8 @@ def supervised_contrastive_loss(
     """Supervised Contrastive Loss (Khosla et al., 2020).
 
     Pulls together samples with the same label, pushes apart different labels.
-    All controls share label 0 → they attract.
-    Each non-control class gets a unique label → they repel from controls and each other.
+    All controls share label 0 -> they attract.
+    Each non-control class gets a unique label -> they repel from controls and each other.
 
     Args:
         features: (B, D) — L2-normalized on the fly
@@ -203,7 +176,7 @@ def supervised_contrastive_loss(
 
 
 def _lognormal_timesteps(B: int, device: torch.device, mean: float = -1.0, std: float = 1.0):
-    """Sample timesteps from log-normal distribution (REPA-style).
+    """Sample timesteps from log-normal distribution.
 
     Samples t ~ LogNormal(mean, std), clipped to [0, 1].
     Puts more samples at low-noise (t near 1) for fine-detail learning.
@@ -212,60 +185,11 @@ def _lognormal_timesteps(B: int, device: torch.device, mean: float = -1.0, std: 
     return t.clamp(0.0, 1.0)
 
 
-@torch.no_grad()
-def _get_dinov2_features(
-    dinov2_model: nn.Module,
-    x_1: torch.Tensor,
-    device: torch.device,
-) -> torch.Tensor:
-    """Extract DINOv2 patch features for REPA alignment.
-
-    Uses forward_features() to get dict with 'x_norm_patchtokens' (B, N, D).
-    Falls back to forward() for models without forward_features().
-    """
-    x_rgb = x_1.repeat(1, 3, 1, 1)
-    x_01 = (x_rgb + 1) / 2
-    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-    x_norm = (x_01 - mean) / std
-
-    with torch.amp.autocast('cuda', enabled=True):
-        if hasattr(dinov2_model, 'forward_features'):
-            raw = dinov2_model.forward_features(x_norm)
-            if isinstance(raw, dict):
-                for key in ('x_norm_patchtokens', 'patch_tokens', 'x_norm'):
-                    if key in raw:
-                        return raw[key]
-                return list(raw.values())[0]
-        raw = dinov2_model(x_norm)
-
-    if isinstance(raw, tuple):
-        feats = raw[1] if raw[1].dim() == 3 else raw[0]
-    elif isinstance(raw, dict):
-        for key in ('x_norm_patchtokens', 'patch_tokens', 'x_norm'):
-            if key in raw:
-                feats = raw[key]
-                break
-        else:
-            feats = list(raw.values())[0]
-    elif raw.dim() == 3:
-        feats = raw[:, 1:, :] if raw.shape[1] > 100 else raw
-    elif raw.dim() == 2:
-        feats = raw.unsqueeze(1)
-    else:
-        feats = raw
-
-    return feats
-
-
 def compute_flow_loss(
     model: FlowUNet,
     x_1: torch.Tensor,
     class_labels: torch.Tensor | None = None,
     delta_fm_weight: float = 0.0,
-    repa_weight: float = 0.0,
-    repa_projector: nn.Module | None = None,
-    dinov2_model: nn.Module | None = None,
     label_dropout_prob: float = 0.0,
     null_label: int = -1,
     lognormal_sampling: bool = False,
@@ -277,26 +201,23 @@ def compute_flow_loss(
     contrastive_temperature: float = 0.1,
     control_indices: set | None = None,
 ) -> tuple[torch.Tensor, dict]:
-    """Compute Conditional Flow Matching loss with ΔFM + REPA + lognormal sampling + aux CE + contrastive.
+    """Compute Conditional Flow Matching loss with DFM + aux CE + contrastive.
 
-    Loss = MSE(v_pred, v_pos) - λ * MSE(v_pred, v_neg) + α * L_REPA + γ * L_CE + κ * L_contrastive
+    Loss = MSE(v_pred, v_pos) - l * MSE(v_pred, v_neg) + g * L_CE + k * L_contrastive
 
     Args:
         model: FlowUNet
         x_1: clean images (B, C, H, W) in [-1, 1]
         class_labels: (B,) class indices
-        delta_fm_weight: λ for ΔFM repulsive term (0 = disabled)
-        repa_weight: α for REPA alignment loss (0 = disabled)
-        repa_projector: projects model features to DINOv2 dim
-        dinov2_model: frozen DINOv2 encoder
+        delta_fm_weight: l for DFM repulsive term (0 = disabled)
         label_dropout_prob: probability to drop class label for CFG
         null_label: label index for unconditional prediction
         lognormal_sampling: use lognormal timestep distribution (vs uniform)
         aux_head: optional 185-way linear classifier on bottleneck features
-        aux_weight: weight γ for auxiliary CE loss
+        aux_weight: weight g for auxiliary CE loss
         num_classes: total number of classes (for class-balanced weighting)
-        contrastive_weight: κ for Supervised Contrastive loss (0 = disabled)
-        contrastive_projector: MLP that projects pooled features to contrastive space
+        contrastive_weight: k for Supervised Contrastive loss (0 = disabled)
+        contrastive_projector: linear projection from pooled features to contrastive space
         contrastive_temperature: temperature for SupCon loss
         control_indices: set of class ids that are controls (attract together)
     """
@@ -322,8 +243,7 @@ def compute_flow_loss(
             labels_for_model[drop_mask] = null_label
 
     need_features = (
-        (repa_weight > 0.0 and repa_projector is not None and dinov2_model is not None)
-        or (aux_weight > 0.0 and aux_head is not None)
+        (aux_weight > 0.0 and aux_head is not None)
         or (contrastive_weight > 0.0 and contrastive_projector is not None and control_indices is not None)
     )
     if need_features:
@@ -353,38 +273,9 @@ def compute_flow_loss(
         total_loss = total_loss - delta_fm_weight * repulsive_loss
         info['delta_fm_repulsive'] = repulsive_loss.item()
 
-    repa_avail = repa_weight > 0.0 and repa_projector is not None and dinov2_model is not None
-
-    if repa_avail:
-        with torch.no_grad():
-            dinov2_feats = _get_dinov2_features(dinov2_model, x_1, device)
-
-        proj_feats = repa_projector(mid_feat)
-
-        if proj_feats.shape[1] != dinov2_feats.shape[1]:
-            if dinov2_feats.shape[1] == 1:
-                proj_feats = proj_feats.mean(dim=1, keepdim=True)
-            else:
-                n_proj = proj_feats.shape[1]
-                n_dino = dinov2_feats.shape[1]
-                D = proj_feats.shape[-1]
-                h_proj = int(round(n_proj ** 0.5))
-                w_proj = h_proj
-                h_dino = int(round(n_dino ** 0.5))
-                w_dino = h_dino
-                B_actual = proj_feats.shape[0]
-                proj_2d = proj_feats.transpose(1, 2).reshape(B_actual, D, h_proj, w_proj)
-                proj_2d = F.interpolate(proj_2d, size=(h_dino, w_dino),
-                                        mode='bilinear', align_corners=False)
-                proj_feats = proj_2d.flatten(2).transpose(1, 2)
-
-        repa_loss = (1 - F.cosine_similarity(proj_feats, dinov2_feats, dim=-1)).mean()
-        total_loss = total_loss + repa_weight * repa_loss
-        info['repa_loss'] = repa_loss.item()
-
     if aux_weight > 0.0 and aux_head is not None and need_features and class_labels is not None:
         pooled = mid_feat.flatten(2).mean(dim=2)
-        aux_logits = aux_head(pooled)  # (B, num_classes)
+        aux_logits = aux_head(pooled)
         aux_loss = F.cross_entropy(aux_logits, class_labels)
         total_loss = total_loss + aux_weight * aux_loss
         info['aux_loss'] = aux_loss.item()
