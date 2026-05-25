@@ -266,8 +266,45 @@ Each training run saves 4 best models:
 │   ├── generate_combined_confusion.py
 │   └── fold_P{1-6}/
 │
+├── 5_flow_matching/               # Flow matching with ΔFM, REPA, SupCon contrastive
+│   ├── flow_model.py                # FlowUNet + RepaProjector + ContrastiveProjection
+│   ├── train_flow.py                # Training with all losses
+│   ├── mil_model.py                 # Data loader
+│   ├── dit_model.py                 # DiT variant
+│   └── flow_run_*/                  # Training outputs
+│
 ├── sam_effnet/                    # EfficientNet-B0 + SAM
 ├── guide_effnet/                  # Guide generalization
 ├── dinov3-finetune/               # DINOv3 ViT-L fine-tuning
 └── plate_fold/                    # Cross-validation experiments
+
+---
+
+## Flow Matching (5_flow_matching/)
+
+Conditional Flow Matching (CFM) with multiple auxiliary losses on the UNet/DiT bottleneck.
+
+### Losses (all additive)
+
+| Loss | Flag | Default | Description |
+|------|------|---------|-------------|
+| MSE flow | (always) | — | Conditional flow matching objective |
+| ΔFM repulsive | `--delta_fm_weight` | 0.05 | Contrastive flow v_pred repulsion |
+| REPA | `--repa_weight` | 0.0 | Feature alignment with DINOv2 |
+| Aux CE (185-way) | `--aux_weight` | 0.0 | Linear classifier on bottleneck features |
+| **SupCon contrastive** | `--contrastive_weight` | 0.0 | Supervised contrastive loss on bottleneck projector |
+
+### Supervised Contrastive Loss
+
+Pulls all control samples together while separating all non-control classes (and controls from non-controls).
+
+- **Projection head**: 256→256 (LayerNorm+ReLU)→128, discarded after training (CORAL-style)
+- **Label scheme**: all controls → label 0, each non-control → class_id+1 (unique)
+- **Control classes** (13 total): drug-plate `control`, mutant-plate `NC_1..6`, `WT NC_1..6`
+- **Temperature**: `--contrastive_temperature` (default 0.1)
+
+```bash
+python3 train_flow.py --model_type unet --contrastive_weight 0.1
+python3 train_flow.py --model_type dit --contrastive_weight 0.1 --contrastive_temperature 0.05
+```
 ```
