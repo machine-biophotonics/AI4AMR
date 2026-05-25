@@ -7,17 +7,17 @@ from diffusers import UNet2DModel
 class AuxProjectionHead(nn.Module):
     """185-way linear classifier on pooled bottleneck features.
 
-    Pooled bottleneck (feat_dim) → LayerNorm → Linear(feat_dim, num_classes)
+    Pooled bottleneck (feat_dim) → Linear(feat_dim, num_classes)
+    Standard linear probe design (DDAE-style), no normalization.
     Trained with CrossEntropy alongside the flow matching objective.
     Removed after training — the backbone retains the structured features.
     """
     def __init__(self, feat_dim: int = 256, num_classes: int = 185):
         super().__init__()
-        self.norm = nn.LayerNorm(feat_dim)
         self.fc = nn.Linear(feat_dim, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(self.norm(x))
+        return self.fc(x)
 
 
 class RepaProjector(nn.Module):
