@@ -195,7 +195,6 @@ def compute_flow_loss(
     lognormal_sampling: bool = False,
     aux_head: nn.Module | None = None,
     aux_weight: float = 0.0,
-    num_classes: int = 185,
     contrastive_weight: float = 0.0,
     contrastive_projector: nn.Module | None = None,
     contrastive_temperature: float = 0.1,
@@ -215,7 +214,6 @@ def compute_flow_loss(
         lognormal_sampling: use lognormal timestep distribution (vs uniform)
         aux_head: optional 185-way linear classifier on bottleneck features
         aux_weight: weight g for auxiliary CE loss
-        num_classes: total number of classes (for class-balanced weighting)
         contrastive_weight: k for Supervised Contrastive loss (0 = disabled)
         contrastive_projector: linear projection from pooled features to contrastive space
         contrastive_temperature: temperature for SupCon loss
@@ -268,7 +266,7 @@ def compute_flow_loss(
         same_mask = neg_idx == torch.arange(B, device=device)
         if same_mask.any():
             neg_idx[same_mask] = (neg_idx[same_mask] + 1) % B
-        u_neg = x_1[neg_idx] - x_0[neg_idx]
+        u_neg = x_1[neg_idx] - x_0  # same noise, different clean (DeltaFM, Eq. 4)
         repulsive_loss = F.mse_loss(v_pred, u_neg)
         total_loss = total_loss - delta_fm_weight * repulsive_loss
         info['delta_fm_repulsive'] = repulsive_loss.item()
