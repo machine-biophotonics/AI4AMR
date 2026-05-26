@@ -433,6 +433,34 @@ class CombinedFlowUNet(nn.Module):
         return self.encode(x, t, class_labels)
 
 
+def supervised_contrastive_loss(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """SupCon loss (Khosla et al., NeurIPS 2020) on L2-normalized features.
+
+    All same-class pairs are positives, different-class pairs are negatives.
+    Anchors with no positives in batch → loss = 0.
+    """
+    B = features.shape[0]
+    device = features.device
+    features = F.normalize(features, dim=1)
+    sim = features @ features.T
+    sim = sim / temperature
+    labels = labels.view(-1, 1)
+    eye_mask = torch.eye(B, dtype=torch.bool, device=device)
+    mask_pos = (labels == labels.T).float()
+    mask_pos = mask_pos.masked_fill(eye_mask, 0.0)
+    exp_sim = torch.exp(sim).masked_fill(eye_mask, 0.0)
+    denom = exp_sim.sum(dim=1, keepdim=True)
+    pos_exp = exp_sim * mask_pos
+    pos_sum = pos_exp.sum(dim=1)
+    loss = -torch.log(pos_sum / (denom.squeeze() + 1e-8) + 1e-8)
+    loss = loss.masked_fill(pos_sum < 1e-8, 0.0)
+    return loss.mean()
+
+
 def compute_struct_flow_loss(
     model: StructFlowUNet | CombinedFlowUNet,
     x_1: torch.Tensor,
@@ -440,11 +468,14 @@ def compute_struct_flow_loss(
     kl_weight: float = 0.001,
     recon_weight: float = 0.1,
     delta_fm_lambda: float = 0.0,
+    supcon_weight: float = 0.0,
+    supcon_temperature: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """StructFlow loss: flow matching + VAE-style KL + reconstruction.
+    """StructFlow loss: flow matching + VAE-style KL + reconstruction + SupCon.
 
     Constructs structured source: x_0 = decode(z) + ε, where
     z ~ q_φ(z|x_1) captures semantic content and ε is random noise.
+    When supcon_weight > 0, applies supervised contrastive loss on μ_z.
     """
     B = x_1.shape[0]
     device = x_1.device
@@ -485,6 +516,12 @@ def compute_struct_flow_loss(
     comp['kl'] = kl_loss.item()
     comp['recon'] = recon_loss.item()
     comp['neg'] = 0.0
+    comp['supcon'] = 0.0
+
+    if supcon_weight > 0.0 and class_labels is not None:
+        supcon_loss = supervised_contrastive_loss(mu_z, class_labels, temperature=supcon_temperature)
+        total = total + supcon_weight * supcon_loss
+        comp['supcon'] = supcon_loss.item()
 
     if delta_fm_lambda > 0.0 and class_labels is not None:
         neg_idxs = _sample_different_class(class_labels)
@@ -647,14 +684,17 @@ def compute_unified_loss(
     kl_weight: float = 0.001,
     recon_weight: float = 0.1,
     delta_fm_lambda: float = 0.0,
+    supcon_weight: float = 0.0,
+    supcon_temperature: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Unified loss supporting all FreqFlow + StructFlow + DeltaFM combinations."""
+    """Unified loss supporting all FreqFlow + StructFlow + DeltaFM + SupCon combinations."""
     B = x_1.shape[0]
     device = x_1.device
     comp: dict[str, float] = {}
 
     kl_loss = torch.tensor(0.0, device=device)
     recon_loss = torch.tensor(0.0, device=device)
+    mu_z = None
 
     if use_struct:
         t_enc = torch.full((B,), 1.0, device=device)
@@ -700,6 +740,12 @@ def compute_unified_loss(
     total = flow_loss + kl_weight * kl_loss + recon_weight * recon_loss
     comp['flow'] = flow_loss.item()
     comp['neg'] = 0.0
+    comp['supcon'] = 0.0
+
+    if supcon_weight > 0.0 and class_labels is not None and mu_z is not None and use_struct:
+        supcon_loss = supervised_contrastive_loss(mu_z, class_labels, temperature=supcon_temperature)
+        total = total + supcon_weight * supcon_loss
+        comp['supcon'] = supcon_loss.item()
 
     if delta_fm_lambda > 0.0 and class_labels is not None:
         neg_idxs = _sample_different_class(class_labels)

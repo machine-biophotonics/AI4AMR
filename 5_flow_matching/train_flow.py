@@ -73,6 +73,12 @@ parser.add_argument('--struct_kl_weight', type=float, default=0.001,
                     help='KL divergence weight for StructFlow VAE loss')
 parser.add_argument('--struct_recon_weight', type=float, default=0.1,
                     help='Reconstruction loss weight for StructFlow')
+parser.add_argument('--supcon', action='store_true', default=False,
+                    help='Supervised contrastive loss on μ_z (SupCon, Khosla et al. 2020)')
+parser.add_argument('--supcon_weight', type=float, default=0.1,
+                    help='SupCon loss weight')
+parser.add_argument('--supcon_temperature', type=float, default=0.1,
+                    help='SupCon temperature parameter')
 args = parser.parse_args()
 
 if args.freq_flow and args.batch_size == 64:
@@ -248,12 +254,18 @@ with open(metrics_path, 'w', newline='') as f:
         csv_header = ['epoch', 'train_loss', 'val_loss',
                       'train_spatial', 'val_spatial', 'train_freq', 'val_freq',
                       'train_kl', 'val_kl', 'train_recon', 'val_recon',
-                      'train_neg', 'val_neg', 'lr', 'time_s']
+                      'train_neg', 'val_neg']
+        if args.supcon:
+            csv_header += ['train_supcon', 'val_supcon']
+        csv_header += ['lr', 'time_s']
     elif args.struct_flow:
         csv_header = ['epoch', 'train_loss', 'val_loss',
                       'train_flow', 'val_flow',
                       'train_kl', 'val_kl', 'train_recon', 'val_recon',
-                      'train_neg', 'val_neg', 'lr', 'time_s']
+                      'train_neg', 'val_neg']
+        if args.supcon:
+            csv_header += ['train_supcon', 'val_supcon']
+        csv_header += ['lr', 'time_s']
     else:
         csv_header = ['epoch', 'train_loss', 'val_loss',
                       'train_spatial', 'val_spatial', 'train_freq', 'val_freq',
@@ -272,6 +284,7 @@ for epoch in range(start_epoch, args.epochs):
     train_kl = 0.0
     train_recon = 0.0
     train_neg = 0.0
+    train_supcon = 0.0
     t0 = time.time()
 
     pbar = tqdm(train_loader, desc=f"E{epoch+1:03d}", leave=False)
@@ -290,6 +303,8 @@ for epoch in range(start_epoch, args.epochs):
                     kl_weight=args.struct_kl_weight,
                     recon_weight=args.struct_recon_weight,
                     delta_fm_lambda=delta_lambda,
+                    supcon_weight=args.supcon_weight if args.supcon else 0.0,
+                    supcon_temperature=args.supcon_temperature,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
@@ -297,6 +312,8 @@ for epoch in range(start_epoch, args.epochs):
                     kl_weight=args.struct_kl_weight,
                     recon_weight=args.struct_recon_weight,
                     delta_fm_lambda=delta_lambda,
+                    supcon_weight=args.supcon_weight if args.supcon else 0.0,
+                    supcon_temperature=args.supcon_temperature,
                 )
             else:
                 loss, comp = compute_flow_loss(
@@ -321,6 +338,7 @@ for epoch in range(start_epoch, args.epochs):
         train_kl += comp.get('kl', 0.0)
         train_recon += comp.get('recon', 0.0)
         train_neg += comp.get('neg', 0.0)
+        train_supcon += comp.get('supcon', 0.0)
         train_steps += 1
         pbar.set_postfix(loss=loss.item())
 
@@ -330,6 +348,7 @@ for epoch in range(start_epoch, args.epochs):
     train_kl /= max(1, train_steps)
     train_recon /= max(1, train_steps)
     train_neg /= max(1, train_steps)
+    train_supcon /= max(1, train_steps)
     epoch_time = time.time() - t0
     writer.add_scalar('train/loss', train_loss, epoch)
     if use_unified:
@@ -338,11 +357,15 @@ for epoch in range(start_epoch, args.epochs):
         writer.add_scalar('train/kl', train_kl, epoch)
         writer.add_scalar('train/recon', train_recon, epoch)
         writer.add_scalar('train/neg', train_neg, epoch)
+        if args.supcon:
+            writer.add_scalar('train/supcon', train_supcon, epoch)
     elif args.struct_flow:
         writer.add_scalar('train/flow', train_spatial, epoch)
         writer.add_scalar('train/kl', train_kl, epoch)
         writer.add_scalar('train/recon', train_recon, epoch)
         writer.add_scalar('train/neg', train_neg, epoch)
+        if args.supcon:
+            writer.add_scalar('train/supcon', train_supcon, epoch)
     else:
         writer.add_scalar('train/spatial', train_spatial, epoch)
         writer.add_scalar('train/freq', train_freq, epoch)
@@ -356,6 +379,7 @@ for epoch in range(start_epoch, args.epochs):
     val_neg = 0.0
     val_kl = 0.0
     val_recon = 0.0
+    val_supcon = 0.0
     with torch.no_grad():
         for imgs, class_ids in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
             imgs = imgs.to(device, non_blocking=True)
@@ -371,6 +395,8 @@ for epoch in range(start_epoch, args.epochs):
                         kl_weight=args.struct_kl_weight,
                         recon_weight=args.struct_recon_weight,
                         delta_fm_lambda=delta_lambda,
+                        supcon_weight=args.supcon_weight if args.supcon else 0.0,
+                        supcon_temperature=args.supcon_temperature,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
@@ -378,6 +404,8 @@ for epoch in range(start_epoch, args.epochs):
                         kl_weight=args.struct_kl_weight,
                         recon_weight=args.struct_recon_weight,
                         delta_fm_lambda=delta_lambda,
+                        supcon_weight=args.supcon_weight if args.supcon else 0.0,
+                        supcon_temperature=args.supcon_temperature,
                     )
                 else:
                     loss, comp = compute_flow_loss(
@@ -393,6 +421,7 @@ for epoch in range(start_epoch, args.epochs):
             val_kl += comp.get('kl', 0.0)
             val_recon += comp.get('recon', 0.0)
             val_neg += comp.get('neg', 0.0)
+            val_supcon += comp.get('supcon', 0.0)
             val_steps += 1
     val_loss /= max(1, val_steps)
     val_spatial /= max(1, val_steps)
@@ -400,6 +429,7 @@ for epoch in range(start_epoch, args.epochs):
     val_neg /= max(1, val_steps)
     val_kl /= max(1, val_steps)
     val_recon /= max(1, val_steps)
+    val_supcon /= max(1, val_steps)
     writer.add_scalar('val/loss', val_loss, epoch)
     if use_unified:
         writer.add_scalar('val/spatial', val_spatial, epoch)
@@ -407,20 +437,26 @@ for epoch in range(start_epoch, args.epochs):
         writer.add_scalar('val/kl', val_kl, epoch)
         writer.add_scalar('val/recon', val_recon, epoch)
         writer.add_scalar('val/neg', val_neg, epoch)
+        if args.supcon:
+            writer.add_scalar('val/supcon', val_supcon, epoch)
     elif args.struct_flow:
         writer.add_scalar('val/flow', val_spatial, epoch)
         writer.add_scalar('val/kl', val_kl, epoch)
         writer.add_scalar('val/recon', val_recon, epoch)
         writer.add_scalar('val/neg', val_neg, epoch)
+        if args.supcon:
+            writer.add_scalar('val/supcon', val_supcon, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
     if use_unified:
+        supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} kl={val_kl:.4f} "
-              f"recon={val_recon:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
+              f"recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}) ({epoch_time:.0f}s)")
     elif args.struct_flow:
+        supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
-              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
+              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}) ({epoch_time:.0f}s)")
     else:
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
@@ -433,15 +469,19 @@ for epoch in range(start_epoch, args.epochs):
                    f'{train_freq:.4f}', f'{val_freq:.4f}',
                    f'{train_kl:.4f}', f'{val_kl:.4f}',
                    f'{train_recon:.4f}', f'{val_recon:.4f}',
-                   f'{train_neg:.4f}', f'{val_neg:.4f}',
-                   f'{lr_now:.2e}', f'{epoch_time:.0f}']
+                   f'{train_neg:.4f}', f'{val_neg:.4f}']
+            if args.supcon:
+                row += [f'{train_supcon:.4f}', f'{val_supcon:.4f}']
+            row += [f'{lr_now:.2e}', f'{epoch_time:.0f}']
         elif args.struct_flow:
             row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
                    f'{train_spatial:.4f}', f'{val_spatial:.4f}',
                    f'{train_kl:.4f}', f'{val_kl:.4f}',
                    f'{train_recon:.4f}', f'{val_recon:.4f}',
-                   f'{train_neg:.4f}', f'{val_neg:.4f}',
-                   f'{lr_now:.2e}', f'{epoch_time:.0f}']
+                   f'{train_neg:.4f}', f'{val_neg:.4f}']
+            if args.supcon:
+                row += [f'{train_supcon:.4f}', f'{val_supcon:.4f}']
+            row += [f'{lr_now:.2e}', f'{epoch_time:.0f}']
         else:
             row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
                    f'{train_spatial:.4f}', f'{val_spatial:.4f}',
