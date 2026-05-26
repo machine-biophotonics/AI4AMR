@@ -25,7 +25,9 @@ from datetime import datetime
 import csv
 
 from mil_model import FlowCropDataset, load_labels
-from flow_model import FlowUNet, FreqFlowUNet, compute_flow_loss, sample
+from flow_model import FlowUNet, FreqFlowUNet, StructFlowUNet, CombinedFlowUNet
+from flow_model import compute_flow_loss, sample, compute_struct_flow_loss, sample_struct
+from flow_model import compute_unified_loss, sample_combined
 
 
 
@@ -63,6 +65,14 @@ parser.add_argument('--delta_fm', action='store_true', default=False,
                     help='Use Contrastive Flow Matching (DeltaFM) loss (Stoica et al., ICCV 2025)')
 parser.add_argument('--delta_fm_lambda', type=float, default=0.05,
                     help='Contrastive loss weight lambda for DeltaFM (default: 0.05)')
+parser.add_argument('--struct_flow', action='store_true', default=False,
+                    help='Use StructFlow (SCFM) architecture with structured latent')
+parser.add_argument('--struct_latent_dim', type=int, default=64,
+                    help='Structured latent dimension for StructFlow')
+parser.add_argument('--struct_kl_weight', type=float, default=0.001,
+                    help='KL divergence weight for StructFlow VAE loss')
+parser.add_argument('--struct_recon_weight', type=float, default=0.1,
+                    help='Reconstruction loss weight for StructFlow')
 args = parser.parse_args()
 
 if args.freq_flow and args.batch_size == 64:
@@ -120,8 +130,24 @@ val_loader = DataLoader(
 
 print("\n[2/5] Building model ...")
 block_channels = tuple(int(x) for x in args.block_channels.split(','))
-if args.freq_flow:
-    freq_block_channels = tuple(int(x) for x in args.freq_block_channels.split(','))
+freq_block_channels = tuple(int(x) for x in args.freq_block_channels.split(',')) if args.freq_flow else block_channels
+
+if args.freq_flow and args.struct_flow:
+    print(f"  CombinedFlow: freq_flow + struct_flow")
+    model = CombinedFlowUNet(
+        in_channels=1,
+        sample_size=224,
+        block_out_channels=block_channels,
+        freq_block_out_channels=freq_block_channels,
+        layers_per_block=2,
+        num_class_embeds=num_classes,
+        freq_filter_D=args.freq_filter_D,
+        use_freq=True,
+        use_struct=True,
+        latent_dim=args.struct_latent_dim,
+    ).to(device)
+    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}")
+elif args.freq_flow:
     print(f"  FreqFlow: batch_size={args.batch_size}")
     model = FreqFlowUNet(
         in_channels=1,
@@ -133,6 +159,17 @@ if args.freq_flow:
         freq_filter_D=args.freq_filter_D,
     ).to(device)
     print(f"  FreqFlow: freq_branch={freq_block_channels}")
+elif args.struct_flow:
+    print(f"  StructFlow: latent_dim={args.struct_latent_dim}")
+    model = StructFlowUNet(
+        in_channels=1,
+        sample_size=224,
+        block_out_channels=block_channels,
+        layers_per_block=2,
+        num_class_embeds=num_classes,
+        latent_dim=args.struct_latent_dim,
+    ).to(device)
+    print(f"  StructFlow: kl_weight={args.struct_kl_weight}, recon_weight={args.struct_recon_weight}")
 else:
     model = FlowUNet(
         in_channels=1,
@@ -144,6 +181,10 @@ else:
 
 n_params = sum(p.numel() for p in model.parameters())
 print(f"  Params: {n_params:,}")
+
+use_unified = isinstance(model, CombinedFlowUNet)
+if use_unified:
+    print(f"  Unified dispatch: freq={args.freq_flow}, struct={args.struct_flow}, delta_fm={args.delta_fm}")
 
 def add_weight_decay(model, wd=0.05):
     decay, no_decay = [], []
@@ -203,7 +244,14 @@ print(f"  AMP: {amp_dtype}")
 metrics_path = os.path.join(OUTPUT_DIR, 'metrics.csv')
 with open(metrics_path, 'w', newline='') as f:
     w = csv.writer(f)
-    w.writerow(['epoch', 'train_loss', 'val_loss', 'loss_spatial', 'loss_freq', 'loss_neg', 'lr', 'time_s'])
+    if use_unified:
+        csv_header = ['epoch', 'train_loss', 'val_loss', 'loss_spatial', 'loss_freq',
+                      'loss_kl', 'loss_recon', 'loss_neg', 'lr', 'time_s']
+    elif args.struct_flow:
+        csv_header = ['epoch', 'train_loss', 'val_loss', 'loss_flow', 'loss_kl', 'loss_recon', 'lr', 'time_s']
+    else:
+        csv_header = ['epoch', 'train_loss', 'val_loss', 'loss_spatial', 'loss_freq', 'loss_neg', 'lr', 'time_s']
+    w.writerow(csv_header)
 
 for epoch in range(start_epoch, args.epochs):
     train_ds.set_epoch(epoch)
@@ -224,13 +272,31 @@ for epoch in range(start_epoch, args.epochs):
 
         delta_lambda = args.delta_fm_lambda if args.delta_fm else 0.0
         with torch.amp.autocast('cuda', dtype=amp_dtype):
-            loss, comp = compute_flow_loss(
-                model, imgs, class_labels=class_ids,
-                freq_flow=args.freq_flow,
-                freq_filter_D=args.freq_filter_D,
-                freq_loss_weight=args.freq_loss_weight,
-                delta_fm_lambda=delta_lambda,
-            )
+            if use_unified:
+                loss, comp = compute_unified_loss(
+                    model, imgs, class_labels=class_ids,
+                    use_freq=args.freq_flow, use_struct=args.struct_flow,
+                    freq_filter_D=args.freq_filter_D,
+                    freq_loss_weight=args.freq_loss_weight,
+                    kl_weight=args.struct_kl_weight,
+                    recon_weight=args.struct_recon_weight,
+                    delta_fm_lambda=delta_lambda,
+                )
+            elif args.struct_flow:
+                loss, comp = compute_struct_flow_loss(
+                    model, imgs, class_labels=class_ids,
+                    kl_weight=args.struct_kl_weight,
+                    recon_weight=args.struct_recon_weight,
+                    delta_fm_lambda=delta_lambda,
+                )
+            else:
+                loss, comp = compute_flow_loss(
+                    model, imgs, class_labels=class_ids,
+                    freq_flow=args.freq_flow,
+                    freq_filter_D=args.freq_filter_D,
+                    freq_loss_weight=args.freq_loss_weight,
+                    delta_fm_lambda=delta_lambda,
+                )
 
         optimizer.zero_grad()
         scaler.scale(loss).backward()
@@ -241,9 +307,9 @@ for epoch in range(start_epoch, args.epochs):
         scheduler.step()
 
         train_loss += loss.item()
-        train_spatial += comp.get('spatial', 0.0)
-        train_freq += comp.get('freq', 0.0)
-        train_neg += comp.get('neg', 0.0)
+        train_spatial += comp.get('spatial', comp.get('flow', 0.0))
+        train_freq += comp.get('freq', comp.get('kl', 0.0))
+        train_neg += comp.get('neg', comp.get('recon', 0.0))
         train_steps += 1
         pbar.set_postfix(loss=loss.item())
 
@@ -257,39 +323,88 @@ for epoch in range(start_epoch, args.epochs):
     val_spatial = 0.0
     val_freq = 0.0
     val_neg = 0.0
+    val_kl = 0.0
+    val_recon = 0.0
     with torch.no_grad():
         for imgs, class_ids in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
             imgs = imgs.to(device, non_blocking=True)
             class_ids = class_ids.to(device, non_blocking=True)
             delta_lambda = args.delta_fm_lambda if args.delta_fm else 0.0
             with torch.amp.autocast('cuda', dtype=amp_dtype):
-                loss, comp = compute_flow_loss(
-                    model, imgs, class_labels=class_ids,
-                    freq_flow=args.freq_flow,
-                    freq_filter_D=args.freq_filter_D,
-                    freq_loss_weight=args.freq_loss_weight,
-                    delta_fm_lambda=delta_lambda,
-                )
+                if use_unified:
+                    loss, comp = compute_unified_loss(
+                        model, imgs, class_labels=class_ids,
+                        use_freq=args.freq_flow, use_struct=args.struct_flow,
+                        freq_filter_D=args.freq_filter_D,
+                        freq_loss_weight=args.freq_loss_weight,
+                        kl_weight=args.struct_kl_weight,
+                        recon_weight=args.struct_recon_weight,
+                        delta_fm_lambda=delta_lambda,
+                    )
+                elif args.struct_flow:
+                    loss, comp = compute_struct_flow_loss(
+                        model, imgs, class_labels=class_ids,
+                        kl_weight=args.struct_kl_weight,
+                        recon_weight=args.struct_recon_weight,
+                        delta_fm_lambda=delta_lambda,
+                    )
+                else:
+                    loss, comp = compute_flow_loss(
+                        model, imgs, class_labels=class_ids,
+                        freq_flow=args.freq_flow,
+                        freq_filter_D=args.freq_filter_D,
+                        freq_loss_weight=args.freq_loss_weight,
+                        delta_fm_lambda=delta_lambda,
+                    )
             val_loss += loss.item()
-            val_spatial += comp.get('spatial', 0.0)
-            val_freq += comp.get('freq', 0.0)
-            val_neg += comp.get('neg', 0.0)
+            val_spatial += comp.get('spatial', comp.get('flow', 0.0))
+            val_freq += comp.get('freq', comp.get('kl', 0.0))
+            val_neg += comp.get('neg', comp.get('recon', 0.0))
+            val_kl += comp.get('kl', 0.0)
+            val_recon += comp.get('recon', 0.0)
             val_steps += 1
     val_loss /= max(1, val_steps)
     val_spatial /= max(1, val_steps)
     val_freq /= max(1, val_steps)
     val_neg /= max(1, val_steps)
+    val_kl /= max(1, val_steps)
+    val_recon /= max(1, val_steps)
     writer.add_scalar('val/loss', val_loss, epoch)
+    if use_unified:
+        writer.add_scalar('val/spatial', val_spatial, epoch)
+        writer.add_scalar('val/freq', val_freq, epoch)
+        writer.add_scalar('val/kl', val_kl, epoch)
+        writer.add_scalar('val/recon', val_recon, epoch)
+        writer.add_scalar('val/neg', val_neg, epoch)
+    elif args.struct_flow:
+        writer.add_scalar('val/flow', val_spatial, epoch)
+        writer.add_scalar('val/kl', val_freq, epoch)
+        writer.add_scalar('val/recon', val_neg, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
-    print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
-          f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
+    if use_unified:
+        print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
+              f"(spat={val_spatial:.4f} freq={val_freq:.4f} kl={val_kl:.4f} "
+              f"recon={val_recon:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
+    elif args.struct_flow:
+        print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
+              f"(flow={val_spatial:.4f} kl={val_freq:.4f} recon={val_neg:.4f}) ({epoch_time:.0f}s)")
+    else:
+        print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
+              f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
 
     with open(metrics_path, 'a', newline='') as f:
         w = csv.writer(f)
-        w.writerow([epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
-                    f'{val_spatial:.4f}', f'{val_freq:.4f}', f'{val_neg:.4f}',
-                    f'{lr_now:.2e}', f'{epoch_time:.0f}'])
+        if use_unified:
+            row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
+                   f'{val_spatial:.4f}', f'{val_freq:.4f}', f'{val_kl:.4f}',
+                   f'{val_recon:.4f}', f'{val_neg:.4f}',
+                   f'{lr_now:.2e}', f'{epoch_time:.0f}']
+        else:
+            row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
+                   f'{val_spatial:.4f}', f'{val_freq:.4f}', f'{val_neg:.4f}',
+                   f'{lr_now:.2e}', f'{epoch_time:.0f}']
+        w.writerow(row)
 
     # Generate 1 sample per class in 2-row table: drugs top, mutants bottom
     if epoch % 1 == 0:
@@ -298,9 +413,18 @@ for epoch in range(start_epoch, args.epochs):
             all_samples = []
             for ci in vis_classes:
                 cid = torch.tensor([ci], device=device)
-                samp = sample(model, 1, num_steps=args.num_steps,
-                              class_labels=cid, device=device,
-                              freq_flow=args.freq_flow)
+                if use_unified:
+                    samp = sample_combined(model, 1, num_steps=args.num_steps,
+                                           class_labels=cid, device=device,
+                                           use_freq=args.freq_flow,
+                                           use_struct=args.struct_flow)
+                elif args.struct_flow:
+                    samp = sample_struct(model, 1, num_steps=args.num_steps,
+                                         class_labels=cid, device=device)
+                else:
+                    samp = sample(model, 1, num_steps=args.num_steps,
+                                  class_labels=cid, device=device,
+                                  freq_flow=args.freq_flow)
                 all_samples.append(samp.cpu())
 
             n_drugs, n_mutants = len(drug_viz), len(mutant_viz)

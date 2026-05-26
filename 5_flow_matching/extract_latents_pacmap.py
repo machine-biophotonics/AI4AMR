@@ -19,7 +19,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from mil_model import FlowCropDataset, load_labels
-from flow_model import FreqFlowUNet, FlowUNet
+from flow_model import FreqFlowUNet, FlowUNet, StructFlowUNet, CombinedFlowUNet
 
 SEED = 42
 np.random.seed(SEED)
@@ -43,6 +43,8 @@ parser.add_argument('--tsne_iter', type=int, default=5000,
                     help='t-SNE max iterations (default: 5000)')
 parser.add_argument('--wasserstein', action='store_true', default=False,
                     help='Skip extraction/t-SNE, compute Wasserstein distance matrix between drug_2x and mutant_g1')
+parser.add_argument('--struct_flow', action='store_true', default=False,
+                    help='Extract struct flow z latents (mu) at t=0.5 and t=1.0 instead of bottleneck features')
 args = parser.parse_args()
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -145,89 +147,139 @@ if not (args.tsne_only or args.wasserstein):
 
     block_channels = tuple(int(x) for x in ckpt_args['block_channels'].split(','))
     use_freq = ckpt_args.get('freq_flow', False)
+    use_struct = args.struct_flow or ckpt_args.get('struct_flow', False)
 
-    if use_freq:
-        freq_block_channels = tuple(int(x) for x in ckpt_args.get('freq_block_channels', ckpt_args['block_channels']).split(','))
-        model = FreqFlowUNet(
-            in_channels=1, sample_size=224,
-            block_out_channels=block_channels,
-            freq_block_out_channels=freq_block_channels,
-            layers_per_block=2, num_class_embeds=num_classes,
-            freq_filter_D=ckpt_args.get('freq_filter_D', 8.0),
-        ).to(device)
-        target_unet = model.spatial_unet
+    if use_struct:
+        use_freq = ckpt_args.get('freq_flow', False)
+        if use_freq:
+            freq_block_channels = tuple(int(x) for x in ckpt_args.get('freq_block_channels', ckpt_args['block_channels']).split(','))
+            model = CombinedFlowUNet(
+                in_channels=1, sample_size=224,
+                block_out_channels=block_channels,
+                freq_block_out_channels=freq_block_channels,
+                layers_per_block=2, num_class_embeds=num_classes,
+                freq_filter_D=ckpt_args.get('freq_filter_D', 8.0),
+                use_freq=True, use_struct=True,
+                latent_dim=ckpt_args.get('struct_latent_dim', 64),
+            ).to(device)
+        else:
+            model = StructFlowUNet(
+                in_channels=1, sample_size=224,
+                block_out_channels=block_channels,
+                layers_per_block=2, num_class_embeds=num_classes,
+                latent_dim=ckpt_args.get('struct_latent_dim', 64),
+            ).to(device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        model.eval()
+        NULL_LABEL = num_classes
+        print(f"  {'CombinedFlowUNet' if use_freq else 'StructFlowUNet'} loaded (epoch {ckpt['epoch']}), latent_dim={model.latent_dim}")
+
+        settings = [
+            ('t05_cond',  args.timestep_mid,  True),
+            ('t05_uncond', args.timestep_mid,  False),
+            ('t10_cond',  args.timestep_clean, True),
+            ('t10_uncond', args.timestep_clean, False),
+        ]
+        all_feats = {name: [] for name, _, _ in settings}
+        all_labels = []
+
+        print("\n[3/4] Extracting struct z latents at t=0.5 and t=1.0 ...")
+        with torch.no_grad():
+            for imgs, class_ids in tqdm(loader, desc="Extract"):
+                imgs = imgs.to(device, non_blocking=True)
+                class_ids = class_ids.to(device, non_blocking=True)
+
+                for name, t_val, cond in settings:
+                    t_batch = torch.full((imgs.shape[0],), t_val, device=device)
+                    labels_for_model = class_ids if cond else None
+
+                    mu_z, logvar_z = model.encode(imgs, t_batch, class_labels=labels_for_model)
+                    all_feats[name].append(mu_z.cpu())
+
+                all_labels.append(class_ids.cpu())
     else:
-        model = FlowUNet(
-            in_channels=1, sample_size=224,
-            block_out_channels=block_channels,
-            layers_per_block=2, num_class_embeds=num_classes,
-        ).to(device)
-        target_unet = model.unet
+        if use_freq:
+            freq_block_channels = tuple(int(x) for x in ckpt_args.get('freq_block_channels', ckpt_args['block_channels']).split(','))
+            model = FreqFlowUNet(
+                in_channels=1, sample_size=224,
+                block_out_channels=block_channels,
+                freq_block_out_channels=freq_block_channels,
+                layers_per_block=2, num_class_embeds=num_classes,
+                freq_filter_D=ckpt_args.get('freq_filter_D', 8.0),
+            ).to(device)
+            target_unet = model.spatial_unet
+        else:
+            model = FlowUNet(
+                in_channels=1, sample_size=224,
+                block_out_channels=block_channels,
+                layers_per_block=2, num_class_embeds=num_classes,
+            ).to(device)
+            target_unet = model.unet
 
-    model.load_state_dict(ckpt['model_state_dict'])
-    model.eval()
+        model.load_state_dict(ckpt['model_state_dict'])
+        model.eval()
 
-    def add_null_embedding(unet: nn.Module, n: int, device: torch.device):
-        old = unet.class_embedding
-        new = nn.Embedding(n + 1, old.embedding_dim, device=device)
-        new.weight.data[:n] = old.weight.data.to(device)
-        new.weight.data[n] = old.weight.data.mean(dim=0).to(device)
-        unet.class_embedding = new
+        def add_null_embedding(unet: nn.Module, n: int, device: torch.device):
+            old = unet.class_embedding
+            new = nn.Embedding(n + 1, old.embedding_dim, device=device)
+            new.weight.data[:n] = old.weight.data.to(device)
+            new.weight.data[n] = old.weight.data.mean(dim=0).to(device)
+            unet.class_embedding = new
 
-    if use_freq:
-        add_null_embedding(model.spatial_unet, num_classes, device)
-        add_null_embedding(model.freq_unet, num_classes, device)
-    else:
-        add_null_embedding(model.unet, num_classes, device)
+        if use_freq:
+            add_null_embedding(model.spatial_unet, num_classes, device)
+            add_null_embedding(model.freq_unet, num_classes, device)
+        else:
+            add_null_embedding(model.unet, num_classes, device)
 
-    NULL_LABEL = num_classes
-    print(f"  {'FreqFlowUNet' if use_freq else 'FlowUNet'} loaded (epoch {ckpt['epoch']})")
+        NULL_LABEL = num_classes
+        print(f"  {'FreqFlowUNet' if use_freq else 'FlowUNet'} loaded (epoch {ckpt['epoch']})")
 
-    # ── Forward hook ────────────────────────────────────────────
-    mid_features = {}
-    def make_hook(key):
-        def hook(module, input, output):
-            mid_features[key] = output[0] if isinstance(output, tuple) else output
-        return hook
+        # ── Forward hook ────────────────────────────────────────
+        mid_features = {}
+        def make_hook(key):
+            def hook(module, input, output):
+                mid_features[key] = output[0] if isinstance(output, tuple) else output
+            return hook
 
-    handle = target_unet.up_blocks[0].register_forward_hook(make_hook('mid'))
+        handle = target_unet.up_blocks[0].register_forward_hook(make_hook('mid'))
 
-    # ── Extraction settings ─────────────────────────────────────
-    settings = [
-        ('t05_cond',  args.timestep_mid,  True),
-        ('t05_uncond', args.timestep_mid,  False),
-        ('t10_cond',  args.timestep_clean, True),
-        ('t10_uncond', args.timestep_clean, False),
-    ]
+        # ── Extraction settings ─────────────────────────────────
+        settings = [
+            ('t05_cond',  args.timestep_mid,  True),
+            ('t05_uncond', args.timestep_mid,  False),
+            ('t10_cond',  args.timestep_clean, True),
+            ('t10_uncond', args.timestep_clean, False),
+        ]
 
-    all_feats = {name: [] for name, _, _ in settings}
-    all_labels = []
+        all_feats = {name: [] for name, _, _ in settings}
+        all_labels = []
 
-    print("\n[3/4] Extracting latents (4 modes per batch) ...")
+        print("\n[3/4] Extracting latents (4 modes per batch) ...")
 
-    with torch.no_grad():
-        for imgs, class_ids in tqdm(loader, desc="Extract"):
-            imgs = imgs.to(device, non_blocking=True)
-            class_ids = class_ids.to(device, non_blocking=True)
+        with torch.no_grad():
+            for imgs, class_ids in tqdm(loader, desc="Extract"):
+                imgs = imgs.to(device, non_blocking=True)
+                class_ids = class_ids.to(device, non_blocking=True)
 
-            for name, t_val, cond in settings:
-                t_batch = torch.full((imgs.shape[0],), t_val, device=device)
-                labels_for_model = class_ids if cond else torch.full_like(class_ids, NULL_LABEL)
+                for name, t_val, cond in settings:
+                    t_batch = torch.full((imgs.shape[0],), t_val, device=device)
+                    labels_for_model = class_ids if cond else torch.full_like(class_ids, NULL_LABEL)
 
-                mid_features.clear()
-                with torch.amp.autocast('cuda', enabled=True):
-                    if use_freq:
-                        _, _ = model(imgs, t_batch, class_labels=labels_for_model)
-                    else:
-                        _ = model(imgs, t_batch, class_labels=labels_for_model)
+                    mid_features.clear()
+                    with torch.amp.autocast('cuda', enabled=True):
+                        if use_freq:
+                            _, _ = model(imgs, t_batch, class_labels=labels_for_model)
+                        else:
+                            _ = model(imgs, t_batch, class_labels=labels_for_model)
 
-                feat = mid_features['mid']
-                pooled = feat.flatten(2).mean(dim=2).cpu()
-                all_feats[name].append(pooled)
+                    feat = mid_features['mid']
+                    pooled = feat.flatten(2).mean(dim=2).cpu()
+                    all_feats[name].append(pooled)
 
-            all_labels.append(class_ids.cpu())
+                all_labels.append(class_ids.cpu())
 
-    handle.remove()
+        handle.remove()
 
     labels = torch.cat(all_labels, dim=0).numpy()
     np.save(os.path.join(output_dir, 'labels.npy'), labels)
