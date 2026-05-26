@@ -1,0 +1,33 @@
+Aggregate 89-Class Drug Classification Summary (6 folds)
+======================================================================
+
+Total classes: 89
+Mean accuracy: 52.54% ± 5.18%
+Classes > 50%: 42/89
+Classes > random (1.1%): 80/89
+
+Top 10 performing classes:
+             class  support  correct  accuracy
+Chloramphenicol_2x      126      126  1.000000
+     Cefsulodin_2x      126      126  1.000000
+   Trimethoprim_1x      126      126  1.000000
+      Kanamycin_2x      126      126  1.000000
+      Meropenem_2x      126      126  1.000000
+   Trimethoprim_2x      126      126  1.000000
+     Mecillinam_2x      126      125  0.992063
+ Trimethoprim_0.5x      126      125  0.992063
+       Colistin_2x       84       83  0.988095
+     Penicillin_1x      126      123  0.976190
+
+Bottom 10 performing classes:
+                class  support  correct  accuracy
+      Kanamycin_0.25x       35        1  0.028571
+   Levofloxacin_0.25x       46        1  0.021739
+   Clavulanic Acid_1x       85        0  0.000000
+ Clavulanic Acid_0.5x       59        0  0.000000
+Clavulanic Acid_0.25x      122        0  0.000000
+         DMSO_control      365        0  0.000000
+       Polymyxin B_2x       45        0  0.000000
+       Polymyxin B_1x       72        0  0.000000
+     Polymyxin B_0.5x       89        0  0.000000
+    Polymyxin B_0.25x       67        0  0.000000
