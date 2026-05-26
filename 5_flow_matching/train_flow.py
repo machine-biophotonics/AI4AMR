@@ -245,12 +245,19 @@ metrics_path = os.path.join(OUTPUT_DIR, 'metrics.csv')
 with open(metrics_path, 'w', newline='') as f:
     w = csv.writer(f)
     if use_unified:
-        csv_header = ['epoch', 'train_loss', 'val_loss', 'loss_spatial', 'loss_freq',
-                      'loss_kl', 'loss_recon', 'loss_neg', 'lr', 'time_s']
+        csv_header = ['epoch', 'train_loss', 'val_loss',
+                      'train_spatial', 'val_spatial', 'train_freq', 'val_freq',
+                      'train_kl', 'val_kl', 'train_recon', 'val_recon',
+                      'train_neg', 'val_neg', 'lr', 'time_s']
     elif args.struct_flow:
-        csv_header = ['epoch', 'train_loss', 'val_loss', 'loss_flow', 'loss_kl', 'loss_recon', 'lr', 'time_s']
+        csv_header = ['epoch', 'train_loss', 'val_loss',
+                      'train_flow', 'val_flow',
+                      'train_kl', 'val_kl', 'train_recon', 'val_recon',
+                      'train_neg', 'val_neg', 'lr', 'time_s']
     else:
-        csv_header = ['epoch', 'train_loss', 'val_loss', 'loss_spatial', 'loss_freq', 'loss_neg', 'lr', 'time_s']
+        csv_header = ['epoch', 'train_loss', 'val_loss',
+                      'train_spatial', 'val_spatial', 'train_freq', 'val_freq',
+                      'train_neg', 'val_neg', 'lr', 'time_s']
     w.writerow(csv_header)
 
 for epoch in range(start_epoch, args.epochs):
@@ -262,6 +269,8 @@ for epoch in range(start_epoch, args.epochs):
     train_steps = 0
     train_spatial = 0.0
     train_freq = 0.0
+    train_kl = 0.0
+    train_recon = 0.0
     train_neg = 0.0
     t0 = time.time()
 
@@ -308,14 +317,36 @@ for epoch in range(start_epoch, args.epochs):
 
         train_loss += loss.item()
         train_spatial += comp.get('spatial', comp.get('flow', 0.0))
-        train_freq += comp.get('freq', comp.get('kl', 0.0))
-        train_neg += comp.get('neg', comp.get('recon', 0.0))
+        train_freq += comp.get('freq', 0.0)
+        train_kl += comp.get('kl', 0.0)
+        train_recon += comp.get('recon', 0.0)
+        train_neg += comp.get('neg', 0.0)
         train_steps += 1
         pbar.set_postfix(loss=loss.item())
 
     train_loss /= max(1, train_steps)
+    train_spatial /= max(1, train_steps)
+    train_freq /= max(1, train_steps)
+    train_kl /= max(1, train_steps)
+    train_recon /= max(1, train_steps)
+    train_neg /= max(1, train_steps)
     epoch_time = time.time() - t0
     writer.add_scalar('train/loss', train_loss, epoch)
+    if use_unified:
+        writer.add_scalar('train/spatial', train_spatial, epoch)
+        writer.add_scalar('train/freq', train_freq, epoch)
+        writer.add_scalar('train/kl', train_kl, epoch)
+        writer.add_scalar('train/recon', train_recon, epoch)
+        writer.add_scalar('train/neg', train_neg, epoch)
+    elif args.struct_flow:
+        writer.add_scalar('train/flow', train_spatial, epoch)
+        writer.add_scalar('train/kl', train_kl, epoch)
+        writer.add_scalar('train/recon', train_recon, epoch)
+        writer.add_scalar('train/neg', train_neg, epoch)
+    else:
+        writer.add_scalar('train/spatial', train_spatial, epoch)
+        writer.add_scalar('train/freq', train_freq, epoch)
+        writer.add_scalar('train/neg', train_neg, epoch)
 
     model.eval()
     val_loss = 0.0
@@ -358,10 +389,10 @@ for epoch in range(start_epoch, args.epochs):
                     )
             val_loss += loss.item()
             val_spatial += comp.get('spatial', comp.get('flow', 0.0))
-            val_freq += comp.get('freq', comp.get('kl', 0.0))
-            val_neg += comp.get('neg', comp.get('recon', 0.0))
+            val_freq += comp.get('freq', 0.0)
             val_kl += comp.get('kl', 0.0)
             val_recon += comp.get('recon', 0.0)
+            val_neg += comp.get('neg', 0.0)
             val_steps += 1
     val_loss /= max(1, val_steps)
     val_spatial /= max(1, val_steps)
@@ -378,8 +409,9 @@ for epoch in range(start_epoch, args.epochs):
         writer.add_scalar('val/neg', val_neg, epoch)
     elif args.struct_flow:
         writer.add_scalar('val/flow', val_spatial, epoch)
-        writer.add_scalar('val/kl', val_freq, epoch)
-        writer.add_scalar('val/recon', val_neg, epoch)
+        writer.add_scalar('val/kl', val_kl, epoch)
+        writer.add_scalar('val/recon', val_recon, epoch)
+        writer.add_scalar('val/neg', val_neg, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
     if use_unified:
@@ -388,7 +420,7 @@ for epoch in range(start_epoch, args.epochs):
               f"recon={val_recon:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
     elif args.struct_flow:
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
-              f"(flow={val_spatial:.4f} kl={val_freq:.4f} recon={val_neg:.4f}) ({epoch_time:.0f}s)")
+              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
     else:
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
@@ -397,12 +429,24 @@ for epoch in range(start_epoch, args.epochs):
         w = csv.writer(f)
         if use_unified:
             row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
-                   f'{val_spatial:.4f}', f'{val_freq:.4f}', f'{val_kl:.4f}',
-                   f'{val_recon:.4f}', f'{val_neg:.4f}',
+                   f'{train_spatial:.4f}', f'{val_spatial:.4f}',
+                   f'{train_freq:.4f}', f'{val_freq:.4f}',
+                   f'{train_kl:.4f}', f'{val_kl:.4f}',
+                   f'{train_recon:.4f}', f'{val_recon:.4f}',
+                   f'{train_neg:.4f}', f'{val_neg:.4f}',
+                   f'{lr_now:.2e}', f'{epoch_time:.0f}']
+        elif args.struct_flow:
+            row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
+                   f'{train_spatial:.4f}', f'{val_spatial:.4f}',
+                   f'{train_kl:.4f}', f'{val_kl:.4f}',
+                   f'{train_recon:.4f}', f'{val_recon:.4f}',
+                   f'{train_neg:.4f}', f'{val_neg:.4f}',
                    f'{lr_now:.2e}', f'{epoch_time:.0f}']
         else:
             row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
-                   f'{val_spatial:.4f}', f'{val_freq:.4f}', f'{val_neg:.4f}',
+                   f'{train_spatial:.4f}', f'{val_spatial:.4f}',
+                   f'{train_freq:.4f}', f'{val_freq:.4f}',
+                   f'{train_neg:.4f}', f'{val_neg:.4f}',
                    f'{lr_now:.2e}', f'{epoch_time:.0f}']
         w.writerow(row)
 
