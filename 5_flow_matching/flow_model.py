@@ -1,37 +1,55 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import fft
 from diffusers import UNet2DModel
 
 
-class AuxProjectionHead(nn.Module):
-    """185-way linear classifier on pooled bottleneck features.
+def gaussian_filter_low_pass(fshift, D):
+    D = D * 2
+    b, c, h, w = fshift.shape
+    x = torch.arange(0, h, device=fshift.device)
+    y = torch.arange(0, w, device=fshift.device)
+    x, y = torch.meshgrid(x, y, indexing='ij')
+    center = (int((h - 1) / 2), int((w - 1) / 2))
+    dis_square = (x - center[0]) ** 2 + (y - center[1]) ** 2
+    template = torch.exp(-dis_square / (2 * D ** 2))
+    return template.unsqueeze(0).unsqueeze(0).repeat(b, c, 1, 1) * fshift
 
-    Pooled bottleneck (feat_dim) -> Linear(feat_dim, num_classes)
-    Standard linear probe design (DDAE-style), no normalization.
-    Trained with CrossEntropy alongside the flow matching objective.
-    Removed after training — the backbone retains the structured features.
-    """
-    def __init__(self, feat_dim: int = 256, num_classes: int = 185):
-        super().__init__()
-        self.fc = nn.Linear(feat_dim, num_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
+def gaussian_filter_high_pass(fshift, D):
+    D = D / 8.
+    b, c, h, w = fshift.shape
+    x = torch.arange(0, h, device=fshift.device)
+    y = torch.arange(0, w, device=fshift.device)
+    x, y = torch.meshgrid(x, y, indexing='ij')
+    center = (int((h - 1) / 2), int((w - 1) / 2))
+    dis_square = (x - center[0]) ** 2 + (y - center[1]) ** 2
+    template = 1 - torch.exp(-dis_square / (2 * D ** 2))
+    return template.unsqueeze(0).unsqueeze(0).repeat(b, c, 1, 1) * fshift
+
+
+def Fourier_filter(x, D):
+    max_x, min_x = x.max(), x.min()
+    x_freq = fft.fftn(x, dim=(-2, -1))
+    x_freq = fft.fftshift(x_freq, dim=(-2, -1))
+    x_high = gaussian_filter_high_pass(x_freq, D)
+    x_low = gaussian_filter_low_pass(x_freq, D)
+    x_high = fft.ifftshift(x_high, dim=(-2, -1))
+    x_high = fft.ifftn(x_high, dim=(-2, -1)).real
+    x_low = fft.ifftshift(x_low, dim=(-2, -1))
+    x_low = fft.ifftn(x_low, dim=(-2, -1)).real
+    return torch.clamp(x_low, min_x, max_x), torch.clamp(x_high, min_x, max_x)
 
 
 class FlowUNet(nn.Module):
     """UNet2DModel wrapper for Conditional Flow Matching.
 
-    Supports:
-        - ΔFM contrastive flow matching (velocity repulsion)
-        - Supervised Contrastive bottleneck loss (CORAL-style)
-        - Auxiliary linear probe classification (DDAE-style)
-        - Classifier-free guidance (CFG)
-        - Midpoint ODE solver
-
-    Note: timesteps are scaled by 1000 before feeding to UNet2DModel
-    since its sinusoidal time embedding is designed for t in [0, 1000].
+    Flow matching (CFM):
+        - Linear OT path: x_t = (1 - t) * x_0 + t * x_1
+        - Target velocity: u_t = x_1 - x_0
+        - Loss: MSE(v_pred, u_t) where v_pred = model(x_t, t, class_labels)
     """
     def __init__(
         self,
@@ -56,7 +74,6 @@ class FlowUNet(nn.Module):
             "UpBlock2D",
         )
 
-        # +1 for null class embedding (used during CFG label dropout)
         self.unet = UNet2DModel(
             sample_size=sample_size,
             in_channels=in_channels,
@@ -65,7 +82,7 @@ class FlowUNet(nn.Module):
             layers_per_block=layers_per_block,
             down_block_types=down_block_types,
             up_block_types=up_block_types,
-            num_class_embeds=num_class_embeds + 1,
+            num_class_embeds=num_class_embeds,
             class_embed_type=None,
             act_fn="silu",
             norm_num_groups=32,
@@ -73,247 +90,192 @@ class FlowUNet(nn.Module):
         )
         self.unet.enable_gradient_checkpointing()
 
-        # Hook on mid_block (encoder bottleneck) — CORAL-style feature extraction
-        self._mid_feat = None
-        self._mid_handle = self.unet.mid_block.register_forward_hook(self._mid_hook)
+    def forward(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        class_labels: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        output = self.unet(x_t, timestep=t, class_labels=class_labels, return_dict=True)
+        return output.sample
 
-    def _mid_hook(self, module, input, output):
-        self._mid_feat = output[0] if isinstance(output, tuple) else output
+
+class FreqFlowUNet(nn.Module):
+    """Two-branch FreqFlow: spatial UNet + frequency UNet with FFT decomposition.
+
+    Core insight (Ren et al., CVPR 2026): FMs generate low frequencies first,
+    high frequencies (texture/details) later → model them separately.
+
+    Spatial branch (1ch → 1ch): predicts full velocity u_t = x_1 - x_0.
+    Frequency branch (1ch → 1ch): predicts high-frequency velocity only,
+    takes high-pass filtered x_t as input. Forces model to learn frequency-aware
+    representations for sharper details.
+
+    Returns (v_freq, v_spatial): output[0]=freq, output[1]=spatial.
+    """
+    def __init__(
+        self,
+        in_channels: int = 1,
+        sample_size: int = 224,
+        block_out_channels: tuple = (64, 128, 256, 512),
+        freq_block_out_channels: tuple = (32, 64, 128, 256),
+        layers_per_block: int = 2,
+        num_class_embeds: int = 50,
+        freq_filter_D: float = 8.0,
+    ):
+        super().__init__()
+        self.freq_filter_D = freq_filter_D
+
+        down_block_types = (
+            "DownBlock2D",
+            "DownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+        )
+        up_block_types = (
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "UpBlock2D",
+            "UpBlock2D",
+        )
+
+        self.spatial_unet = UNet2DModel(
+            sample_size=sample_size,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            block_out_channels=block_out_channels,
+            layers_per_block=layers_per_block,
+            down_block_types=down_block_types,
+            up_block_types=up_block_types,
+            num_class_embeds=num_class_embeds,
+            class_embed_type=None,
+            act_fn="silu",
+            norm_num_groups=32,
+            dropout=0.1,
+        )
+        self.spatial_unet.enable_gradient_checkpointing()
+
+        # Frequency branch: 1ch high-pass input → 1ch high-pass velocity
+        self.freq_unet = UNet2DModel(
+            sample_size=sample_size,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            block_out_channels=freq_block_out_channels,
+            layers_per_block=layers_per_block,
+            down_block_types=down_block_types,
+            up_block_types=up_block_types,
+            num_class_embeds=num_class_embeds,
+            class_embed_type=None,
+            act_fn="silu",
+            norm_num_groups=32,
+            dropout=0.1,
+        )
+        self.freq_unet.enable_gradient_checkpointing()
 
     def forward(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
-        return_features: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        t_scaled = t * 1000.0
-        self._mid_feat = None
-        safe_labels = class_labels.clamp(min=0, max=self.unet.config.num_class_embeds - 1) if class_labels is not None else None
-        output = self.unet(x_t, timestep=t_scaled, class_labels=safe_labels, return_dict=True)
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        v_spatial = self.spatial_unet(
+            x_t, timestep=t, class_labels=class_labels, return_dict=True
+        ).sample
 
-        if return_features:
-            feat = self._mid_feat
-            if feat is None:
-                feat = x_t
-            return output.sample, feat
+        # Frequency branch: predict high-frequency velocity from high-pass x_t
+        _, x_high = Fourier_filter(x_t, self.freq_filter_D)
+        v_freq = self.freq_unet(
+            x_high, timestep=t, class_labels=class_labels, return_dict=True
+        ).sample
 
-        return output.sample
-
-    def forward_with_cfg(
-        self,
-        x_t: torch.Tensor,
-        t: torch.Tensor,
-        class_labels: torch.Tensor | None,
-        cfg_scale: float = 0.0,
-        null_label: int = -1,
-    ) -> torch.Tensor:
-        if cfg_scale <= 0.0 or class_labels is None:
-            return self.forward(x_t, t, class_labels=class_labels)
-
-        v_cond = self.forward(x_t, t, class_labels=class_labels)
-        null_labels = torch.full_like(class_labels, self.unet.config.num_class_embeds - 1)
-        v_uncond = self.forward(x_t, t, class_labels=null_labels)
-
-        return (1.0 + cfg_scale) * v_cond - cfg_scale * v_uncond
+        return v_freq, v_spatial
 
 
-class ContrastiveProjection(nn.Module):
-    """Minimal projection head for Supervised Contrastive Loss (CORAL-style).
-
-    Pooled bottleneck (feat_dim) -> Linear(feat_dim, proj_dim)
-    Discarded after training — only the backbone retains the structured features.
-    """
-    def __init__(self, feat_dim: int = 256, proj_dim: int = 128):
-        super().__init__()
-        self.fc = nn.Linear(feat_dim, proj_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
-
-
-def supervised_contrastive_loss(
-    features: torch.Tensor,
-    labels: torch.Tensor,
-    temperature: float = 0.1,
-) -> torch.Tensor:
-    """Supervised Contrastive Loss (Khosla et al., 2020).
-
-    Pulls together samples with the same label, pushes apart different labels.
-    All controls share label 0 -> they attract.
-    Each non-control class gets a unique label -> they repel from controls and each other.
-
-    Args:
-        features: (B, D) — L2-normalized on the fly
-        labels: (B,) integer labels (same = positive pair)
-        temperature: temperature scaling
-    Returns:
-        scalar loss
-    """
-    B = features.shape[0]
-    features = F.normalize(features, dim=1)
-    sim = features @ features.T / temperature
-
-    label_mat = labels.unsqueeze(0)
-    pos_mask = (label_mat == label_mat.T).float()
-    pos_mask = pos_mask - torch.eye(B, device=features.device)
-
-    exp_sim = torch.exp(sim)
-    pos_sum = (exp_sim * pos_mask).sum(dim=1)
-    all_sum = exp_sim.sum(dim=1) - exp_sim.diag()
-
-    log_all = torch.log(all_sum + 1e-8)
-    log_pos = torch.log(pos_sum + 1e-8)
-    loss = log_all - log_pos
-
-    valid = pos_sum > 1e-8
-    if valid.any():
-        loss = loss[valid].mean()
-    else:
-        loss = torch.tensor(0.0, device=features.device)
-
-    return loss
-
-
-def _lognormal_timesteps(B: int, device: torch.device, mean: float = -1.0, std: float = 1.0):
-    """Sample timesteps from log-normal distribution.
-
-    Samples t ~ LogNormal(mean, std), clipped to [0, 1].
-    Puts more samples at low-noise (t near 1) for fine-detail learning.
-    """
-    t = torch.exp(torch.randn(B, device=device) * std + mean)
-    return t.clamp(0.0, 1.0)
+def _sample_different_class(labels: torch.Tensor) -> torch.Tensor:
+    """For each index, sample a random different index from a different class."""
+    B = labels.shape[0]
+    device = labels.device
+    mask = labels[None, :] != labels[:, None]
+    mask.fill_diagonal_(False)
+    weights = mask.float()
+    weights_sum = weights.sum(dim=1)
+    if (weights_sum == 0).any():
+        return torch.randint(0, B, (B,), device=device)
+    choices = torch.multinomial(weights, 1).squeeze(1)
+    return choices
 
 
 def compute_flow_loss(
-    model: FlowUNet,
+    model: FlowUNet | FreqFlowUNet,
     x_1: torch.Tensor,
     class_labels: torch.Tensor | None = None,
-    delta_fm_weight: float = 0.0,
-    label_dropout_prob: float = 0.0,
-    null_label: int = -1,
-    lognormal_sampling: bool = False,
-    aux_head: nn.Module | None = None,
-    aux_weight: float = 0.0,
-    contrastive_weight: float = 0.0,
-    contrastive_projector: nn.Module | None = None,
-    contrastive_temperature: float = 0.1,
-    control_indices: set | None = None,
-) -> tuple[torch.Tensor, dict]:
-    """Compute Conditional Flow Matching loss with DFM + aux CE + contrastive.
-
-    Loss = MSE(v_pred, v_pos) - l * MSE(v_pred, v_neg) + g * L_CE + k * L_contrastive
-
-    Args:
-        model: FlowUNet
-        x_1: clean images (B, C, H, W) in [-1, 1]
-        class_labels: (B,) class indices
-        delta_fm_weight: l for DFM repulsive term (0 = disabled)
-        label_dropout_prob: probability to drop class label for CFG
-        null_label: label index for unconditional prediction
-        lognormal_sampling: use lognormal timestep distribution (vs uniform)
-        aux_head: optional 185-way linear classifier on bottleneck features
-        aux_weight: weight g for auxiliary CE loss
-        contrastive_weight: k for Supervised Contrastive loss (0 = disabled)
-        contrastive_projector: linear projection from pooled features to contrastive space
-        contrastive_temperature: temperature for SupCon loss
-        control_indices: set of class ids that are controls (attract together)
-    """
+    freq_flow: bool = False,
+    freq_filter_D: float = 8.0,
+    freq_loss_weight: float = 0.25,
+    delta_fm_lambda: float = 0.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
     B = x_1.shape[0]
     device = x_1.device
 
-    if lognormal_sampling:
-        t = _lognormal_timesteps(B, device)
-    else:
-        t = torch.rand(B, device=device)
+    t = torch.rand(B, device=device)
     t = t.view(B, *([1] * (x_1.ndim - 1)))
 
     x_0 = torch.randn_like(x_1)
+
     x_t = (1 - t) * x_0 + t * x_1
-    u_pos = x_1 - x_0
+    u_t = x_1 - x_0
+
     t_flat = t.view(B)
+    output = model(x_t, t_flat, class_labels=class_labels)
 
-    labels_for_model = class_labels
-    if label_dropout_prob > 0.0 and class_labels is not None and model.training:
-        drop_mask = torch.rand(B, device=device) < label_dropout_prob
-        if drop_mask.any():
-            labels_for_model = class_labels.clone()
-            labels_for_model[drop_mask] = null_label
+    components = {}
 
-    need_features = (
-        (aux_weight > 0.0 and aux_head is not None)
-        or (contrastive_weight > 0.0 and contrastive_projector is not None and control_indices is not None)
-    )
-    if need_features:
-        v_pred, mid_feat = model(x_t, t_flat, class_labels=labels_for_model, return_features=True)
+    if freq_flow:
+        v_freq, v_spatial = output
+
+        loss_spatial = F.mse_loss(v_spatial, u_t)
+        _, u_high = Fourier_filter(u_t, freq_filter_D)
+        loss_freq = F.mse_loss(v_freq, u_high) * freq_loss_weight
+
+        loss = loss_spatial + loss_freq
+        v_pred = v_spatial
+        components['spatial'] = loss_spatial.item()
+        components['freq'] = loss_freq.item()
     else:
-        v_pred = model(x_t, t_flat, class_labels=labels_for_model)
+        v_pred = output
+        loss = F.mse_loss(v_pred, u_t)
+        components['spatial'] = loss.item()
+        components['freq'] = 0.0
 
-    flow_loss = F.mse_loss(v_pred, u_pos, reduction='none').mean(dim=(1, 2, 3))
+    components['neg'] = 0.0
+    if delta_fm_lambda > 0.0 and class_labels is not None:
+        neg_idxs = _sample_different_class(class_labels)
+        x_neg = x_1[neg_idxs]
+        x_0_neg = torch.randn_like(x_1)
+        u_neg = x_neg - x_0_neg
+        loss_neg = F.mse_loss(v_pred, u_neg)
+        loss = loss - delta_fm_lambda * loss_neg
+        components['neg'] = loss_neg.item()
 
-    mask_low = t_flat < 0.3
-    mask_mid = (t_flat >= 0.3) & (t_flat <= 0.7)
-    mask_high = t_flat > 0.7
-    info = {'flow_loss': flow_loss.mean().item()}
-    for mask, name in [(mask_low, 'low'), (mask_mid, 'mid'), (mask_high, 'high')]:
-        if mask.any():
-            info[f'flow_loss_t_{name}'] = flow_loss[mask].mean().item()
-
-    total_loss = flow_loss.mean()
-
-    if delta_fm_weight > 0.0 and B > 1:
-        neg_idx = torch.randperm(B, device=device)
-        same_mask = neg_idx == torch.arange(B, device=device)
-        if same_mask.any():
-            neg_idx[same_mask] = (neg_idx[same_mask] + 1) % B
-        u_neg = x_1[neg_idx] - x_0  # same noise, different clean (DeltaFM, Eq. 4)
-        repulsive_loss = F.mse_loss(v_pred, u_neg)
-        total_loss = total_loss - delta_fm_weight * repulsive_loss
-        info['delta_fm_repulsive'] = repulsive_loss.item()
-
-    if aux_weight > 0.0 and aux_head is not None and need_features and class_labels is not None:
-        pooled = mid_feat.flatten(2).mean(dim=2)
-        aux_logits = aux_head(pooled)
-        aux_loss = F.cross_entropy(aux_logits, class_labels)
-        total_loss = total_loss + aux_weight * aux_loss
-        info['aux_loss'] = aux_loss.item()
-        with torch.no_grad():
-            preds = aux_logits.argmax(dim=1)
-            acc = (preds == class_labels).float().mean().item()
-            info['aux_acc'] = acc
-
-    if contrastive_weight > 0.0 and contrastive_projector is not None and control_indices is not None and class_labels is not None:
-        pooled = mid_feat.flatten(2).mean(dim=2)
-        proj = contrastive_projector(pooled)
-        ctrl_set = torch.tensor(list(control_indices), device=device)
-        is_control = torch.isin(class_labels, ctrl_set)
-        contrastive_labels = torch.where(is_control, torch.zeros_like(class_labels), class_labels + 1)
-        c_loss = supervised_contrastive_loss(proj, contrastive_labels, temperature=contrastive_temperature)
-        total_loss = total_loss + contrastive_weight * c_loss
-        info['contrastive_loss'] = c_loss.item()
-
-    info['loss'] = total_loss.item()
-    return total_loss, info
+    return loss, components
 
 
 @torch.no_grad()
 def sample(
-    model: FlowUNet,
+    model: FlowUNet | FreqFlowUNet,
     num_samples: int,
     num_steps: int = 100,
     class_labels: torch.Tensor | None = None,
-    cfg_scale: float = 0.0,
-    null_label: int = -1,
-    solver: str = 'euler',
-    cfg_zero_steps: int = 3,
+    device: str = 'cuda',
+    freq_flow: bool = False,
 ) -> torch.Tensor:
+    """Generate samples via Euler integration of the ODE.
+
+    For FreqFlowUNet, uses output[1] (spatial branch) as the velocity.
+    """
     model.eval()
-    if hasattr(model, 'unet'):
-        C = model.unet.config.in_channels
-        H = W = model.unet.config.sample_size
-    else:
-        C = model.in_channels
-        H = W = model.img_size
+    C = model.spatial_unet.config.in_channels if freq_flow else model.unet.config.in_channels
+    H = W = model.spatial_unet.config.sample_size if freq_flow else model.unet.config.sample_size
     device = next(model.parameters()).device
 
     x = torch.randn(num_samples, C, H, W, device=device)
@@ -321,24 +283,10 @@ def sample(
         class_labels = class_labels.to(device)
     dt = 1.0 / num_steps
 
-    if solver == 'midpoint':
-        for i in range(num_steps):
-            t = torch.full((num_samples,), i * dt, device=device)
-            v1 = model.forward_with_cfg(x, t, class_labels, cfg_scale, null_label)
-            if cfg_scale > 0.0 and i < cfg_zero_steps:
-                v1 = torch.zeros_like(v1)
-            t_half = torch.full((num_samples,), (i + 0.5) * dt, device=device)
-            x_mid = x + v1 * (dt * 0.5)
-            v2 = model.forward_with_cfg(x_mid, t_half, class_labels, cfg_scale, null_label)
-            if cfg_scale > 0.0 and i < cfg_zero_steps:
-                v2 = torch.zeros_like(v2)
-            x = x + v2 * dt
-    else:
-        for i in range(num_steps):
-            t = torch.full((num_samples,), i * dt, device=device)
-            v = model.forward_with_cfg(x, t, class_labels, cfg_scale, null_label)
-            if cfg_scale > 0.0 and i < cfg_zero_steps:
-                v = torch.zeros_like(v)
-            x = x + v * dt
+    for i in range(num_steps):
+        t = torch.full((num_samples,), i * dt, device=device)
+        out = model(x, t, class_labels=class_labels)
+        v = out[1] if freq_flow else out
+        x = x + v * dt
 
     return x.clamp(-1, 1)
