@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Reconstruction visualization across all flow-matching timesteps.
 
-Shows 6 rows for each timestep t in [0.1, 0.2, ..., 1.0]:
+Shows 9 rows for each timestep t in [0.1, 0.2, ..., 1.0]:
   Row 0: x_t = (1-t)*x_0 + t*x_1  — noisy/interpolated image
   Row 1: low-frequency component of x_t
   Row 2: high-frequency component of x_t
-  Row 3: class-conditioned x₁ reconstruction from x_t
-  Row 4: low-frequency component of reconstructed x₁
-  Row 5: high-frequency component of reconstructed x₁
+  Row 3: unconditional x₁ reconstruction from x_t
+  Row 4: low-frequency component of unconditional recon
+  Row 5: high-frequency component of unconditional recon
+  Row 6: class-conditioned x₁ reconstruction from x_t
+  Row 7: low-frequency component of conditioned recon
+  Row 8: high-frequency component of conditioned recon
 
-Each signal (x_t, recon) is grouped with its own Fourier decomposition below it.
+Each signal (x_t, uncond_recon, cond_recon) is grouped with its own Fourier decomposition below it.
 
 Usage:
     python3 visualize_recon_all_t.py
@@ -149,7 +152,7 @@ D = ckpt_args.get('freq_filter_D', args.freq_D)
 timesteps = [round(i * 0.1, 1) for i in range(1, 11)]
 n = len(timesteps)
 
-fig, axes = plt.subplots(6, n, figsize=(n * 2.2, 12))
+fig, axes = plt.subplots(9, n, figsize=(n * 2.2, 16))
 
 with torch.no_grad():
     for i, t_val in enumerate(timesteps):
@@ -157,6 +160,12 @@ with torch.no_grad():
         t_b = t.view(1, 1, 1, 1)
 
         x_t = (1 - t_b) * x_0 + t_b * x_1
+
+        # Unconditional recon
+        null_label = torch.tensor([num_classes], device=device)
+        out_null = model(x_t, t, class_labels=null_label)
+        v_null = out_null[1] if (use_freq or (use_struct and use_freq)) else out_null
+        x1_pred_uncond = x_t + (1 - t.view(1, 1, 1, 1)) * v_null
 
         # Class-conditioned recon
         cond_label = torch.tensor([label], device=device)
@@ -166,26 +175,31 @@ with torch.no_grad():
 
         # Frequency decomposition
         x_t_low, x_t_high = Fourier_filter(x_t, D)
-        recon_low, recon_high = Fourier_filter(x1_pred_cond.clamp(-1, 1), D)
+        uncond_low, uncond_high = Fourier_filter(x1_pred_uncond.clamp(-1, 1), D)
+        cond_low, cond_high = Fourier_filter(x1_pred_cond.clamp(-1, 1), D)
 
         def to_01(tensor):
             return (tensor * 0.5 + 0.5).clamp(0, 1).squeeze().cpu().numpy()
 
         imgs = [
-            (x_t,          f't={t_val:.1f}',  9),
-            (x_t_low,       'low',             8),
-            (x_t_high,      'high',            8),
-            (x1_pred_cond,  'recon',           8),
-            (recon_low,     'recon low',       8),
-            (recon_high,    'recon high',      8),
+            (x_t,             f't={t_val:.1f}',  9),
+            (x_t_low,          'low',             8),
+            (x_t_high,         'high',            8),
+            (x1_pred_uncond,   'uncond',          8),
+            (uncond_low,       'uncond low',      8),
+            (uncond_high,      'uncond high',     8),
+            (x1_pred_cond,     'cond',            8),
+            (cond_low,         'cond low',        8),
+            (cond_high,        'cond high',       8),
         ]
         for r, (tens, title, fs) in enumerate(imgs):
             axes[r, i].imshow(to_01(tens), cmap='gray', vmin=0, vmax=1)
             axes[r, i].set_title(title, fontsize=fs)
             axes[r, i].set_xticks([]); axes[r, i].set_yticks([])
 
-ylabels = ['x_t', 'x_t low-freq', 'x_t high-freq',
-           'cond recon', 'recon low-freq', 'recon high-freq']
+ylabels = ['x_t', 'x_t low', 'x_t high',
+           'uncond', 'uncond low', 'uncond high',
+           'cond', 'cond low', 'cond high']
 for r, lbl in enumerate(ylabels):
     axes[r, 0].set_ylabel(lbl, fontsize=9)
 
