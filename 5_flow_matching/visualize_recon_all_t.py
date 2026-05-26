@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Reconstruction visualization across all flow-matching timesteps.
 
-Shows 3 rows for each timestep t in [0.1, 0.2, ..., 1.0]:
-  Row 0: x_t = (1-t)*x_0 + t*x_1  — noisy/interpolated image at timestep t
-  Row 1: unconditional x₁ reconstruction from x_t (null-class forward pass)
+Shows 7 rows for each timestep t in [0.1, 0.2, ..., 1.0]:
+  Row 0: x_t = (1-t)*x_0 + t*x_1  — noisy/interpolated image
+  Row 1: unconditional x₁ reconstruction from x_t (null-class)
   Row 2: class-conditioned x₁ reconstruction from x_t
+  Row 3: low-frequency component of x_t
+  Row 4: high-frequency component of x_t
+  Row 5: low-frequency component of cond-recon
+  Row 6: high-frequency component of cond-recon
 
 Usage:
     python3 visualize_recon_all_t.py
@@ -18,7 +22,7 @@ import numpy as np
 import torch
 
 from mil_model import FlowCropDataset, load_labels
-from flow_model import FlowUNet, FreqFlowUNet, StructFlowUNet, CombinedFlowUNet
+from flow_model import FlowUNet, FreqFlowUNet, StructFlowUNet, CombinedFlowUNet, Fourier_filter
 
 SEED = 42
 np.random.seed(SEED)
@@ -29,6 +33,8 @@ parser.add_argument('--checkpoint', type=str, default=None)
 parser.add_argument('--output', type=str, default='recon_all_t.png')
 parser.add_argument('--index', type=int, default=0)
 parser.add_argument('--seed', type=int, default=42)
+parser.add_argument('--freq_D', type=float, default=8.0,
+                    help='Cutoff freq for Fourier decomposition')
 args = parser.parse_args()
 
 import matplotlib
@@ -138,10 +144,11 @@ torch.manual_seed(args.seed)
 x_1 = img
 x_0 = torch.randn_like(x_1)
 
-timesteps = [round(i * 0.1, 1) for i in range(1, 11)]  # 0.1, 0.2, ..., 1.0
+D = ckpt_args.get('freq_filter_D', args.freq_D)
+timesteps = [round(i * 0.1, 1) for i in range(1, 11)]
 n = len(timesteps)
 
-fig, axes = plt.subplots(3, n, figsize=(n * 2.2, 6))
+fig, axes = plt.subplots(7, n, figsize=(n * 2.2, 13))
 
 with torch.no_grad():
     for i, t_val in enumerate(timesteps):
@@ -150,40 +157,45 @@ with torch.no_grad():
 
         x_t = (1 - t_b) * x_0 + t_b * x_1
 
-        # Unconditional recon: pass null class
+        # Unconditional recon
         null_label = torch.tensor([num_classes], device=device)
         out_null = model(x_t, t, class_labels=null_label)
         v_null = out_null[1] if (use_freq or (use_struct and use_freq)) else out_null
         x1_pred_uncond = x_t + (1 - t.view(1, 1, 1, 1)) * v_null
 
-        # Class-conditioned recon: pass image label
+        # Class-conditioned recon
         cond_label = torch.tensor([label], device=device)
         out_cond = model(x_t, t, class_labels=cond_label)
         v_cond = out_cond[1] if (use_freq or (use_struct and use_freq)) else out_cond
         x1_pred_cond = x_t + (1 - t.view(1, 1, 1, 1)) * v_cond
 
+        # Frequency decomposition of x_t and cond-recon
+        x_t_low, x_t_high = Fourier_filter(x_t, D)
+        recon_low, recon_high = Fourier_filter(x1_pred_cond.clamp(-1, 1), D)
+
         def to_01(tensor):
             return (tensor * 0.5 + 0.5).clamp(0, 1).squeeze().cpu().numpy()
 
-        # Row 0: x_t
-        axes[0, i].imshow(to_01(x_t), cmap='gray', vmin=0, vmax=1)
-        axes[0, i].set_title(f't={t_val:.1f}', fontsize=9)
-        axes[0, i].set_xticks([]); axes[0, i].set_yticks([])
+        imgs = [
+            (x_t,          f't={t_val:.1f}',  9),
+            (x1_pred_uncond, 'uncond',          8),
+            (x1_pred_cond,   'cond',            8),
+            (x_t_low,        'x_t low',         8),
+            (x_t_high,       'x_t high',        8),
+            (recon_low,      'recon low',       8),
+            (recon_high,     'recon high',      8),
+        ]
+        for r, (tens, title, fs) in enumerate(imgs):
+            axes[r, i].imshow(to_01(tens), cmap='gray', vmin=0, vmax=1)
+            axes[r, i].set_title(title, fontsize=fs)
+            axes[r, i].set_xticks([]); axes[r, i].set_yticks([])
 
-        # Row 1: unconditional reconstruction
-        axes[1, i].imshow(to_01(x1_pred_uncond), cmap='gray', vmin=0, vmax=1)
-        axes[1, i].set_title(f'uncond', fontsize=8)
-        axes[1, i].set_xticks([]); axes[1, i].set_yticks([])
+ylabels = ['Noised x_t', 'Uncond recon', 'Cond recon',
+           'x_t low-freq', 'x_t high-freq', 'recon low-freq', 'recon high-freq']
+for r, lbl in enumerate(ylabels):
+    axes[r, 0].set_ylabel(lbl, fontsize=9)
 
-        # Row 2: class-conditioned reconstruction
-        axes[2, i].imshow(to_01(x1_pred_cond), cmap='gray', vmin=0, vmax=1)
-        axes[2, i].set_title(f'cond', fontsize=8)
-        axes[2, i].set_xticks([]); axes[2, i].set_yticks([])
-
-axes[0, 0].set_ylabel('Noised x_t', fontsize=10)
-axes[1, 0].set_ylabel('Uncond recon', fontsize=10)
-axes[2, 0].set_ylabel('Cond recon', fontsize=10)
-plt.suptitle(f'Class: {class_name}  |  Index: {args.index}',
+plt.suptitle(f'Class: {class_name}  |  Index: {args.index}  |  D={D}',
              fontsize=10, y=0.98)
 plt.tight_layout()
 fig.savefig(args.output, dpi=200, bbox_inches='tight')
