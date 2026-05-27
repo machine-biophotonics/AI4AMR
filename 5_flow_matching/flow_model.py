@@ -726,9 +726,8 @@ def compute_struct_flow_loss(
     t = torch.rand(B, device=device)
     t_b = t.view(B, *([1] * (x_1.ndim - 1)))
 
-    x_z = x_z.detach()  # structured part, stop grad to avoid trivial solution
     noise = torch.randn_like(x_1)
-    x_0 = x_z + noise  # structured + exogenous
+    x_0 = x_z + noise  # structured + exogenous (grad flows to encoder/GMM)
 
     x_t = (1 - t_b) * x_0 + t_b * x_1
     u_t = x_1 - x_0
@@ -978,7 +977,6 @@ def compute_unified_loss(
 
         x_z = model.decode(z)
         recon_loss = F.mse_loss(x_z, x_1)
-        x_z = x_z.detach()
         noise = torch.randn_like(x_1)
         x_0 = x_z + noise
 
