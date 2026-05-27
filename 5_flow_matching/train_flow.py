@@ -111,6 +111,9 @@ parser.add_argument('--min_beta_frac', type=float, default=0.0,
 parser.add_argument('--anneal_schedule', type=str, default='linear',
     choices=['linear', 'cosine', 'sigmoid'],
     help='Annealing curve shape (default: linear)')
+parser.add_argument('--detach_z', action='store_true', default=False,
+    help='Stop gradient at z before decode (SCFM paper default). '
+         'When False (default), flow gradient reaches encoder.')
 args = parser.parse_args()
 
 
@@ -144,10 +147,11 @@ def get_beta(epoch: int, total_epochs: int, kl_weight: float,
 def kmeans_init_gmm(model, loader, device, gmm_components: int, seed: int = 42):
     """Run k-means on encoder μ_z and copy centroids to model.gmm.means."""
     from sklearn.cluster import KMeans
+    from tqdm import tqdm
     model.eval()
     mu_z_all = []
     with torch.no_grad():
-        for imgs, class_ids in loader:
+        for imgs, class_ids in tqdm(loader, desc='k-means init', leave=False):
             imgs = imgs.to(device, non_blocking=True)
             class_ids = class_ids.to(device, non_blocking=True)
             t_enc = torch.full((imgs.shape[0],), 1.0, device=device)
@@ -456,6 +460,7 @@ for epoch in range(start_epoch, args.epochs):
                     unsupervised_gmm=args.unsupervised_gmm,
                     dual_predict_mu=args.dual_predict_mu,
                     r_eps_weight=args.r_eps_weight,
+                    detach_z=args.detach_z,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
@@ -471,6 +476,7 @@ for epoch in range(start_epoch, args.epochs):
                     use_gmm_kl=use_gmm_kl,
                     unsupervised_gmm=args.unsupervised_gmm,
                     r_eps_weight=args.r_eps_weight,
+                    detach_z=args.detach_z,
                 )
             else:
                 loss, comp = compute_flow_loss(
@@ -565,6 +571,7 @@ for epoch in range(start_epoch, args.epochs):
                         unsupervised_gmm=args.unsupervised_gmm,
                         dual_predict_mu=args.dual_predict_mu,
                         r_eps_weight=args.r_eps_weight,
+                        detach_z=args.detach_z,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
@@ -580,6 +587,7 @@ for epoch in range(start_epoch, args.epochs):
                         use_gmm_kl=use_gmm_kl,
                         unsupervised_gmm=args.unsupervised_gmm,
                         r_eps_weight=args.r_eps_weight,
+                        detach_z=args.detach_z,
                     )
                 else:
                     loss, comp = compute_flow_loss(

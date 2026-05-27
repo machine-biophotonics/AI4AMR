@@ -295,7 +295,8 @@ class FreqFlowUNet(nn.Module):
         x_t: torch.Tensor,
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return_freq: bool = True,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         def _unet_kwargs(unet):
             k = dict(timestep=t, return_dict=True)
             if class_labels is not None and unet.config.num_class_embeds is not None:
@@ -303,6 +304,9 @@ class FreqFlowUNet(nn.Module):
             return k
 
         v_spatial = self.spatial_unet(x_t, **_unet_kwargs(self.spatial_unet)).sample
+
+        if not return_freq:
+            return v_spatial
 
         _, x_high = Fourier_filter(x_t, self.freq_filter_D)
         v_freq = self.freq_unet(x_high, **_unet_kwargs(self.freq_unet)).sample
@@ -422,7 +426,10 @@ class StructFlowUNet(nn.Module):
         Returns (μ_z, logvar_z) in velocity mode,
         or (μ_z, logvar_z, μ_ε) in predict_mu mode.
         """
-        _ = self.forward(x, t, class_labels)
+        kwargs = dict(timestep=t, return_dict=True)
+        if class_labels is not None and self.unet.config.num_class_embeds is not None:
+            kwargs['class_labels'] = class_labels
+        _ = self.unet(x, **kwargs)
         feat = self._mid_feat
         pooled = feat.flatten(2).mean(dim=2)
         if self.predict_mu:
@@ -585,6 +592,7 @@ class CombinedFlowUNet(nn.Module):
         x_t: torch.Tensor,
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
+        use_freq: bool | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         def _unet_kwargs(unet):
             k = dict(timestep=t, return_dict=True)
@@ -601,7 +609,8 @@ class CombinedFlowUNet(nn.Module):
             v_pred = raw
             mu_pred = None
 
-        if self.use_freq:
+        effective_freq = self.use_freq if use_freq is None else (use_freq and self.use_freq)
+        if effective_freq:
             _, x_high = Fourier_filter(x_t, self.freq_filter_D)
             v_freq = self.freq_unet(x_high, **_unet_kwargs(self.freq_unet)).sample
             if self.dual_predict_mu:
@@ -614,7 +623,10 @@ class CombinedFlowUNet(nn.Module):
 
     def encode(self, x: torch.Tensor, t: torch.Tensor,
                class_labels: torch.Tensor | None = None) -> tuple[torch.Tensor, ...]:
-        _ = self.forward(x, t, class_labels)
+        kwargs = dict(timestep=t, return_dict=True)
+        if class_labels is not None and self.main_unet.config.num_class_embeds is not None:
+            kwargs['class_labels'] = class_labels
+        _ = self.main_unet(x, **kwargs)
         feat = self._mid_feat
         pooled = feat.flatten(2).mean(dim=2)
         if self.predict_mu or self.dual_predict_mu:
@@ -688,6 +700,7 @@ def compute_struct_flow_loss(
     use_gmm_kl: bool = False,
     unsupervised_gmm: bool = False,
     r_eps_weight: float = 1.0,
+    detach_z: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """StructFlow loss: flow matching + VAE-style KL + reconstruction + SupCon.
 
@@ -720,6 +733,8 @@ def compute_struct_flow_loss(
         kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
 
     # 3. Reconstruction loss + structured source (single decode call)
+    if detach_z:
+        z = z.detach()
     x_z = model.decode(z)
     recon_loss = F.mse_loss(x_z, x_1)
 
@@ -912,8 +927,10 @@ def sample(
 
     for i in range(num_steps):
         t = torch.full((num_samples,), i * dt, device=device)
-        out = model(x, t, class_labels=class_labels)
-        v = out[1] if freq_flow else out
+        if freq_flow:
+            v = model(x, t, class_labels=class_labels, return_freq=False)
+        else:
+            v = model(x, t, class_labels=class_labels)
         x = x + v * dt
 
     return x.clamp(-1, 1)
@@ -939,6 +956,7 @@ def compute_unified_loss(
     unsupervised_gmm: bool = False,
     dual_predict_mu: bool = False,
     r_eps_weight: float = 1.0,
+    detach_z: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Unified loss supporting all FreqFlow + StructFlow + DeltaFM + SupCon combinations.
 
@@ -953,6 +971,9 @@ def compute_unified_loss(
       Uses standard normal N(0,I) KL for clean Phase 1 metrics.
     Phase 2 (epoch >= kmeans_init_epoch, use_gmm_kl=True):
       Uses GMM KL (VaDE-style) after k-means init provides real anchors.
+
+    detach_z=True: stop gradient at z before decode (SCFM paper, sg(z)).
+    detach_z=False (default): flow gradient reaches encoder through decode(z).
     """
     B = x_1.shape[0]
     device = x_1.device
@@ -982,6 +1003,8 @@ def compute_unified_loss(
         else:
             kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
 
+        if detach_z:
+            z = z.detach()
         x_z = model.decode(z)
         recon_loss = F.mse_loss(x_z, x_1)
         noise = torch.randn_like(x_1)
@@ -1124,15 +1147,13 @@ def sample_combined(
 
     for i in range(num_steps):
         t = torch.full((num_samples,), i * dt, device=device)
-        out = model(x, t, class_labels=class_labels)
+        out = model(x, t, class_labels=class_labels, use_freq=False)
         if dual_predict_mu:
-            # Direct v_pred from UNet channel 0 (stable, class-conditional)
-            v = out[1] if use_freq else out[0]
+            v = out[0]
         elif predict_mu:
-            mu_main = out[1] if use_freq else out
-            v = (x - mu_main) / t.view(-1, *([1] * (x.ndim - 1))).clamp(min=1e-5)
+            v = (x - out) / t.view(-1, *([1] * (x.ndim - 1))).clamp(min=1e-5)
         else:
-            v = out[1] if use_freq else out
+            v = out
         x = x + v * dt
 
     return x.clamp(-1, 1)
