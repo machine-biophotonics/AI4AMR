@@ -74,25 +74,23 @@ parser.add_argument('--struct_kl_weight', type=float, default=0.1,
                          ' β=1 (default) gives equal KL/recon weight. β>1 for disentanglement.')
 parser.add_argument('--struct_recon_weight', type=float, default=0.1,
                     help='Reconstruction loss weight for StructFlow')
+parser.add_argument('--kl_anneal', action='store_true', default=False,
+                    help='Linearly anneal KL weight from 0 to struct_kl_weight over kl_warmup_epochs')
+parser.add_argument('--kl_warmup_epochs', type=int, default=20,
+                    help='Epochs for linear KL warmup (default: 20)')
+parser.add_argument('--use_gmm', action='store_true', default=False,
+                    help='Use GMM prior instead of N(0,I) for structured latent')
+parser.add_argument('--gmm_components', type=int, default=30,
+                    help='Number of GMM components (default: 30)')
+parser.add_argument('--unsupervised_gmm', action='store_true', default=False,
+                    help='Use unsupervised VaDE-style GMM (no labels, q(c|x) via Bayes rule)')
 parser.add_argument('--supcon', action='store_true', default=False,
                     help='Supervised contrastive loss on μ_z (SupCon, Khosla et al. 2020)')
 parser.add_argument('--supcon_weight', type=float, default=0.1,
                     help='SupCon loss weight')
 parser.add_argument('--supcon_temperature', type=float, default=0.1,
                     help='SupCon temperature parameter')
-parser.add_argument('--gmm', action='store_true', default=False,
-                    help='Use Gaussian Mixture Model prior (SCFM structured prior)')
-parser.add_argument('--gmm_components', type=int, default=185,
-                    help='Number of GMM components (default: 185, one per class)')
-parser.add_argument('--unsupervised_gmm', action='store_true', default=False,
-                    help='Unsupervised VaDE-style GMM with categorical assignment head (50 components). '
-                         'Overrides --gmm_components to 50 by default. No class labels needed for components.')
 args = parser.parse_args()
-
-if args.unsupervised_gmm:
-    args.gmm = True
-    if args.gmm_components == 185:
-        args.gmm_components = 50
 
 if args.freq_flow and args.batch_size == 64:
     args.batch_size = 32
@@ -164,13 +162,12 @@ if args.freq_flow and args.struct_flow:
         use_freq=True,
         use_struct=True,
         latent_dim=args.struct_latent_dim,
-        use_gmm=args.gmm,
-        gmm_components=args.gmm_components if args.gmm else None,
+        use_gmm=args.use_gmm,
+        gmm_components=args.gmm_components,
         unsupervised_gmm=args.unsupervised_gmm,
     ).to(device)
-    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}"
-          f"{', GMM(' + str(args.gmm_components) + ')' if args.gmm else ''}"
-          f"{', unsupervised' if args.unsupervised_gmm else ''}")
+    gmm_info = f" gmm={args.gmm_components}c" if args.use_gmm else ""
+    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}{gmm_info}")
 elif args.freq_flow:
     print(f"  FreqFlow: batch_size={args.batch_size}")
     model = FreqFlowUNet(
@@ -184,8 +181,8 @@ elif args.freq_flow:
     ).to(device)
     print(f"  FreqFlow: freq_branch={freq_block_channels}")
 elif args.struct_flow:
-    print(f"  StructFlow: latent_dim={args.struct_latent_dim}"
-          f"{', GMM(' + str(args.gmm_components) + ')' if args.gmm else ''}")
+    gmm_info = f" gmm={args.gmm_components}c" if args.use_gmm else ""
+    print(f"  StructFlow: latent_dim={args.struct_latent_dim}{gmm_info}")
     model = StructFlowUNet(
         in_channels=1,
         sample_size=224,
@@ -193,13 +190,11 @@ elif args.struct_flow:
         layers_per_block=2,
         num_class_embeds=num_classes,
         latent_dim=args.struct_latent_dim,
-        use_gmm=args.gmm,
-        gmm_components=args.gmm_components if args.gmm else None,
+        use_gmm=args.use_gmm,
+        gmm_components=args.gmm_components,
         unsupervised_gmm=args.unsupervised_gmm,
     ).to(device)
-    print(f"  StructFlow: kl_weight={args.struct_kl_weight}, recon_weight={args.struct_recon_weight}"
-          f"{', unsupervised GMM(' + str(args.gmm_components) + ')' if args.unsupervised_gmm else ''}"
-          f"{', GMM(' + str(args.gmm_components) + ')' if args.gmm and not args.unsupervised_gmm else ''}")
+    print(f"  StructFlow: kl_weight={args.struct_kl_weight}, recon_weight={args.struct_recon_weight}")
 else:
     model = FlowUNet(
         in_channels=1,
@@ -300,6 +295,11 @@ for epoch in range(start_epoch, args.epochs):
     train_ds.set_epoch(epoch)
     val_ds.set_epoch(epoch)
 
+    if args.kl_anneal:
+        kl_weight = args.struct_kl_weight * min(epoch / args.kl_warmup_epochs, 1.0)
+    else:
+        kl_weight = args.struct_kl_weight
+
     model.train()
     train_loss = 0.0
     train_steps = 0
@@ -324,23 +324,23 @@ for epoch in range(start_epoch, args.epochs):
                     use_freq=args.freq_flow, use_struct=args.struct_flow,
                     freq_filter_D=args.freq_filter_D,
                     freq_loss_weight=args.freq_loss_weight,
-                    kl_weight=args.struct_kl_weight,
+                    kl_weight=kl_weight,
                     recon_weight=args.struct_recon_weight,
                     delta_fm_lambda=delta_lambda,
                     supcon_weight=args.supcon_weight if args.supcon else 0.0,
                     supcon_temperature=args.supcon_temperature,
-                    use_gmm=args.gmm,
+                    use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
                     model, imgs, class_labels=class_ids,
-                    kl_weight=args.struct_kl_weight,
+                    kl_weight=kl_weight,
                     recon_weight=args.struct_recon_weight,
                     delta_fm_lambda=delta_lambda,
                     supcon_weight=args.supcon_weight if args.supcon else 0.0,
                     supcon_temperature=args.supcon_temperature,
-                    use_gmm=args.gmm,
+                    use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
                 )
             else:
@@ -420,23 +420,32 @@ for epoch in range(start_epoch, args.epochs):
                         use_freq=args.freq_flow, use_struct=args.struct_flow,
                         freq_filter_D=args.freq_filter_D,
                         freq_loss_weight=args.freq_loss_weight,
-                        kl_weight=args.struct_kl_weight,
+                        kl_weight=kl_weight,
                         recon_weight=args.struct_recon_weight,
                         delta_fm_lambda=delta_lambda,
                         supcon_weight=args.supcon_weight if args.supcon else 0.0,
                         supcon_temperature=args.supcon_temperature,
-                        use_gmm=args.gmm,
+                    )
+                elif args.struct_flow:
+                    loss, comp = compute_struct_flow_loss(
+                        model, imgs, class_labels=class_ids,
+                        kl_weight=kl_weight,
+                        recon_weight=args.struct_recon_weight,
+                        delta_fm_lambda=delta_lambda,
+                        supcon_weight=args.supcon_weight if args.supcon else 0.0,
+                        supcon_temperature=args.supcon_temperature,
+                        use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
                         model, imgs, class_labels=class_ids,
-                        kl_weight=args.struct_kl_weight,
+                        kl_weight=kl_weight,
                         recon_weight=args.struct_recon_weight,
                         delta_fm_lambda=delta_lambda,
                         supcon_weight=args.supcon_weight if args.supcon else 0.0,
                         supcon_temperature=args.supcon_temperature,
-                        use_gmm=args.gmm,
+                        use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
                     )
                 else:
@@ -487,8 +496,24 @@ for epoch in range(start_epoch, args.epochs):
               f"recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}) ({epoch_time:.0f}s)")
     elif args.struct_flow:
         supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
+        kl_str = f" klw={kl_weight:.4f}" if args.kl_anneal else ""
+        # GMM health diagnostics for unsupervised GMM
+        gmm_str = ""
+        if args.struct_flow and hasattr(model, 'gmm') and model.gmm is not None and model.gmm.unsupervised:
+            with torch.no_grad():
+                q_c_all = []
+                for imgs, _ in val_loader:
+                    imgs = imgs.to(device, non_blocking=True)
+                    mu_z, _ = model.encode(imgs, torch.full((imgs.shape[0],), 1.0, device=device), None)
+                    q_c_all.append(model.gmm.responsibilities(mu_z))
+                if q_c_all:
+                    q_c_cat = torch.cat(q_c_all, dim=0)
+                    ent = (-(q_c_cat * torch.log(q_c_cat.clamp(1e-10, 1))).sum(dim=1)).mean().item()
+                    assignments = q_c_cat.argmax(dim=1)
+                    active = assignments.unique().numel()
+                    gmm_str = f" gmm_ent={ent:.3f} active={active}/{model.gmm.n_components}"
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
-              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}) ({epoch_time:.0f}s)")
+              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}{kl_str}{gmm_str}) ({epoch_time:.0f}s)")
     else:
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")

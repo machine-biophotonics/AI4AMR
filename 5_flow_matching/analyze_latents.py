@@ -159,12 +159,11 @@ print(f"  Encoded {mu_z_full.shape[0]} images, latent dim {mu_z_full.shape[1]}")
 
 # ─── GMM component assignments ────────────────────────────────────────────
 if unsupervised_gmm and hasattr(model, 'gmm'):
-    print("  Computing GMM assignments (q(c|x) from categorical head) ...")
+    print("  Computing GMM assignments (q(c|x) via VaDE Bayes rule) ...")
     gmm = model.gmm
     mu_z_t = torch.from_numpy(mu_z_full).to(device)
     with torch.no_grad():
-        q_c_logits = gmm.categorical_head(mu_z_t)
-        q_c = torch.softmax(q_c_logits, dim=-1)
+        q_c = gmm.responsibilities(mu_z_t)
         hard_assignments = q_c.argmax(dim=-1).cpu().numpy()
         q_c_np = q_c.cpu().numpy()
         component_entropy = (-(q_c * torch.log(q_c + 1e-8)).sum(dim=-1)).cpu().numpy()

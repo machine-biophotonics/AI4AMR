@@ -69,9 +69,6 @@ class GaussianMixture(nn.Module):
         self.register_parameter('means', nn.Parameter(torch.randn(n_components, latent_dim) * 0.1))
         self.register_parameter('logvars', nn.Parameter(torch.zeros(n_components, latent_dim)))
         self.register_parameter('logits', nn.Parameter(torch.zeros(n_components)))
-        if unsupervised:
-            self.categorical_head = nn.Linear(latent_dim, n_components)
-
     def get_component(self, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.means[labels], self.logvars[labels]
 
@@ -87,41 +84,65 @@ class GaussianMixture(nn.Module):
             - 1
         ).sum(dim=1).mean()
 
+    @torch.no_grad()
+    def responsibilities(self, mu_z: torch.Tensor) -> torch.Tensor:
+        """Compute q(c|x) = p(c|z) via Bayes rule for diagnostics.
+
+        Returns [B, K] responsibility matrix (soft-assignments).
+        """
+        log_pi = F.log_softmax(self.logits, dim=-1)
+        mu_z_exp = mu_z.unsqueeze(1)
+        mu_k = self.means.unsqueeze(0)
+        logvar_k = self.logvars.unsqueeze(0)
+        log_N = -0.5 * (
+            math.log(2 * math.pi) + logvar_k
+            + (mu_z_exp - mu_k).pow(2) / logvar_k.exp()
+        ).sum(dim=-1)
+        return F.softmax(log_pi.unsqueeze(0) + log_N, dim=-1)
+
     def _kl_unsupervised(self, mu_z: torch.Tensor,
                          logvar_z: torch.Tensor) -> torch.Tensor:
         """VaDE-style KL decomposition.
 
         KL(q(z,c|x) || p(z,c))
           = KL(q(c|x) || p(c)) + Σ_c q(c|x) · KL(N(μ_z, σ²_z) || N(μ_c, σ²_c))
+
+        Key difference from prior version: q(c|x) is computed via Bayes rule
+        from the GMM parameters (VaDE, Eq 16) instead of a learned linear head.
+        This couples the GMM and assignments, preventing mode collapse.
         """
         B, D = mu_z.shape
         K = self.n_components
-        device = mu_z.device
 
-        # 1. Categorical assignment: q(c|x) = softmax(MLP(μ_z))
-        q_c_logits = self.categorical_head(mu_z)
-        q_c = F.softmax(q_c_logits, dim=-1)
-        log_q_c = F.log_softmax(q_c_logits, dim=-1)
+        # 1. Prior over components: p(c) = softmax(logits)
+        log_pi = F.log_softmax(self.logits, dim=-1)
 
-        # 2. Prior over components: p(c) = softmax(logits)
-        log_p_c = F.log_softmax(self.logits, dim=-1).unsqueeze(0)
-
-        # 3. KL(q(c|x) || p(c)) — closed form categorical KL
-        kl_cat = (q_c * (log_q_c - log_p_c)).sum(dim=1)
-
-        # 4. Per-component Gaussian KL
-        # Expand: [B, 1, D] vs [1, K, D]
         mu_z_exp = mu_z.unsqueeze(1)
-        logvar_z_exp = logvar_z.unsqueeze(1)
         mu_k = self.means.unsqueeze(0)
         logvar_k = self.logvars.unsqueeze(0)
+
+        # 2. q(c|x) = p(c|z) via Bayes rule (VaDE, Eq 16)
+        #    log p(c|z) = log π_c + log N(μ_z | μ_c, σ²_c)
+        log_N_z_given_c = -0.5 * (
+            math.log(2 * math.pi) + logvar_k
+            + (mu_z_exp - mu_k).pow(2) / logvar_k.exp()
+        ).sum(dim=-1)
+
+        log_p_c_z = log_pi.unsqueeze(0) + log_N_z_given_c
+        q_c = F.softmax(log_p_c_z, dim=-1)
+        log_q_c = F.log_softmax(log_p_c_z, dim=-1)
+
+        # 3. KL(q(c|x) || p(c)) — closed form categorical KL
+        kl_cat = (q_c * (log_q_c - log_pi.unsqueeze(0))).sum(dim=1)
+
+        # 4. Per-component Gaussian KL
+        logvar_z_exp = logvar_z.unsqueeze(1)
 
         kl_gauss = 0.5 * (
             logvar_k - logvar_z_exp
             + (logvar_z_exp.exp() + (mu_z_exp - mu_k).pow(2)) / logvar_k.exp()
             - 1
-        )
-        kl_gauss = kl_gauss.sum(dim=-1)
+        ).sum(dim=-1)
 
         # 5. Weighted sum: Σ_c q(c|x) · KL_c(x)
         kl_weighted = (q_c * kl_gauss).sum(dim=1)
