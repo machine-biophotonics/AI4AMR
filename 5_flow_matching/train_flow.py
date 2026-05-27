@@ -69,8 +69,9 @@ parser.add_argument('--struct_flow', action='store_true', default=False,
                     help='Use StructFlow (SCFM) architecture with structured latent')
 parser.add_argument('--struct_latent_dim', type=int, default=64,
                     help='Structured latent dimension for StructFlow')
-parser.add_argument('--struct_kl_weight', type=float, default=0.001,
-                    help='KL divergence weight for StructFlow VAE loss')
+parser.add_argument('--struct_kl_weight', type=float, default=0.1,
+                    help='KL divergence weight for StructFlow VAE loss. β-VAE multiplier.'
+                         ' β=1 (default) gives equal KL/recon weight. β>1 for disentanglement.')
 parser.add_argument('--struct_recon_weight', type=float, default=0.1,
                     help='Reconstruction loss weight for StructFlow')
 parser.add_argument('--supcon', action='store_true', default=False,
@@ -79,7 +80,19 @@ parser.add_argument('--supcon_weight', type=float, default=0.1,
                     help='SupCon loss weight')
 parser.add_argument('--supcon_temperature', type=float, default=0.1,
                     help='SupCon temperature parameter')
+parser.add_argument('--gmm', action='store_true', default=False,
+                    help='Use Gaussian Mixture Model prior (SCFM structured prior)')
+parser.add_argument('--gmm_components', type=int, default=185,
+                    help='Number of GMM components (default: 185, one per class)')
+parser.add_argument('--unsupervised_gmm', action='store_true', default=False,
+                    help='Unsupervised VaDE-style GMM with categorical assignment head (50 components). '
+                         'Overrides --gmm_components to 50 by default. No class labels needed for components.')
 args = parser.parse_args()
+
+if args.unsupervised_gmm:
+    args.gmm = True
+    if args.gmm_components == 185:
+        args.gmm_components = 50
 
 if args.freq_flow and args.batch_size == 64:
     args.batch_size = 32
@@ -151,8 +164,13 @@ if args.freq_flow and args.struct_flow:
         use_freq=True,
         use_struct=True,
         latent_dim=args.struct_latent_dim,
+        use_gmm=args.gmm,
+        gmm_components=args.gmm_components if args.gmm else None,
+        unsupervised_gmm=args.unsupervised_gmm,
     ).to(device)
-    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}")
+    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}"
+          f"{', GMM(' + str(args.gmm_components) + ')' if args.gmm else ''}"
+          f"{', unsupervised' if args.unsupervised_gmm else ''}")
 elif args.freq_flow:
     print(f"  FreqFlow: batch_size={args.batch_size}")
     model = FreqFlowUNet(
@@ -166,7 +184,8 @@ elif args.freq_flow:
     ).to(device)
     print(f"  FreqFlow: freq_branch={freq_block_channels}")
 elif args.struct_flow:
-    print(f"  StructFlow: latent_dim={args.struct_latent_dim}")
+    print(f"  StructFlow: latent_dim={args.struct_latent_dim}"
+          f"{', GMM(' + str(args.gmm_components) + ')' if args.gmm else ''}")
     model = StructFlowUNet(
         in_channels=1,
         sample_size=224,
@@ -174,8 +193,13 @@ elif args.struct_flow:
         layers_per_block=2,
         num_class_embeds=num_classes,
         latent_dim=args.struct_latent_dim,
+        use_gmm=args.gmm,
+        gmm_components=args.gmm_components if args.gmm else None,
+        unsupervised_gmm=args.unsupervised_gmm,
     ).to(device)
-    print(f"  StructFlow: kl_weight={args.struct_kl_weight}, recon_weight={args.struct_recon_weight}")
+    print(f"  StructFlow: kl_weight={args.struct_kl_weight}, recon_weight={args.struct_recon_weight}"
+          f"{', unsupervised GMM(' + str(args.gmm_components) + ')' if args.unsupervised_gmm else ''}"
+          f"{', GMM(' + str(args.gmm_components) + ')' if args.gmm and not args.unsupervised_gmm else ''}")
 else:
     model = FlowUNet(
         in_channels=1,
@@ -305,6 +329,8 @@ for epoch in range(start_epoch, args.epochs):
                     delta_fm_lambda=delta_lambda,
                     supcon_weight=args.supcon_weight if args.supcon else 0.0,
                     supcon_temperature=args.supcon_temperature,
+                    use_gmm=args.gmm,
+                    unsupervised_gmm=args.unsupervised_gmm,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
@@ -314,6 +340,8 @@ for epoch in range(start_epoch, args.epochs):
                     delta_fm_lambda=delta_lambda,
                     supcon_weight=args.supcon_weight if args.supcon else 0.0,
                     supcon_temperature=args.supcon_temperature,
+                    use_gmm=args.gmm,
+                    unsupervised_gmm=args.unsupervised_gmm,
                 )
             else:
                 loss, comp = compute_flow_loss(
@@ -397,6 +425,8 @@ for epoch in range(start_epoch, args.epochs):
                         delta_fm_lambda=delta_lambda,
                         supcon_weight=args.supcon_weight if args.supcon else 0.0,
                         supcon_temperature=args.supcon_temperature,
+                        use_gmm=args.gmm,
+                        unsupervised_gmm=args.unsupervised_gmm,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
@@ -406,6 +436,8 @@ for epoch in range(start_epoch, args.epochs):
                         delta_fm_lambda=delta_lambda,
                         supcon_weight=args.supcon_weight if args.supcon else 0.0,
                         supcon_temperature=args.supcon_temperature,
+                        use_gmm=args.gmm,
+                        unsupervised_gmm=args.unsupervised_gmm,
                     )
                 else:
                     loss, comp = compute_flow_loss(

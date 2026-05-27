@@ -43,6 +43,106 @@ def Fourier_filter(x, D):
     return torch.clamp(x_low, min_x, max_x), torch.clamp(x_high, min_x, max_x)
 
 
+class GaussianMixture(nn.Module):
+    """Learnable GMM prior for structured latent space (SCFM).
+
+    p_psi(z) = sum_k pi_k * N(z | mu_k, diag(sigma_k^2))
+
+    Modes:
+      - Supervised (default): one component per class, selected by labels.
+      - Unsupervised (VaDE-style): categorical assignment head q(c|x) learns
+        component responsibilities from data. K components, no labels needed.
+
+    Unsupervised KL (VaDE decomposition):
+        KL(q(z,c|x) || p(z,c))
+          = KL(q(c|x) || p(c)) + Σ_c q(c|x) · KL(N(μ_z, σ²_z) || N(μ_c, σ²_c))
+
+    References:
+        - Jiang et al., VaDE (NeurIPS 2016)
+        - Sumba et al., SCFM (arXiv 2026)
+    """
+    def __init__(self, n_components: int, latent_dim: int, unsupervised: bool = False):
+        super().__init__()
+        self.n_components = n_components
+        self.latent_dim = latent_dim
+        self.unsupervised = unsupervised
+        self.register_parameter('means', nn.Parameter(torch.randn(n_components, latent_dim) * 0.1))
+        self.register_parameter('logvars', nn.Parameter(torch.zeros(n_components, latent_dim)))
+        self.register_parameter('logits', nn.Parameter(torch.zeros(n_components)))
+        if unsupervised:
+            self.categorical_head = nn.Linear(latent_dim, n_components)
+
+    def get_component(self, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.means[labels], self.logvars[labels]
+
+    def kl(self, mu_z: torch.Tensor, logvar_z: torch.Tensor,
+           labels: torch.Tensor | None = None) -> torch.Tensor:
+        if self.unsupervised:
+            return self._kl_unsupervised(mu_z, logvar_z)
+        # Supervised: per-class components
+        mu_k, logvar_k = self.get_component(labels)
+        return 0.5 * (
+            logvar_k - logvar_z
+            + (logvar_z.exp() + (mu_z - mu_k).pow(2)) / logvar_k.exp()
+            - 1
+        ).sum(dim=1).mean()
+
+    def _kl_unsupervised(self, mu_z: torch.Tensor,
+                         logvar_z: torch.Tensor) -> torch.Tensor:
+        """VaDE-style KL decomposition.
+
+        KL(q(z,c|x) || p(z,c))
+          = KL(q(c|x) || p(c)) + Σ_c q(c|x) · KL(N(μ_z, σ²_z) || N(μ_c, σ²_c))
+        """
+        B, D = mu_z.shape
+        K = self.n_components
+        device = mu_z.device
+
+        # 1. Categorical assignment: q(c|x) = softmax(MLP(μ_z))
+        q_c_logits = self.categorical_head(mu_z)
+        q_c = F.softmax(q_c_logits, dim=-1)
+        log_q_c = F.log_softmax(q_c_logits, dim=-1)
+
+        # 2. Prior over components: p(c) = softmax(logits)
+        log_p_c = F.log_softmax(self.logits, dim=-1).unsqueeze(0)
+
+        # 3. KL(q(c|x) || p(c)) — closed form categorical KL
+        kl_cat = (q_c * (log_q_c - log_p_c)).sum(dim=1)
+
+        # 4. Per-component Gaussian KL
+        # Expand: [B, 1, D] vs [1, K, D]
+        mu_z_exp = mu_z.unsqueeze(1)
+        logvar_z_exp = logvar_z.unsqueeze(1)
+        mu_k = self.means.unsqueeze(0)
+        logvar_k = self.logvars.unsqueeze(0)
+
+        kl_gauss = 0.5 * (
+            logvar_k - logvar_z_exp
+            + (logvar_z_exp.exp() + (mu_z_exp - mu_k).pow(2)) / logvar_k.exp()
+            - 1
+        )
+        kl_gauss = kl_gauss.sum(dim=-1)
+
+        # 5. Weighted sum: Σ_c q(c|x) · KL_c(x)
+        kl_weighted = (q_c * kl_gauss).sum(dim=1)
+
+        # 6. Total (mean over batch)
+        return (kl_cat + kl_weighted).mean()
+
+    @torch.no_grad()
+    def sample(self, n: int, labels: torch.Tensor | None = None) -> torch.Tensor:
+        device = self.means.device
+        if labels is not None and not self.unsupervised:
+            mu = self.means[labels]
+            logvar = self.logvars[labels]
+        else:
+            cats = torch.distributions.Categorical(logits=self.logits)
+            idx = cats.sample((n,))
+            mu = self.means[idx]
+            logvar = self.logvars[idx]
+        return mu + torch.randn_like(mu) * (0.5 * logvar).exp()
+
+
 class FlowUNet(nn.Module):
     """UNet2DModel wrapper for Conditional Flow Matching.
 
@@ -210,6 +310,9 @@ class StructFlowUNet(nn.Module):
         layers_per_block: int = 2,
         num_class_embeds: int = 50,
         latent_dim: int = 64,
+        use_gmm: bool = False,
+        gmm_components: int = 185,
+        unsupervised_gmm: bool = False,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -255,6 +358,11 @@ class StructFlowUNet(nn.Module):
             nn.SiLU(),
             nn.Linear(512, in_channels * sample_size * sample_size),
         )
+
+        # Learnable GMM prior (structured prior, replaces N(0,I))
+        if use_gmm:
+            self.gmm = GaussianMixture(gmm_components, latent_dim,
+                                       unsupervised=unsupervised_gmm)
 
         # Hook to capture mid-block features
         self._mid_feat = None
@@ -320,6 +428,9 @@ class CombinedFlowUNet(nn.Module):
         use_freq: bool = False,
         use_struct: bool = False,
         latent_dim: int = 64,
+        use_gmm: bool = False,
+        gmm_components: int = 185,
+        unsupervised_gmm: bool = False,
     ):
         super().__init__()
         self.freq_filter_D = freq_filter_D
@@ -387,6 +498,9 @@ class CombinedFlowUNet(nn.Module):
                 nn.SiLU(),
                 nn.Linear(512, in_channels * sample_size * sample_size),
             )
+            if use_gmm:
+                self.gmm = GaussianMixture(gmm_components, latent_dim,
+                                           unsupervised=unsupervised_gmm)
             self._mid_feat = None
             self._mid_handle = self.main_unet.mid_block.register_forward_hook(self._mid_hook)
 
@@ -465,11 +579,13 @@ def compute_struct_flow_loss(
     model: StructFlowUNet | CombinedFlowUNet,
     x_1: torch.Tensor,
     class_labels: torch.Tensor | None = None,
-    kl_weight: float = 0.001,
+    kl_weight: float = 0.1,
     recon_weight: float = 0.1,
     delta_fm_lambda: float = 0.0,
     supcon_weight: float = 0.0,
     supcon_temperature: float = 0.1,
+    use_gmm: bool = False,
+    unsupervised_gmm: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """StructFlow loss: flow matching + VAE-style KL + reconstruction + SupCon.
 
@@ -488,8 +604,17 @@ def compute_struct_flow_loss(
     eps_z = torch.randn_like(std)
     z = mu_z + eps_z * std
 
-    # 2. KL divergence: KL(q(z|x_1) || N(0,I))
-    kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+    # 2. KL divergence: KL(q(z|x_1) || prior)
+    #    Prior is N(0,I), per-class GMM, or unsupervised VaDE GMM (SCFM structured prior)
+    if use_gmm and hasattr(model, 'gmm'):
+        if unsupervised_gmm:
+            kl_loss = model.gmm.kl(mu_z, logvar_z)
+        elif class_labels is not None:
+            kl_loss = model.gmm.kl(mu_z, logvar_z, class_labels)
+        else:
+            kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+    else:
+        kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
 
     # 3. Reconstruction loss
     x_recon = model.decode(z)
@@ -554,7 +679,11 @@ def sample_struct(
     latent_dim = model.latent_dim
     device = next(model.parameters()).device
 
-    z = torch.randn(num_samples, latent_dim, device=device)
+    if hasattr(model, 'gmm') and model.gmm is not None:
+        z = model.gmm.sample(num_samples,
+                             labels=None if model.gmm.unsupervised else class_labels)
+    else:
+        z = torch.randn(num_samples, latent_dim, device=device)
     x_z = model.decode(z)
 
     noise = torch.randn_like(x_z)
@@ -681,11 +810,13 @@ def compute_unified_loss(
     use_struct: bool = False,
     freq_filter_D: float = 8.0,
     freq_loss_weight: float = 0.25,
-    kl_weight: float = 0.001,
+    kl_weight: float = 0.1,
     recon_weight: float = 0.1,
     delta_fm_lambda: float = 0.0,
     supcon_weight: float = 0.0,
     supcon_temperature: float = 0.1,
+    use_gmm: bool = False,
+    unsupervised_gmm: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Unified loss supporting all FreqFlow + StructFlow + DeltaFM + SupCon combinations."""
     B = x_1.shape[0]
@@ -704,7 +835,15 @@ def compute_unified_loss(
         eps_z = torch.randn_like(std)
         z = mu_z + eps_z * std
 
-        kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+        if use_gmm and hasattr(model, 'gmm'):
+            if unsupervised_gmm:
+                kl_loss = model.gmm.kl(mu_z, logvar_z)
+            elif class_labels is not None:
+                kl_loss = model.gmm.kl(mu_z, logvar_z, class_labels)
+            else:
+                kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+        else:
+            kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
         recon_loss = F.mse_loss(model.decode(z), x_1)
         x_z = model.decode(z).detach()
         noise = torch.randn_like(x_1)
@@ -776,7 +915,11 @@ def sample_combined(
     device = next(model.parameters()).device
 
     if use_struct:
-        z = torch.randn(num_samples, model.latent_dim, device=device)
+        if hasattr(model, 'gmm') and model.gmm is not None:
+            z = model.gmm.sample(num_samples,
+                                 labels=None if model.gmm.unsupervised else class_labels)
+        else:
+            z = torch.randn(num_samples, model.latent_dim, device=device)
         x_z = model.decode(z)
         x = x_z + torch.randn_like(x_z)
     else:
