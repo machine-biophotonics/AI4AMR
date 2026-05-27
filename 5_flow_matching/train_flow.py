@@ -98,7 +98,73 @@ parser.add_argument('--mu_warmup_epochs', type=int, default=20,
 parser.add_argument('--r_eps_weight', type=float, default=1.0,
     help='Weight for exogenous regularization R_ε (default: 1.0). '
          'Reduce if R_ε dominates flow loss (e.g., large exogenous_dim).')
+parser.add_argument('--kmeans_init', action='store_true', default=False,
+    help='Initialize GMM means with k-means on encoder outputs after kmeans_init_epoch')
+parser.add_argument('--kmeans_init_epoch', type=int, default=3,
+    help='Epoch to perform k-means GMM initialization (default: 3)')
+parser.add_argument('--cyclical_anneal', action='store_true', default=False,
+    help='Use cyclical β annealing instead of monotonic (Fu et al., NAACL 2019)')
+parser.add_argument('--num_cycles', type=int, default=4,
+    help='Number of β cycles for cyclical annealing (default: 4)')
+parser.add_argument('--min_beta_frac', type=float, default=0.0,
+    help='Minimum β as fraction of struct_kl_weight during cyclical annealing (default: 0.0)')
+parser.add_argument('--anneal_schedule', type=str, default='linear',
+    choices=['linear', 'cosine', 'sigmoid'],
+    help='Annealing curve shape (default: linear)')
 args = parser.parse_args()
+
+
+# ── β annealing function ──────────────────────────────────────────────────
+def get_beta(epoch: int, total_epochs: int, kl_weight: float,
+             warmup_epochs: int, cyclical: bool = False,
+             num_cycles: int = 4, min_frac: float = 0.0,
+             schedule: str = 'linear') -> float:
+    """Compute β for current epoch.
+
+    Monotonic:  linear 0→kl_weight over warmup_epochs, then clipped.
+    Cyclical:   num_cycles repeats of 0→kl_weight→0 (Fu et al. 2019).
+    """
+    if not cyclical:
+        return kl_weight * min(epoch / max(1, warmup_epochs), 1.0)
+
+    # Cyclical annealing
+    cycle_len = max(1, total_epochs / max(1, num_cycles))
+    t = (epoch % cycle_len) / cycle_len  # position within cycle [0, 1)
+    # t < 0.5: ramp up; t >= 0.5: ramp down
+    tau = 2 * t if t < 0.5 else 2 * (1 - t)
+    tau = max(0.0, min(1.0, tau))
+    if schedule == 'cosine':
+        tau = 0.5 * (1 - np.cos(np.pi * tau))
+    elif schedule == 'sigmoid':
+        tau = 1.0 / (1.0 + np.exp(-10 * (tau - 0.5)))
+    return kl_weight * (min_frac + (1 - min_frac) * tau)
+
+
+# ── k-means init function ─────────────────────────────────────────────────
+def kmeans_init_gmm(model, loader, device, gmm_components: int, seed: int = 42):
+    """Run k-means on encoder μ_z and copy centroids to model.gmm.means."""
+    from sklearn.cluster import KMeans
+    model.eval()
+    mu_z_all = []
+    with torch.no_grad():
+        for imgs, class_ids in loader:
+            imgs = imgs.to(device, non_blocking=True)
+            class_ids = class_ids.to(device, non_blocking=True)
+            t_enc = torch.full((imgs.shape[0],), 1.0, device=device)
+            if hasattr(model, 'encode'):
+                out = model.encode(imgs, t_enc, class_ids)
+                mu_z = out[0]  # mu_z is first return value
+            else:
+                continue
+            mu_z_all.append(mu_z.cpu().numpy())
+    if not mu_z_all:
+        return
+    X = np.concatenate(mu_z_all, axis=0)
+    kmeans = KMeans(n_clusters=gmm_components, random_state=seed, n_init=3).fit(X)
+    centroids = torch.from_numpy(kmeans.cluster_centers_).to(dtype=torch.float32, device=device)
+    if hasattr(model, 'gmm') and model.gmm is not None:
+        model.gmm.means.data = centroids
+        print(f"  -> k-means GMM init: {gmm_components} centroids loaded (inertia={kmeans.inertia_:.2f})")
 
 if args.freq_flow and args.batch_size == 64:
     args.batch_size = 32
@@ -328,11 +394,28 @@ for epoch in range(start_epoch, args.epochs):
     # Beta annealing for SCFM / dual-predict-μ mode
     use_beta = args.predict_mu or args.dual_predict_mu
     if use_beta and args.mu_anneal:
-        beta_used = args.struct_kl_weight * min(epoch / args.mu_warmup_epochs, 1.0)
+        if args.cyclical_anneal:
+            beta_used = get_beta(epoch, args.epochs, args.struct_kl_weight,
+                                 args.mu_warmup_epochs, cyclical=True,
+                                 num_cycles=args.num_cycles,
+                                 min_frac=args.min_beta_frac,
+                                 schedule=args.anneal_schedule)
+        else:
+            beta_used = get_beta(epoch, args.epochs, args.struct_kl_weight,
+                                 args.mu_warmup_epochs, cyclical=False)
     elif use_beta:
         beta_used = args.struct_kl_weight
     else:
         beta_used = None
+
+    # K-means GMM initialization
+    if (args.kmeans_init and args.use_gmm and args.unsupervised_gmm and
+            epoch == args.kmeans_init_epoch and hasattr(model, 'gmm') and model.gmm is not None):
+        train_ds_clean = FlowCropDataset(train_items, augment=False)
+        init_loader = DataLoader(train_ds_clean, batch_size=min(128, args.batch_size * 2),
+                                 shuffle=False, num_workers=min(4, args.num_workers),
+                                 pin_memory=True, drop_last=False)
+        kmeans_init_gmm(model, init_loader, device, args.gmm_components, seed=SEED)
 
     model.train()
     train_loss = 0.0
