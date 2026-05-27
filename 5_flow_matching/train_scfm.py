@@ -12,7 +12,7 @@ Exact paper implementation:
 Usage:
   python3 train_scfm.py --epochs 200 --use_gmm --unsupervised_gmm --gmm_components 30
 """
-import os, sys, warnings, time
+import os, sys, math, warnings, time
 warnings.filterwarnings("ignore")
 os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_GEMM"] = "0"
 
@@ -26,7 +26,6 @@ from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
 from datetime import datetime
 import csv
 
@@ -131,7 +130,6 @@ model = SCFM(
     sample_size=224,
     block_out_channels=block_channels,
     layers_per_block=2,
-    num_class_embeds=num_classes,
     latent_dim=args.latent_dim,
     exogenous_dim=args.exogenous_dim,
     use_gmm=args.use_gmm,
@@ -183,13 +181,7 @@ if args.resume:
     start_epoch = ckpt['epoch'] + 1
     print(f"  Resumed epoch {ckpt['epoch']}")
 
-drug_viz = sorted([i for i, n in enumerate(class_names) if n.endswith('_2x')])
-drug_viz += [i for i, n in enumerate(class_names) if n == 'control']
-mutant_viz = sorted([i for i, n in enumerate(class_names) if n.endswith('_1') and n not in ('NC_1', 'WT NC_1')])
-mutant_viz += [i for i, n in enumerate(class_names) if n in ('NC_1', 'WT NC_1')]
-vis_classes = drug_viz + mutant_viz
-print(f"  Drug viz: {len(drug_viz)} classes, Mutant viz: {len(mutant_viz)} classes, Total: {len(vis_classes)}")
-vis_ids = torch.tensor(vis_classes, device=device)
+n_viz = 16
 
 print("\n[3/5] Training ...")
 best_val_loss = float('inf')
@@ -227,13 +219,12 @@ for epoch in range(start_epoch, args.epochs):
     t0 = time.time()
 
     pbar = tqdm(train_loader, desc=f"E{epoch+1:03d}", leave=False)
-    for imgs, class_ids in pbar:
+    for imgs, _ in pbar:
         imgs = imgs.to(device, non_blocking=True)
-        class_ids = class_ids.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=amp_dtype):
             loss, comp = scfm_loss(
-                model, imgs, class_labels=class_ids,
+                model, imgs,
                 beta=beta_used,
                 recon_weight=args.recon_weight,
                 use_gmm=args.use_gmm,
@@ -277,12 +268,11 @@ for epoch in range(start_epoch, args.epochs):
     val_recon = 0.0
     val_r_eps = 0.0
     with torch.no_grad():
-        for imgs, class_ids in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
+        for imgs, _ in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
             imgs = imgs.to(device, non_blocking=True)
-            class_ids = class_ids.to(device, non_blocking=True)
             with torch.amp.autocast('cuda', dtype=amp_dtype):
                 loss, comp = scfm_loss(
-                    model, imgs, class_labels=class_ids,
+                    model, imgs,
                     beta=beta_used,
                     recon_weight=args.recon_weight,
                     use_gmm=args.use_gmm,
@@ -310,19 +300,23 @@ for epoch in range(start_epoch, args.epochs):
 
     # GMM health diagnostics
     gmm_str = ""
+    gmm_diag = None
     if args.use_gmm and args.unsupervised_gmm and hasattr(model, 'gmm'):
         with torch.no_grad():
-            q_c_all = []
+            mu_z_all = []
             for imgs, _ in val_loader:
                 imgs = imgs.to(device, non_blocking=True)
-                mu_z, _ = model.encode(imgs, class_labels=None, return_all=False)
-                q_c_all.append(model.gmm.responsibilities(mu_z))
-            if q_c_all:
-                q_c_cat = torch.cat(q_c_all, dim=0)
-                ent = (-(q_c_cat * torch.log(q_c_cat.clamp(1e-10, 1))).sum(dim=1)).mean().item()
-                assignments = q_c_cat.argmax(dim=1)
-                active = assignments.unique().numel()
-                gmm_str = f" gmm_ent={ent:.3f} active={active}/{model.gmm.n_components}"
+                mu_z, _ = model.encode(imgs, return_all=False)
+                mu_z_all.append(mu_z)
+            if mu_z_all:
+                mu_z_cat = torch.cat(mu_z_all, dim=0)
+                gmm_diag = model.gmm.diagnostics(mu_z_cat)
+                gmm_str = (f" π_ent={gmm_diag['pi_entropy']:.3f}"
+                           f" active={gmm_diag['active_ratio']:.2f}"
+                           f" var={gmm_diag['var_mean']:.3f}"
+                           f" perp={gmm_diag['assignment_perplexity']:.2f}")
+                for k, v in gmm_diag.items():
+                    writer.add_scalar(f'gmm/{k}', v, epoch)
 
     beta_str = f" β={beta_used:.4f}" if args.kl_anneal else ""
     print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
@@ -338,44 +332,34 @@ for epoch in range(start_epoch, args.epochs):
                     f'{train_r_eps:.4f}', f'{val_r_eps:.4f}',
                     f'{lr_now:.2e}', f'{beta_used:.4e}', f'{epoch_time:.0f}'])
 
-    # Generate samples each epoch
+    # Append GMM diagnostics to separate CSV
+    if gmm_diag is not None:
+        gmm_csv = os.path.join(OUTPUT_DIR, 'gmm_diagnostics.csv')
+        gmm_cols = ['epoch'] + list(gmm_diag.keys())
+        write_header = not os.path.exists(gmm_csv)
+        with open(gmm_csv, 'a', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=gmm_cols)
+            if write_header:
+                w.writeheader()
+            row = {'epoch': epoch + 1, **gmm_diag}
+            w.writerow(row)
+
+    # Generate samples each epoch (unconditional)
     if epoch % 1 == 0:
         model.eval()
         with torch.no_grad():
-            all_samples = []
-            for ci in vis_classes:
-                cid = torch.tensor([ci], device=device)
-                samp = sample_scfm(model, 1, num_steps=args.num_steps,
-                                   class_labels=cid, device=device)
-                all_samples.append(samp.cpu())
+            samp = sample_scfm(model, n_viz, num_steps=args.num_steps, device=device)
+            samp = (samp * 0.5 + 0.5).clamp(0, 1).cpu()
 
-            n_drugs, n_mutants = len(drug_viz), len(mutant_viz)
-            n_cols = max(n_drugs, n_mutants)
-
-            fig = plt.figure(figsize=(n_cols * 0.45, 5))
-            gs = GridSpec(2, n_cols, figure=fig, hspace=0.35, wspace=0.02,
-                          height_ratios=[1, 1])
-
-            for i in range(n_cols):
-                ax = fig.add_subplot(gs[0, i])
-                if i < n_drugs:
-                    img = all_samples[i]
-                    img_01 = (img * 0.5 + 0.5).clamp(0, 1)
-                    ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
-                    ax.set_xlabel(class_names[drug_viz[i]].replace('_', ' '), fontsize=3)
+            grid_side = int(math.ceil(math.sqrt(n_viz)))
+            fig, axes = plt.subplots(grid_side, grid_side, figsize=(grid_side * 1.5, grid_side * 1.5))
+            for i in range(grid_side * grid_side):
+                ax = axes.flat[i]
+                if i < n_viz:
+                    ax.imshow(samp[i].squeeze(), cmap='gray', vmin=0, vmax=1)
                 ax.set_xticks([])
                 ax.set_yticks([])
-
-                ax = fig.add_subplot(gs[1, i])
-                if i < n_mutants:
-                    img = all_samples[n_drugs + i]
-                    img_01 = (img * 0.5 + 0.5).clamp(0, 1)
-                    ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
-                    ax.set_xlabel(class_names[mutant_viz[i]].replace('_', ' '), fontsize=3)
-                ax.set_xticks([])
-                ax.set_yticks([])
-
-            plt.suptitle(f'Epoch {epoch+1}: SCFM samples (drugs 2x top, mutants 1 bottom)', fontsize=7, y=0.98)
+            plt.suptitle(f'Epoch {epoch+1}: SCFM unconditional samples', fontsize=10, y=0.95)
             plt.tight_layout()
             fig.savefig(os.path.join(OUTPUT_DIR, f'samples_{epoch+1:03d}.png'),
                        dpi=200, bbox_inches='tight')

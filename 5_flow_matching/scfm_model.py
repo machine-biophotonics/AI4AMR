@@ -100,6 +100,42 @@ class GaussianMixture(nn.Module):
         return F.softmax(log_pi.unsqueeze(0) + log_N, dim=-1)
 
     @torch.no_grad()
+    def diagnostics(self, mu_z: torch.Tensor) -> dict[str, float]:
+        """Full GMM health report.
+
+        Args:
+            mu_z: [N, d_z] encoder means from a representative sample.
+
+        Returns dict with:
+            pi_entropy, pi_max, pi_min (component weight health),
+            var_min, var_max, var_mean (component variance health),
+            mean_norm, mean_pair_dist (component separation),
+            active_ratio (fraction of components used),
+            assignment_perplexity (confidence of assignments).
+        """
+        K = self.n_components
+        pi = F.softmax(self.logits, dim=-1)
+        var = self.logvars.exp()
+        q = self.responsibilities(mu_z)
+        hard = q.argmax(dim=-1)
+        active = hard.unique().numel()
+        pairwise = torch.cdist(self.means, self.means)
+        triu = pairwise[~torch.eye(K, dtype=bool, device=pairwise.device)]
+        assignment_ent = -(q * torch.log(q.clamp(1e-10, 1))).sum(dim=-1)
+        return dict(
+            pi_entropy=(-(pi * torch.log(pi + 1e-10)).sum()).item(),
+            pi_max=pi.max().item(),
+            pi_min=pi.min().item(),
+            var_min=var.min().item(),
+            var_max=var.max().item(),
+            var_mean=var.mean().item(),
+            mean_norm=self.means.norm(dim=-1).mean().item(),
+            mean_pair_dist=triu.mean().item(),
+            active_ratio=active / K,
+            assignment_perplexity=assignment_ent.exp().mean().item(),
+        )
+
+    @torch.no_grad()
     def sample(self, n: int, labels: torch.Tensor | None = None) -> torch.Tensor:
         device = self.means.device
         if labels is not None and not self.unsupervised:
@@ -133,7 +169,6 @@ class SCFM(nn.Module):
         sample_size: int = 224,
         block_out_channels: tuple = (64, 128, 256, 512),
         layers_per_block: int = 2,
-        num_class_embeds: int = 185,
         latent_dim: int = 64,
         use_gmm: bool = False,
         gmm_components: int = 30,
@@ -165,8 +200,6 @@ class SCFM(nn.Module):
             layers_per_block=layers_per_block,
             down_block_types=down_block_types,
             up_block_types=up_block_types,
-            num_class_embeds=num_class_embeds,
-            class_embed_type=None,
             act_fn="silu",
             norm_num_groups=32,
             dropout=0.1,
@@ -200,19 +233,16 @@ class SCFM(nn.Module):
     def _mid_hook(self, module, input, output):
         self._mid_feat = output[0] if isinstance(output, tuple) else output
 
-    def forward(self, x_t: torch.Tensor, t: torch.Tensor,
-                class_labels: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict μ_ϕ(x_t, t) = E[x₀|x_t] (Eq 11, Proposition 3.1).
 
         Returns the posterior mean of the source x₀ given x_t.
         For t < 1: used to derive velocity.
         For t = 1: features are pooled for VAE encoder.
         """
-        return self.unet(x_t, timestep=t, class_labels=class_labels,
-                         return_dict=True).sample
+        return self.unet(x_t, timestep=t, return_dict=True).sample
 
-    def get_velocity(self, x_t: torch.Tensor, t: torch.Tensor,
-                     class_labels: torch.Tensor | None = None) -> torch.Tensor:
+    def get_velocity(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Derive velocity from posterior mean (Eq 11).
 
         v_ϕ,t(x_t) = (x_t - μ_ϕ(x_t, t)) / t
@@ -220,12 +250,11 @@ class SCFM(nn.Module):
         With f(t) = 1-t, ∂_t f = -1, 1-f(t) = t:
           v = (∂_t f)/(1-f(t)) · (μ_ϕ - x_t) = (-1/t)(μ_ϕ - x_t) = (x_t - μ_ϕ)/t
         """
-        mu = self.forward(x_t, t, class_labels)
+        mu = self.forward(x_t, t)
         t_safe = t.clamp(min=1e-5).view(-1, *([1] * (x_t.ndim - 1)))
         return (x_t - mu) / t_safe
 
-    def encode(self, x_1: torch.Tensor, class_labels: torch.Tensor | None = None,
-               return_all: bool = False) -> tuple[torch.Tensor, ...]:
+    def encode(self, x_1: torch.Tensor, return_all: bool = False) -> tuple[torch.Tensor, ...]:
         """VAE encoder at t=1 (Sec 3.2, Eq 14).
 
         q_ϕ(z|x₁) = N(μ^z_ϕ(x₁), diag(σ²_ϕ(x₁)))
@@ -234,7 +263,7 @@ class SCFM(nn.Module):
         Returns (μ_z, logvar_z) or (μ_z, logvar_z, μ_ε).
         """
         t = torch.full((x_1.shape[0],), 1.0, device=x_1.device)
-        _ = self.forward(x_1, t, class_labels)
+        _ = self.forward(x_1, t)
         feat = self._mid_feat
         pooled = feat.flatten(2).mean(dim=2)
 
@@ -252,17 +281,16 @@ class SCFM(nn.Module):
         return img.reshape(-1, self.in_channels, self.sample_size, self.sample_size)
 
     @torch.no_grad()
-    def sample_prior_z(self, n: int, class_labels: torch.Tensor | None = None) -> torch.Tensor:
+    def sample_prior_z(self, n: int) -> torch.Tensor:
         """Sample z from GMM prior or N(0,I)."""
         if hasattr(self, 'gmm') and self.gmm is not None:
-            return self.gmm.sample(n, labels=class_labels)
+            return self.gmm.sample(n)
         return torch.randn(n, self.latent_dim, device=next(self.parameters()).device)
 
 
 def scfm_loss(
     model: SCFM,
     x_1: torch.Tensor,
-    class_labels: torch.Tensor | None = None,
     beta: float = 0.01,
     recon_weight: float = 0.1,
     use_gmm: bool = False,
@@ -283,7 +311,7 @@ def scfm_loss(
     comp: dict[str, float] = {}
 
     # 1. Encode at t=1 (Eq 14): q_ϕ(z|x₁) = N(μ_z, diag(σ²_z))
-    mu_z, logvar_z, mu_eps = model.encode(x_1, class_labels=class_labels, return_all=True)
+    mu_z, logvar_z, mu_eps = model.encode(x_1, return_all=True)
 
     std = torch.exp(0.5 * logvar_z)
     eps_z = torch.randn_like(std)
@@ -299,8 +327,6 @@ def scfm_loss(
     if use_gmm and hasattr(model, 'gmm'):
         if unsupervised_gmm:
             kl_loss = model.gmm.kl(mu_z, logvar_z)
-        elif class_labels is not None:
-            kl_loss = model.gmm.kl(mu_z, logvar_z, class_labels)
         else:
             kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
     else:
@@ -318,7 +344,7 @@ def scfm_loss(
     t_b = t.view(-1, *([1] * (x_1.ndim - 1)))
 
     x_t = (1 - t_b) * x_0 + t_b * x_1
-    mu_pred = model(x_t, t, class_labels=class_labels)
+    mu_pred = model(x_t, t)
     flow_loss = F.mse_loss(mu_pred, x_0.detach())
     comp['flow'] = flow_loss.item()
 
@@ -336,7 +362,6 @@ def sample_scfm(
     model: SCFM,
     num_samples: int,
     num_steps: int = 100,
-    class_labels: torch.Tensor | None = None,
     device: str = 'cuda',
 ) -> torch.Tensor:
     """Sample via full ODE integration (Sec 3.3, standard mode).
@@ -347,22 +372,18 @@ def sample_scfm(
     4. ODE: x = x₀, integrate v_ϕ,t from t=0 to t=1
     """
     model.eval()
-    C = model.in_channels
-    H = W = model.sample_size
     device = next(model.parameters()).device
 
-    z = model.sample_prior_z(num_samples, labels=class_labels)
+    z = model.sample_prior_z(num_samples)
     x_z = model.decode(z)
     noise = torch.randn_like(x_z)
     x = x_z + noise
 
-    if class_labels is not None:
-        class_labels = class_labels.to(device)
     dt = 1.0 / num_steps
 
     for i in range(num_steps):
         t = torch.full((num_samples,), i * dt, device=device)
-        v = model.get_velocity(x, t, class_labels)
+        v = model.get_velocity(x, t)
         x = x + v * dt
 
     return x.clamp(-1, 1)
@@ -374,7 +395,6 @@ def sample_scfm_decoder_refinement(
     num_samples: int,
     num_steps: int = 20,
     t0: float = 0.8,
-    class_labels: torch.Tensor | None = None,
     device: str = 'cuda',
 ) -> torch.Tensor:
     """Decoder-initialized refinement sampling (Sec 3.3, Algorithm in appendix).
@@ -389,19 +409,17 @@ def sample_scfm_decoder_refinement(
     model.eval()
     device = next(model.parameters()).device
 
-    z = model.sample_prior_z(num_samples, labels=class_labels)
+    z = model.sample_prior_z(num_samples)
     x_hat = model.decode(z)
     noise = torch.randn_like(x_hat)
     x_0 = model.decode(z).detach() + noise
     x = (1 - t0) * x_0 + t0 * x_hat
 
-    if class_labels is not None:
-        class_labels = class_labels.to(device)
     dt = (1.0 - t0) / num_steps
 
     for i in range(num_steps):
         t = torch.full((num_samples,), t0 + i * dt, device=device)
-        v = model.get_velocity(x, t, class_labels)
+        v = model.get_velocity(x, t)
         x = x + v * dt
 
     return x.clamp(-1, 1)

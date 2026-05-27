@@ -38,6 +38,7 @@ from sklearn.manifold import TSNE
 from tqdm import tqdm
 from mil_model import FlowCropDataset, load_labels
 from flow_model import CombinedFlowUNet, StructFlowUNet
+from scfm_model import SCFM
 
 SEED = 42
 np.random.seed(SEED)
@@ -86,39 +87,59 @@ max_samples = args.max_samples if args.max_samples > 0 else len(image_list)
 
 print("\n[3/5] Rebuilding model ...")
 block_channels = tuple(int(x) for x in ckpt_args.get('block_channels', '32,64,128,256').split(','))
-freq_bc = ckpt_args.get('freq_block_channels', '32,64,128,256')
-freq_block_channels = tuple(int(x) for x in freq_bc.split(','))
-use_freq = ckpt_args.get('freq_flow', False)
-use_struct = ckpt_args.get('struct_flow', False)
-use_gmm = ckpt_args.get('gmm', False)
-unsupervised_gmm = ckpt_args.get('unsupervised_gmm', False)
-gmm_components = ckpt_args.get('gmm_components', 185)
-latent_dim = ckpt_args.get('struct_latent_dim', 64)
+is_scfm = 'struct_flow' not in ckpt_args and 'freq_flow' not in ckpt_args
 
-if use_freq and use_struct:
-    model = CombinedFlowUNet(
+if is_scfm:
+    use_gmm = ckpt_args.get('use_gmm', False)
+    unsupervised_gmm = ckpt_args.get('unsupervised_gmm', False)
+    gmm_components = ckpt_args.get('gmm_components', 30)
+    latent_dim = ckpt_args.get('latent_dim', 64)
+    print(f"  SCFM checkpoint detected (latent_dim={latent_dim}, gmm={gmm_components})")
+
+    model = SCFM(
         in_channels=1, sample_size=224,
         block_out_channels=block_channels,
-        freq_block_out_channels=freq_block_channels,
-        layers_per_block=2, num_class_embeds=num_classes,
-        freq_filter_D=ckpt_args.get('freq_filter_D', 8.0),
-        use_freq=True, use_struct=True,
+        layers_per_block=2,
         latent_dim=latent_dim,
-        use_gmm=use_gmm, gmm_components=gmm_components,
-        unsupervised_gmm=unsupervised_gmm,
-    ).to(device)
-elif use_struct:
-    model = StructFlowUNet(
-        in_channels=1, sample_size=224,
-        block_out_channels=block_channels,
-        layers_per_block=2, num_class_embeds=num_classes,
-        latent_dim=latent_dim,
-        use_gmm=use_gmm, gmm_components=gmm_components,
+        exogenous_dim=ckpt_args.get('exogenous_dim', 64),
+        use_gmm=use_gmm,
+        gmm_components=gmm_components,
         unsupervised_gmm=unsupervised_gmm,
     ).to(device)
 else:
-    print("ERROR: checkpoint has no structured latent (not struct_flow)")
-    sys.exit(1)
+    freq_bc = ckpt_args.get('freq_block_channels', '32,64,128,256')
+    freq_block_channels = tuple(int(x) for x in freq_bc.split(','))
+    use_freq = ckpt_args.get('freq_flow', False)
+    use_struct = ckpt_args.get('struct_flow', False)
+    use_gmm = ckpt_args.get('gmm', False)
+    unsupervised_gmm = ckpt_args.get('unsupervised_gmm', False)
+    gmm_components = ckpt_args.get('gmm_components', 185)
+    latent_dim = ckpt_args.get('struct_latent_dim', 64)
+
+    if use_freq and use_struct:
+        model = CombinedFlowUNet(
+            in_channels=1, sample_size=224,
+            block_out_channels=block_channels,
+            freq_block_out_channels=freq_block_channels,
+            layers_per_block=2, num_class_embeds=num_classes,
+            freq_filter_D=ckpt_args.get('freq_filter_D', 8.0),
+            use_freq=True, use_struct=True,
+            latent_dim=latent_dim,
+            use_gmm=use_gmm, gmm_components=gmm_components,
+            unsupervised_gmm=unsupervised_gmm,
+        ).to(device)
+    elif use_struct:
+        model = StructFlowUNet(
+            in_channels=1, sample_size=224,
+            block_out_channels=block_channels,
+            layers_per_block=2, num_class_embeds=num_classes,
+            latent_dim=latent_dim,
+            use_gmm=use_gmm, gmm_components=gmm_components,
+            unsupervised_gmm=unsupervised_gmm,
+        ).to(device)
+    else:
+        print("ERROR: checkpoint has no structured latent (not struct_flow)")
+        sys.exit(1)
 
 model.load_state_dict(ckpt['model_state_dict'])
 model.eval()
@@ -146,9 +167,12 @@ all_class_ids = []
 with torch.no_grad():
     for imgs, class_ids in tqdm(loader, desc="Encoding"):
         imgs = imgs.to(device, non_blocking=True)
-        class_ids = class_ids.to(device, non_blocking=True)
         with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
-            mu_z, logvar_z = model.encode_at_t1(imgs, class_labels=class_ids)
+            if is_scfm:
+                mu_z, logvar_z = model.encode(imgs, return_all=False)
+            else:
+                class_ids = class_ids.to(device, non_blocking=True)
+                mu_z, logvar_z = model.encode_at_t1(imgs, class_labels=class_ids)
         all_mu_z.append(mu_z.cpu())
         all_logvar_z.append(logvar_z.cpu())
         all_class_ids.append(class_ids.cpu())
