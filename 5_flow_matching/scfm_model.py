@@ -230,6 +230,11 @@ class SCFM(nn.Module):
         self._mid_feat = None
         self._mid_handle = self.unet.mid_block.register_forward_hook(self._mid_hook)
 
+    def remove_hooks(self):
+        if self._mid_handle is not None:
+            self._mid_handle.remove()
+            self._mid_handle = None
+
     def _mid_hook(self, module, input, output):
         self._mid_feat = output[0] if isinstance(output, tuple) else output
 
@@ -285,14 +290,17 @@ class SCFM(nn.Module):
         """Sample z from GMM prior or N(0,I)."""
         if hasattr(self, 'gmm') and self.gmm is not None:
             return self.gmm.sample(n)
-        return torch.randn(n, self.latent_dim, device=next(self.parameters()).device)
+        device = next(self.parameters()).device if list(self.parameters()) else 'cpu'
+        return torch.randn(n, self.latent_dim, device=device)
 
 
 def scfm_loss(
     model: SCFM,
     x_1: torch.Tensor,
+    class_labels: torch.Tensor | None = None,
     beta: float = 0.01,
     recon_weight: float = 0.1,
+    r_eps_weight: float = 1.0,
     use_gmm: bool = False,
     unsupervised_gmm: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
@@ -317,25 +325,22 @@ def scfm_loss(
     eps_z = torch.randn_like(std)
     z = mu_z + eps_z * std
 
-    # 2. Reconstruction loss: L_rec = ||p_θ(x₁|z) - x₁||²
-    x_recon = model.decode(z)
-    recon_loss = F.mse_loss(x_recon, x_1)
+    # 2. Reconstruction loss: L_rec = ||p_θ(x₁|z) - x₁||² (single decode call)
+    x_z = model.decode(z)
+    recon_loss = F.mse_loss(x_z, x_1)
     comp['recon'] = recon_loss.item()
 
     # 3. KL divergence: L_KL (Eq 16)
     #    GMM prior (VaDE) or standard N(0,I)
     if use_gmm and hasattr(model, 'gmm'):
-        if unsupervised_gmm:
-            kl_loss = model.gmm.kl(mu_z, logvar_z)
-        else:
-            kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+        kl_loss = model.gmm.kl(mu_z, logvar_z, class_labels)
     else:
         kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
     comp['kl'] = kl_loss.item()
 
     # 4. Construct source: x₀ = decoder(z) + ε  (Sec 3.1, encoder-induced coupling)
     #    stop-grad decoder to avoid trivial solution
-    x_z = model.decode(z).detach()
+    x_z = x_z.detach()
     noise = torch.randn_like(x_1)
     x_0 = x_z + noise
 
@@ -352,7 +357,7 @@ def scfm_loss(
     r_eps = 0.5 * mu_eps.pow(2).sum(dim=1).mean()
     comp['r_eps'] = r_eps.item()
 
-    total = flow_loss + beta * kl_loss + recon_weight * recon_loss + r_eps
+    total = flow_loss + beta * kl_loss + recon_weight * recon_loss + r_eps_weight * r_eps
 
     return total, comp
 
@@ -372,7 +377,6 @@ def sample_scfm(
     4. ODE: x = x₀, integrate v_ϕ,t from t=0 to t=1
     """
     model.eval()
-    device = next(model.parameters()).device
 
     z = model.sample_prior_z(num_samples)
     x_z = model.decode(z)
@@ -407,12 +411,11 @@ def sample_scfm_decoder_refinement(
     6. ODE from t=t₀ to t=1
     """
     model.eval()
-    device = next(model.parameters()).device
 
     z = model.sample_prior_z(num_samples)
     x_hat = model.decode(z)
     noise = torch.randn_like(x_hat)
-    x_0 = model.decode(z).detach() + noise
+    x_0 = x_hat + noise
     x = (1 - t0) * x_0 + t0 * x_hat
 
     dt = (1.0 - t0) / num_steps

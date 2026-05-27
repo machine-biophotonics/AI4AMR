@@ -111,10 +111,13 @@ else:
     freq_block_channels = tuple(int(x) for x in freq_bc.split(','))
     use_freq = ckpt_args.get('freq_flow', False)
     use_struct = ckpt_args.get('struct_flow', False)
-    use_gmm = ckpt_args.get('gmm', False)
+    use_gmm = ckpt_args.get('use_gmm', False)
     unsupervised_gmm = ckpt_args.get('unsupervised_gmm', False)
     gmm_components = ckpt_args.get('gmm_components', 185)
     latent_dim = ckpt_args.get('struct_latent_dim', 64)
+    dual_predict_mu = ckpt_args.get('dual_predict_mu', False)
+    predict_mu = ckpt_args.get('predict_mu', False)
+    exogenous_dim = ckpt_args.get('exogenous_dim', 64)
 
     if use_freq and use_struct:
         model = CombinedFlowUNet(
@@ -125,6 +128,9 @@ else:
             freq_filter_D=ckpt_args.get('freq_filter_D', 8.0),
             use_freq=True, use_struct=True,
             latent_dim=latent_dim,
+            dual_predict_mu=dual_predict_mu,
+            predict_mu=predict_mu,
+            exogenous_dim=exogenous_dim,
             use_gmm=use_gmm, gmm_components=gmm_components,
             unsupervised_gmm=unsupervised_gmm,
         ).to(device)

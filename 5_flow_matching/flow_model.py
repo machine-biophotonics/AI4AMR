@@ -396,6 +396,11 @@ class StructFlowUNet(nn.Module):
         self._mid_feat = None
         self._mid_handle = self.unet.mid_block.register_forward_hook(self._mid_hook)
 
+    def remove_hooks(self):
+        if self._mid_handle is not None:
+            self._mid_handle.remove()
+            self._mid_handle = None
+
     def _mid_hook(self, module, input, output):
         self._mid_feat = output[0] if isinstance(output, tuple) else output
 
@@ -446,7 +451,8 @@ class StructFlowUNet(nn.Module):
         """Sample z from GMM prior or N(0,I)."""
         if hasattr(self, 'gmm') and self.gmm is not None:
             return self.gmm.sample(n)
-        return torch.randn(n, self.latent_dim, device=next(self.parameters()).device)
+        device = next(self.parameters()).device if list(self.parameters()) else 'cpu'
+        return torch.randn(n, self.latent_dim, device=device)
 
 
 class CombinedFlowUNet(nn.Module):
@@ -525,6 +531,7 @@ class CombinedFlowUNet(nn.Module):
         self.main_unet.enable_gradient_checkpointing()
 
         if use_freq:
+            freq_norm_groups = min(32, freq_block_out_channels[0])
             self.freq_unet = UNet2DModel(
                 sample_size=sample_size,
                 in_channels=in_channels,
@@ -536,7 +543,7 @@ class CombinedFlowUNet(nn.Module):
                 num_class_embeds=num_class_embeds,
                 class_embed_type=None,
                 act_fn="silu",
-                norm_num_groups=32,
+                norm_num_groups=freq_norm_groups,
                 dropout=0.1,
             )
             self.freq_unet.enable_gradient_checkpointing()
@@ -563,6 +570,11 @@ class CombinedFlowUNet(nn.Module):
                                            unsupervised=unsupervised_gmm)
             self._mid_feat = None
             self._mid_handle = self.main_unet.mid_block.register_forward_hook(self._mid_hook)
+
+    def remove_hooks(self):
+        if hasattr(self, '_mid_handle') and self._mid_handle is not None:
+            self._mid_handle.remove()
+            self._mid_handle = None
 
     def _mid_hook(self, module, input, output):
         if self.use_struct:
@@ -629,7 +641,8 @@ class CombinedFlowUNet(nn.Module):
         """Sample z from GMM prior or N(0,I)."""
         if hasattr(self, 'gmm') and self.gmm is not None:
             return self.gmm.sample(n)
-        return torch.randn(n, self.latent_dim, device=next(self.parameters()).device)
+        device = next(self.parameters()).device if list(self.parameters()) else 'cpu'
+        return torch.randn(n, self.latent_dim, device=device)
 
 
 def supervised_contrastive_loss(
@@ -673,6 +686,7 @@ def compute_struct_flow_loss(
     beta: float | None = None,
     use_gmm: bool = False,
     unsupervised_gmm: bool = False,
+    r_eps_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """StructFlow loss: flow matching + VAE-style KL + reconstruction + SupCon.
 
@@ -704,15 +718,15 @@ def compute_struct_flow_loss(
     else:
         kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
 
-    # 3. Reconstruction loss
-    x_recon = model.decode(z)
-    recon_loss = F.mse_loss(x_recon, x_1)
+    # 3. Reconstruction loss + structured source (single decode call)
+    x_z = model.decode(z)
+    recon_loss = F.mse_loss(x_z, x_1)
 
     # 4. Flow matching with structured source
     t = torch.rand(B, device=device)
     t_b = t.view(B, *([1] * (x_1.ndim - 1)))
 
-    x_z = model.decode(z).detach()  # structured part, stop grad to avoid trivial solution
+    x_z = x_z.detach()  # structured part, stop grad to avoid trivial solution
     noise = torch.randn_like(x_1)
     x_0 = x_z + noise  # structured + exogenous
 
@@ -743,7 +757,7 @@ def compute_struct_flow_loss(
     # Exogenous regularization R_ε (Eq 15)
     if predict_mu:
         r_eps = 0.5 * mu_eps.pow(2).sum(dim=1).mean()
-        total = total + r_eps
+        total = total + r_eps_weight * r_eps
         comp['r_eps'] = r_eps.item()
 
     if supcon_weight > 0.0 and class_labels is not None:
@@ -754,8 +768,7 @@ def compute_struct_flow_loss(
     if delta_fm_lambda > 0.0 and class_labels is not None:
         neg_idxs = _sample_different_class(class_labels)
         x_neg = x_1[neg_idxs]
-        x_0_neg = torch.randn_like(x_1)
-        u_neg = x_neg - x_0_neg
+        u_neg = x_neg - x_0  # same source (x_0), different target
         loss_neg = F.mse_loss(v_pred, u_neg)
         total = total - delta_fm_lambda * loss_neg
         comp['neg'] = loss_neg.item()
@@ -781,7 +794,6 @@ def sample_struct(
     """
     model.eval()
     latent_dim = model.latent_dim
-    device = next(model.parameters()).device
 
     if predict_mu and hasattr(model, 'sample_prior_z'):
         z = model.sample_prior_z(num_samples)
@@ -868,8 +880,7 @@ def compute_flow_loss(
     if delta_fm_lambda > 0.0 and class_labels is not None:
         neg_idxs = _sample_different_class(class_labels)
         x_neg = x_1[neg_idxs]
-        x_0_neg = torch.randn_like(x_1)
-        u_neg = x_neg - x_0_neg
+        u_neg = x_neg - x_0  # same source (x_0), different target
         loss_neg = F.mse_loss(v_pred, u_neg)
         loss = loss - delta_fm_lambda * loss_neg
         components['neg'] = loss_neg.item()
@@ -893,7 +904,6 @@ def sample(
     model.eval()
     C = model.spatial_unet.config.in_channels if freq_flow else model.unet.config.in_channels
     H = W = model.spatial_unet.config.sample_size if freq_flow else model.unet.config.sample_size
-    device = next(model.parameters()).device
 
     x = torch.randn(num_samples, C, H, W, device=device)
     if class_labels is not None:
@@ -927,6 +937,7 @@ def compute_unified_loss(
     use_gmm: bool = False,
     unsupervised_gmm: bool = False,
     dual_predict_mu: bool = False,
+    r_eps_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Unified loss supporting all FreqFlow + StructFlow + DeltaFM + SupCon combinations.
 
@@ -965,8 +976,9 @@ def compute_unified_loss(
         else:
             kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
 
-        recon_loss = F.mse_loss(model.decode(z), x_1)
-        x_z = model.decode(z).detach()
+        x_z = model.decode(z)
+        recon_loss = F.mse_loss(x_z, x_1)
+        x_z = x_z.detach()
         noise = torch.randn_like(x_1)
         x_0 = x_z + noise
 
@@ -992,8 +1004,8 @@ def compute_unified_loss(
         x_0_sg = x_0.detach()
         loss_v = F.mse_loss(v_pred, u_t)
         loss_mu = F.mse_loss(mu_pred, x_0_sg)
-        _, x_0_high = Fourier_filter(x_0_sg, freq_filter_D)
-        loss_freq = F.mse_loss(v_freq, x_0_high) * freq_loss_weight
+        _, u_high = Fourier_filter(u_t, freq_filter_D)
+        loss_freq = F.mse_loss(v_freq, u_high) * freq_loss_weight
         flow_loss = loss_v + loss_mu + loss_freq
         comp['spatial'] = loss_v.item()
         comp['mu_pred'] = loss_mu.item()
@@ -1011,8 +1023,8 @@ def compute_unified_loss(
         mu_high, mu_main = output
         x_0_sg = x_0.detach()
         loss_spatial = F.mse_loss(mu_main, x_0_sg)
-        _, x_0_high = Fourier_filter(x_0_sg, freq_filter_D)
-        loss_freq = F.mse_loss(mu_high, x_0_high) * freq_loss_weight
+        _, u_high = Fourier_filter(u_t, freq_filter_D)
+        loss_freq = F.mse_loss(mu_high, u_high) * freq_loss_weight
         flow_loss = loss_spatial + loss_freq
         v_pred = (x_t - mu_main) / t_b.clamp(min=1e-5)
         comp['spatial'] = loss_spatial.item()
@@ -1039,7 +1051,7 @@ def compute_unified_loss(
         comp['freq'] = 0.0
 
     effective_kl_weight = beta if (effective_predict_mu and beta is not None) else kl_weight
-    total = flow_loss + effective_kl_weight * kl_loss + recon_weight * recon_loss + r_eps
+    total = flow_loss + effective_kl_weight * kl_loss + recon_weight * recon_loss + r_eps_weight * r_eps
     comp['flow'] = flow_loss.item()
     comp['neg'] = 0.0
     comp['supcon'] = 0.0
@@ -1060,8 +1072,7 @@ def compute_unified_loss(
             v_pred_for_delta = v_pred
         neg_idxs = _sample_different_class(class_labels)
         x_neg = x_1[neg_idxs]
-        x_0_neg = torch.randn_like(x_1)
-        u_neg = x_neg - x_0_neg
+        u_neg = x_neg - x_0  # same source (x_0), different target
         loss_neg = F.mse_loss(v_pred_for_delta, u_neg)
         total = total - delta_fm_lambda * loss_neg
         comp['neg'] = loss_neg.item()
@@ -1090,7 +1101,6 @@ def sample_combined(
     model.eval()
     C = model.main_unet.config.in_channels
     H = W = model.main_unet.config.sample_size
-    device = next(model.parameters()).device
 
     has_struct_prior = predict_mu or dual_predict_mu
     if use_struct:

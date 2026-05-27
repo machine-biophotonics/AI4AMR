@@ -95,6 +95,9 @@ parser.add_argument('--mu_anneal', action='store_true', default=False,
     help='Linearly anneal struct_kl_weight from 0 over mu_warmup_epochs (SCFM)')
 parser.add_argument('--mu_warmup_epochs', type=int, default=20,
     help='Epochs for linear beta warmup (SCFM, default: 20)')
+parser.add_argument('--r_eps_weight', type=float, default=1.0,
+    help='Weight for exogenous regularization R_ε (default: 1.0). '
+         'Reduce if R_ε dominates flow loss (e.g., large exogenous_dim).')
 args = parser.parse_args()
 
 if args.freq_flow and args.batch_size == 64:
@@ -158,6 +161,12 @@ freq_block_channels = tuple(int(x) for x in args.freq_block_channels.split(','))
 model_num_classes = None if (args.predict_mu and not args.dual_predict_mu) else num_classes
 if model_num_classes is None and args.struct_flow:
     print(f"  Unconditional UNet: class conditioning removed (SCFM mode)")
+
+# Supervised GMM: each class needs its own component
+if args.use_gmm and not args.unsupervised_gmm:
+    if args.gmm_components != num_classes:
+        print(f"  Supervised GMM: overriding gmm_components from {args.gmm_components} to {num_classes}")
+        args.gmm_components = num_classes
 
 if args.freq_flow and args.struct_flow:
     print(f"  CombinedFlow: freq_flow + struct_flow, predict_mu={args.predict_mu}")
@@ -360,6 +369,7 @@ for epoch in range(start_epoch, args.epochs):
                     use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
                     dual_predict_mu=args.dual_predict_mu,
+                    r_eps_weight=args.r_eps_weight,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
@@ -373,6 +383,7 @@ for epoch in range(start_epoch, args.epochs):
                     beta=beta_used,
                     use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
+                    r_eps_weight=args.r_eps_weight,
                 )
             else:
                 loss, comp = compute_flow_loss(
@@ -465,6 +476,7 @@ for epoch in range(start_epoch, args.epochs):
                         use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
                         dual_predict_mu=args.dual_predict_mu,
+                        r_eps_weight=args.r_eps_weight,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
@@ -478,6 +490,7 @@ for epoch in range(start_epoch, args.epochs):
                         beta=beta_used,
                         use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
+                        r_eps_weight=args.r_eps_weight,
                     )
                 else:
                     loss, comp = compute_flow_loss(
@@ -581,6 +594,7 @@ for epoch in range(start_epoch, args.epochs):
             mu_z_all = []
             for imgs, class_ids in val_loader:
                 imgs = imgs.to(device, non_blocking=True)
+                class_ids = class_ids.to(device, non_blocking=True)
                 t_enc = torch.full((imgs.shape[0],), 1.0, device=device)
                 mu_z, _, _ = model.encode(imgs, t_enc, class_ids)
                 mu_z_all.append(mu_z)

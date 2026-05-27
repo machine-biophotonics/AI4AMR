@@ -72,7 +72,10 @@ parser.add_argument('--use_gmm', action='store_true', default=False,
 parser.add_argument('--gmm_components', type=int, default=30,
                     help='Number of GMM components K (default: 30)')
 parser.add_argument('--unsupervised_gmm', action='store_true', default=False,
-                    help='VaDE-style GMM (q(c|x) via Bayes rule, no labels)')
+    help='VaDE-style GMM (q(c|x) via Bayes rule, no labels)')
+parser.add_argument('--r_eps_weight', type=float, default=1.0,
+    help='Weight for exogenous regularization R_ε (default: 1.0). '
+         'Reduce if R_ε dominates flow loss (e.g., large exogenous_dim).')
 args = parser.parse_args()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -121,6 +124,12 @@ val_loader = DataLoader(
     num_workers=args.num_workers, pin_memory=True,
     persistent_workers=True, prefetch_factor=4,
 )
+
+# Supervised GMM: each class needs its own component
+if args.use_gmm and not args.unsupervised_gmm:
+    if args.gmm_components != num_classes:
+        print(f"  Supervised GMM: overriding gmm_components from {args.gmm_components} to {num_classes}")
+        args.gmm_components = num_classes
 
 print("\n[2/5] Building SCFM model ...")
 block_channels = tuple(int(x) for x in args.block_channels.split(','))
@@ -219,14 +228,16 @@ for epoch in range(start_epoch, args.epochs):
     t0 = time.time()
 
     pbar = tqdm(train_loader, desc=f"E{epoch+1:03d}", leave=False)
-    for imgs, _ in pbar:
+    for imgs, class_ids in pbar:
         imgs = imgs.to(device, non_blocking=True)
+        class_ids = class_ids.to(device, non_blocking=True)
 
         with torch.amp.autocast('cuda', dtype=amp_dtype):
             loss, comp = scfm_loss(
-                model, imgs,
+                model, imgs, class_labels=class_ids,
                 beta=beta_used,
                 recon_weight=args.recon_weight,
+                r_eps_weight=args.r_eps_weight,
                 use_gmm=args.use_gmm,
                 unsupervised_gmm=args.unsupervised_gmm,
             )
@@ -268,13 +279,15 @@ for epoch in range(start_epoch, args.epochs):
     val_recon = 0.0
     val_r_eps = 0.0
     with torch.no_grad():
-        for imgs, _ in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
+        for imgs, class_ids in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
             imgs = imgs.to(device, non_blocking=True)
+            class_ids = class_ids.to(device, non_blocking=True)
             with torch.amp.autocast('cuda', dtype=amp_dtype):
                 loss, comp = scfm_loss(
-                    model, imgs,
+                    model, imgs, class_labels=class_ids,
                     beta=beta_used,
                     recon_weight=args.recon_weight,
+                    r_eps_weight=args.r_eps_weight,
                     use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
                 )
