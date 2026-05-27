@@ -69,27 +69,30 @@ parser.add_argument('--struct_flow', action='store_true', default=False,
                     help='Use StructFlow (SCFM) architecture with structured latent')
 parser.add_argument('--struct_latent_dim', type=int, default=64,
                     help='Structured latent dimension for StructFlow')
-parser.add_argument('--struct_kl_weight', type=float, default=0.1,
-                    help='KL divergence weight for StructFlow VAE loss. β-VAE multiplier.'
-                         ' β=1 (default) gives equal KL/recon weight. β>1 for disentanglement.')
+parser.add_argument('--struct_kl_weight', type=float, default=0.001,
+                    help='KL divergence weight for StructFlow VAE loss')
 parser.add_argument('--struct_recon_weight', type=float, default=0.1,
                     help='Reconstruction loss weight for StructFlow')
-parser.add_argument('--kl_anneal', action='store_true', default=False,
-                    help='Linearly anneal KL weight from 0 to struct_kl_weight over kl_warmup_epochs')
-parser.add_argument('--kl_warmup_epochs', type=int, default=20,
-                    help='Epochs for linear KL warmup (default: 20)')
-parser.add_argument('--use_gmm', action='store_true', default=False,
-                    help='Use GMM prior instead of N(0,I) for structured latent')
-parser.add_argument('--gmm_components', type=int, default=30,
-                    help='Number of GMM components (default: 30)')
-parser.add_argument('--unsupervised_gmm', action='store_true', default=False,
-                    help='Use unsupervised VaDE-style GMM (no labels, q(c|x) via Bayes rule)')
 parser.add_argument('--supcon', action='store_true', default=False,
                     help='Supervised contrastive loss on μ_z (SupCon, Khosla et al. 2020)')
 parser.add_argument('--supcon_weight', type=float, default=0.1,
                     help='SupCon loss weight')
 parser.add_argument('--supcon_temperature', type=float, default=0.1,
-                    help='SupCon temperature parameter')
+    help='SupCon temperature parameter')
+parser.add_argument('--predict_mu', action='store_true', default=False,
+    help='UNet predicts posterior mean μ (SCFM) instead of velocity v')
+parser.add_argument('--exogenous_dim', type=int, default=64,
+    help='Exogenous dimension d_ε for μ_ε head (SCFM, default: 64)')
+parser.add_argument('--use_gmm', action='store_true', default=False,
+    help='Use learnable GMM prior instead of N(0,I) (SCFM only)')
+parser.add_argument('--gmm_components', type=int, default=30,
+    help='Number of GMM components K (default: 30)')
+parser.add_argument('--unsupervised_gmm', action='store_true', default=False,
+    help='VaDE-style GMM: q(c|x) via Bayes rule, no labels needed')
+parser.add_argument('--mu_anneal', action='store_true', default=False,
+    help='Linearly anneal struct_kl_weight from 0 over mu_warmup_epochs (SCFM)')
+parser.add_argument('--mu_warmup_epochs', type=int, default=20,
+    help='Epochs for linear beta warmup (SCFM, default: 20)')
 args = parser.parse_args()
 
 if args.freq_flow and args.batch_size == 64:
@@ -149,25 +152,31 @@ print("\n[2/5] Building model ...")
 block_channels = tuple(int(x) for x in args.block_channels.split(','))
 freq_block_channels = tuple(int(x) for x in args.freq_block_channels.split(',')) if args.freq_flow else block_channels
 
+# Unconditional UNet (no class embedding) when using SCFM posterior-mean mode
+model_num_classes = None if args.predict_mu else num_classes
+if model_num_classes is None and args.struct_flow:
+    print(f"  Unconditional UNet: class conditioning removed (SCFM mode)")
+
 if args.freq_flow and args.struct_flow:
-    print(f"  CombinedFlow: freq_flow + struct_flow")
+    print(f"  CombinedFlow: freq_flow + struct_flow, predict_mu={args.predict_mu}")
     model = CombinedFlowUNet(
         in_channels=1,
         sample_size=224,
         block_out_channels=block_channels,
         freq_block_out_channels=freq_block_channels,
         layers_per_block=2,
-        num_class_embeds=num_classes,
+        num_class_embeds=model_num_classes,
         freq_filter_D=args.freq_filter_D,
         use_freq=True,
         use_struct=True,
         latent_dim=args.struct_latent_dim,
+        predict_mu=args.predict_mu,
+        exogenous_dim=args.exogenous_dim,
         use_gmm=args.use_gmm,
         gmm_components=args.gmm_components,
         unsupervised_gmm=args.unsupervised_gmm,
     ).to(device)
-    gmm_info = f" gmm={args.gmm_components}c" if args.use_gmm else ""
-    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}{gmm_info}")
+    print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}")
 elif args.freq_flow:
     print(f"  FreqFlow: batch_size={args.batch_size}")
     model = FreqFlowUNet(
@@ -176,24 +185,27 @@ elif args.freq_flow:
         block_out_channels=block_channels,
         freq_block_out_channels=freq_block_channels,
         layers_per_block=2,
-        num_class_embeds=num_classes,
+        num_class_embeds=model_num_classes,
         freq_filter_D=args.freq_filter_D,
     ).to(device)
     print(f"  FreqFlow: freq_branch={freq_block_channels}")
 elif args.struct_flow:
-    gmm_info = f" gmm={args.gmm_components}c" if args.use_gmm else ""
-    print(f"  StructFlow: latent_dim={args.struct_latent_dim}{gmm_info}")
+    print(f"  StructFlow: latent_dim={args.struct_latent_dim}, predict_mu={args.predict_mu}")
     model = StructFlowUNet(
         in_channels=1,
         sample_size=224,
         block_out_channels=block_channels,
         layers_per_block=2,
-        num_class_embeds=num_classes,
+        num_class_embeds=model_num_classes,
         latent_dim=args.struct_latent_dim,
+        predict_mu=args.predict_mu,
+        exogenous_dim=args.exogenous_dim,
         use_gmm=args.use_gmm,
         gmm_components=args.gmm_components,
         unsupervised_gmm=args.unsupervised_gmm,
     ).to(device)
+    if args.predict_mu:
+        print(f"  SCFM mode: exogenous_dim={args.exogenous_dim}, GMM={args.use_gmm}")
     print(f"  StructFlow: kl_weight={args.struct_kl_weight}, recon_weight={args.struct_recon_weight}")
 else:
     model = FlowUNet(
@@ -201,7 +213,7 @@ else:
         sample_size=224,
         block_out_channels=block_channels,
         layers_per_block=2,
-        num_class_embeds=num_classes,
+        num_class_embeds=model_num_classes,
     ).to(device)
 
 n_params = sum(p.numel() for p in model.parameters())
@@ -273,17 +285,23 @@ with open(metrics_path, 'w', newline='') as f:
         csv_header = ['epoch', 'train_loss', 'val_loss',
                       'train_spatial', 'val_spatial', 'train_freq', 'val_freq',
                       'train_kl', 'val_kl', 'train_recon', 'val_recon',
+                      'train_r_eps', 'val_r_eps',
                       'train_neg', 'val_neg']
         if args.supcon:
             csv_header += ['train_supcon', 'val_supcon']
+        if args.predict_mu:
+            csv_header += ['beta']
         csv_header += ['lr', 'time_s']
     elif args.struct_flow:
         csv_header = ['epoch', 'train_loss', 'val_loss',
                       'train_flow', 'val_flow',
                       'train_kl', 'val_kl', 'train_recon', 'val_recon',
+                      'train_r_eps', 'val_r_eps',
                       'train_neg', 'val_neg']
         if args.supcon:
             csv_header += ['train_supcon', 'val_supcon']
+        if args.predict_mu:
+            csv_header += ['beta']
         csv_header += ['lr', 'time_s']
     else:
         csv_header = ['epoch', 'train_loss', 'val_loss',
@@ -295,10 +313,13 @@ for epoch in range(start_epoch, args.epochs):
     train_ds.set_epoch(epoch)
     val_ds.set_epoch(epoch)
 
-    if args.kl_anneal:
-        kl_weight = args.struct_kl_weight * min(epoch / args.kl_warmup_epochs, 1.0)
+    # Beta annealing for SCFM mode
+    if args.predict_mu and args.mu_anneal:
+        beta_used = args.struct_kl_weight * min(epoch / args.mu_warmup_epochs, 1.0)
+    elif args.predict_mu:
+        beta_used = args.struct_kl_weight
     else:
-        kl_weight = args.struct_kl_weight
+        beta_used = None
 
     model.train()
     train_loss = 0.0
@@ -309,6 +330,7 @@ for epoch in range(start_epoch, args.epochs):
     train_recon = 0.0
     train_neg = 0.0
     train_supcon = 0.0
+    train_r_eps = 0.0
     t0 = time.time()
 
     pbar = tqdm(train_loader, desc=f"E{epoch+1:03d}", leave=False)
@@ -324,22 +346,26 @@ for epoch in range(start_epoch, args.epochs):
                     use_freq=args.freq_flow, use_struct=args.struct_flow,
                     freq_filter_D=args.freq_filter_D,
                     freq_loss_weight=args.freq_loss_weight,
-                    kl_weight=kl_weight,
+                    kl_weight=args.struct_kl_weight,
                     recon_weight=args.struct_recon_weight,
                     delta_fm_lambda=delta_lambda,
                     supcon_weight=args.supcon_weight if args.supcon else 0.0,
                     supcon_temperature=args.supcon_temperature,
+                    predict_mu=args.predict_mu,
+                    beta=beta_used,
                     use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
                     model, imgs, class_labels=class_ids,
-                    kl_weight=kl_weight,
+                    kl_weight=args.struct_kl_weight,
                     recon_weight=args.struct_recon_weight,
                     delta_fm_lambda=delta_lambda,
                     supcon_weight=args.supcon_weight if args.supcon else 0.0,
                     supcon_temperature=args.supcon_temperature,
+                    predict_mu=args.predict_mu,
+                    beta=beta_used,
                     use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
                 )
@@ -367,6 +393,7 @@ for epoch in range(start_epoch, args.epochs):
         train_recon += comp.get('recon', 0.0)
         train_neg += comp.get('neg', 0.0)
         train_supcon += comp.get('supcon', 0.0)
+        train_r_eps += comp.get('r_eps', 0.0)
         train_steps += 1
         pbar.set_postfix(loss=loss.item())
 
@@ -377,6 +404,7 @@ for epoch in range(start_epoch, args.epochs):
     train_recon /= max(1, train_steps)
     train_neg /= max(1, train_steps)
     train_supcon /= max(1, train_steps)
+    train_r_eps /= max(1, train_steps)
     epoch_time = time.time() - t0
     writer.add_scalar('train/loss', train_loss, epoch)
     if use_unified:
@@ -392,6 +420,7 @@ for epoch in range(start_epoch, args.epochs):
         writer.add_scalar('train/kl', train_kl, epoch)
         writer.add_scalar('train/recon', train_recon, epoch)
         writer.add_scalar('train/neg', train_neg, epoch)
+        writer.add_scalar('train/r_eps', train_r_eps, epoch)
         if args.supcon:
             writer.add_scalar('train/supcon', train_supcon, epoch)
     else:
@@ -408,6 +437,7 @@ for epoch in range(start_epoch, args.epochs):
     val_kl = 0.0
     val_recon = 0.0
     val_supcon = 0.0
+    val_r_eps = 0.0
     with torch.no_grad():
         for imgs, class_ids in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
             imgs = imgs.to(device, non_blocking=True)
@@ -420,31 +450,26 @@ for epoch in range(start_epoch, args.epochs):
                         use_freq=args.freq_flow, use_struct=args.struct_flow,
                         freq_filter_D=args.freq_filter_D,
                         freq_loss_weight=args.freq_loss_weight,
-                        kl_weight=kl_weight,
+                        kl_weight=args.struct_kl_weight,
                         recon_weight=args.struct_recon_weight,
                         delta_fm_lambda=delta_lambda,
                         supcon_weight=args.supcon_weight if args.supcon else 0.0,
                         supcon_temperature=args.supcon_temperature,
-                    )
-                elif args.struct_flow:
-                    loss, comp = compute_struct_flow_loss(
-                        model, imgs, class_labels=class_ids,
-                        kl_weight=kl_weight,
-                        recon_weight=args.struct_recon_weight,
-                        delta_fm_lambda=delta_lambda,
-                        supcon_weight=args.supcon_weight if args.supcon else 0.0,
-                        supcon_temperature=args.supcon_temperature,
+                        predict_mu=args.predict_mu,
+                        beta=beta_used,
                         use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
                         model, imgs, class_labels=class_ids,
-                        kl_weight=kl_weight,
+                        kl_weight=args.struct_kl_weight,
                         recon_weight=args.struct_recon_weight,
                         delta_fm_lambda=delta_lambda,
                         supcon_weight=args.supcon_weight if args.supcon else 0.0,
                         supcon_temperature=args.supcon_temperature,
+                        predict_mu=args.predict_mu,
+                        beta=beta_used,
                         use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
                     )
@@ -463,6 +488,7 @@ for epoch in range(start_epoch, args.epochs):
             val_recon += comp.get('recon', 0.0)
             val_neg += comp.get('neg', 0.0)
             val_supcon += comp.get('supcon', 0.0)
+            val_r_eps += comp.get('r_eps', 0.0)
             val_steps += 1
     val_loss /= max(1, val_steps)
     val_spatial /= max(1, val_steps)
@@ -471,6 +497,7 @@ for epoch in range(start_epoch, args.epochs):
     val_kl /= max(1, val_steps)
     val_recon /= max(1, val_steps)
     val_supcon /= max(1, val_steps)
+    val_r_eps /= max(1, val_steps)
     writer.add_scalar('val/loss', val_loss, epoch)
     if use_unified:
         writer.add_scalar('val/spatial', val_spatial, epoch)
@@ -485,35 +512,22 @@ for epoch in range(start_epoch, args.epochs):
         writer.add_scalar('val/kl', val_kl, epoch)
         writer.add_scalar('val/recon', val_recon, epoch)
         writer.add_scalar('val/neg', val_neg, epoch)
+        writer.add_scalar('val/r_eps', val_r_eps, epoch)
         if args.supcon:
             writer.add_scalar('val/supcon', val_supcon, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
     if use_unified:
         supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
+        beta_str = f" β={beta_used:.4f}" if args.predict_mu else ""
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} kl={val_kl:.4f} "
-              f"recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}) ({epoch_time:.0f}s)")
+              f"recon={val_recon:.4f} r_eps={val_r_eps:.4f} neg={val_neg:.4f}{supcon_str}{beta_str}) ({epoch_time:.0f}s)")
     elif args.struct_flow:
         supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
-        kl_str = f" klw={kl_weight:.4f}" if args.kl_anneal else ""
-        # GMM health diagnostics for unsupervised GMM
-        gmm_str = ""
-        if args.struct_flow and hasattr(model, 'gmm') and model.gmm is not None and model.gmm.unsupervised:
-            with torch.no_grad():
-                q_c_all = []
-                for imgs, _ in val_loader:
-                    imgs = imgs.to(device, non_blocking=True)
-                    mu_z, _ = model.encode(imgs, torch.full((imgs.shape[0],), 1.0, device=device), None)
-                    q_c_all.append(model.gmm.responsibilities(mu_z))
-                if q_c_all:
-                    q_c_cat = torch.cat(q_c_all, dim=0)
-                    ent = (-(q_c_cat * torch.log(q_c_cat.clamp(1e-10, 1))).sum(dim=1)).mean().item()
-                    assignments = q_c_cat.argmax(dim=1)
-                    active = assignments.unique().numel()
-                    gmm_str = f" gmm_ent={ent:.3f} active={active}/{model.gmm.n_components}"
+        beta_str = f" β={beta_used:.4f}" if args.predict_mu else ""
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
-              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} neg={val_neg:.4f}{supcon_str}{kl_str}{gmm_str}) ({epoch_time:.0f}s)")
+              f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} r_eps={val_r_eps:.4f} neg={val_neg:.4f}{supcon_str}{beta_str}) ({epoch_time:.0f}s)")
     else:
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
@@ -526,18 +540,24 @@ for epoch in range(start_epoch, args.epochs):
                    f'{train_freq:.4f}', f'{val_freq:.4f}',
                    f'{train_kl:.4f}', f'{val_kl:.4f}',
                    f'{train_recon:.4f}', f'{val_recon:.4f}',
+                   f'{train_r_eps:.4f}', f'{val_r_eps:.4f}',
                    f'{train_neg:.4f}', f'{val_neg:.4f}']
             if args.supcon:
                 row += [f'{train_supcon:.4f}', f'{val_supcon:.4f}']
+            if args.predict_mu:
+                row += [f'{beta_used:.4e}']
             row += [f'{lr_now:.2e}', f'{epoch_time:.0f}']
         elif args.struct_flow:
             row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
                    f'{train_spatial:.4f}', f'{val_spatial:.4f}',
                    f'{train_kl:.4f}', f'{val_kl:.4f}',
                    f'{train_recon:.4f}', f'{val_recon:.4f}',
+                   f'{train_r_eps:.4f}', f'{val_r_eps:.4f}',
                    f'{train_neg:.4f}', f'{val_neg:.4f}']
             if args.supcon:
                 row += [f'{train_supcon:.4f}', f'{val_supcon:.4f}']
+            if args.predict_mu:
+                row += [f'{beta_used:.4e}']
             row += [f'{lr_now:.2e}', f'{epoch_time:.0f}']
         else:
             row = [epoch+1, f'{train_loss:.6f}', f'{val_loss:.6f}',
@@ -547,60 +567,109 @@ for epoch in range(start_epoch, args.epochs):
                    f'{lr_now:.2e}', f'{epoch_time:.0f}']
         w.writerow(row)
 
-    # Generate 1 sample per class in 2-row table: drugs top, mutants bottom
+    # GMM health diagnostics (SCFM mode)
+    gmm_diag = None
+    if args.predict_mu and args.use_gmm and args.unsupervised_gmm and args.struct_flow:
+        with torch.no_grad():
+            mu_z_all = []
+            for imgs, class_ids in val_loader:
+                imgs = imgs.to(device, non_blocking=True)
+                t_enc = torch.full((imgs.shape[0],), 1.0, device=device)
+                mu_z, _, _ = model.encode(imgs, t_enc, class_ids)
+                mu_z_all.append(mu_z)
+            if mu_z_all:
+                mu_z_cat = torch.cat(mu_z_all, dim=0)
+                if hasattr(model, 'gmm') and model.gmm is not None:
+                    gmm_diag = model.gmm.diagnostics(mu_z_cat)
+                    for k, v in gmm_diag.items():
+                        writer.add_scalar(f'gmm/{k}', v, epoch)
+
+    # Append GMM diagnostics to separate CSV
+    if gmm_diag is not None:
+        gmm_csv = os.path.join(OUTPUT_DIR, 'gmm_diagnostics.csv')
+        gmm_cols = ['epoch'] + list(gmm_diag.keys())
+        write_header = not os.path.exists(gmm_csv)
+        with open(gmm_csv, 'a', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=gmm_cols)
+            if write_header:
+                w.writeheader()
+            row = {'epoch': epoch + 1, **gmm_diag}
+            w.writerow(row)
+
+    # Generate samples
     if epoch % 1 == 0:
         model.eval()
         with torch.no_grad():
-            all_samples = []
-            for ci in vis_classes:
-                cid = torch.tensor([ci], device=device)
-                if use_unified:
-                    samp = sample_combined(model, 1, num_steps=args.num_steps,
-                                           class_labels=cid, device=device,
-                                           use_freq=args.freq_flow,
-                                           use_struct=args.struct_flow)
-                elif args.struct_flow:
-                    samp = sample_struct(model, 1, num_steps=args.num_steps,
-                                         class_labels=cid, device=device)
-                else:
-                    samp = sample(model, 1, num_steps=args.num_steps,
-                                  class_labels=cid, device=device,
-                                  freq_flow=args.freq_flow)
-                all_samples.append(samp.cpu())
-
-            n_drugs, n_mutants = len(drug_viz), len(mutant_viz)
-            n_cols = max(n_drugs, n_mutants)
-
-            fig = plt.figure(figsize=(n_cols * 0.45, 5))
-            gs = GridSpec(2, n_cols, figure=fig, hspace=0.35, wspace=0.02,
-                          height_ratios=[1, 1])
-
-            for i in range(n_cols):
-                # Drug row
-                ax = fig.add_subplot(gs[0, i])
-                if i < n_drugs:
-                    img = all_samples[i]
+            if args.predict_mu:
+                # Unconditional: 5 random samples (no class labels)
+                samp = sample_combined(model, 5, num_steps=args.num_steps,
+                                       class_labels=None, device=device,
+                                       use_freq=args.freq_flow,
+                                       use_struct=args.struct_flow,
+                                       predict_mu=args.predict_mu)
+                fig, axes = plt.subplots(1, 5, figsize=(5 * 0.9, 2.5))
+                for i in range(5):
+                    img = samp[i].cpu()
                     img_01 = (img * 0.5 + 0.5).clamp(0, 1)
-                    ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
-                    ax.set_xlabel(class_names[drug_viz[i]].replace('_', ' '), fontsize=3)
-                ax.set_xticks([])
-                ax.set_yticks([])
+                    axes[i].imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
+                    axes[i].axis('off')
+                plt.suptitle(f'Epoch {epoch+1}: Unconditional samples', fontsize=7, y=0.98)
+                plt.tight_layout()
+                fig.savefig(os.path.join(OUTPUT_DIR, f'samples_{epoch+1:03d}.png'),
+                           dpi=200, bbox_inches='tight')
+                plt.close(fig)
+            else:
+                # Class-conditional: 1 sample per class in 2-row table
+                all_samples = []
+                for ci in vis_classes:
+                    cid = torch.tensor([ci], device=device)
+                    if use_unified:
+                        samp = sample_combined(model, 1, num_steps=args.num_steps,
+                                               class_labels=cid, device=device,
+                                               use_freq=args.freq_flow,
+                                               use_struct=args.struct_flow,
+                                               predict_mu=args.predict_mu)
+                    elif args.struct_flow:
+                        samp = sample_struct(model, 1, num_steps=args.num_steps,
+                                             class_labels=cid, device=device,
+                                             predict_mu=args.predict_mu)
+                    else:
+                        samp = sample(model, 1, num_steps=args.num_steps,
+                                      class_labels=cid, device=device,
+                                      freq_flow=args.freq_flow)
+                    all_samples.append(samp.cpu())
 
-                # Mutant row
-                ax = fig.add_subplot(gs[1, i])
-                if i < n_mutants:
-                    img = all_samples[n_drugs + i]
-                    img_01 = (img * 0.5 + 0.5).clamp(0, 1)
-                    ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
-                    ax.set_xlabel(class_names[mutant_viz[i]].replace('_', ' '), fontsize=3)
-                ax.set_xticks([])
-                ax.set_yticks([])
+                n_drugs, n_mutants = len(drug_viz), len(mutant_viz)
+                n_cols = max(n_drugs, n_mutants)
 
-            plt.suptitle(f'Epoch {epoch+1}: All classes (drugs 2x top, mutants 1 bottom)', fontsize=7, y=0.98)
-            plt.tight_layout()
-            fig.savefig(os.path.join(OUTPUT_DIR, f'samples_{epoch+1:03d}.png'),
-                       dpi=200, bbox_inches='tight')
-            plt.close(fig)
+                fig = plt.figure(figsize=(n_cols * 0.45, 5))
+                gs = GridSpec(2, n_cols, figure=fig, hspace=0.35, wspace=0.02,
+                              height_ratios=[1, 1])
+
+                for i in range(n_cols):
+                    ax = fig.add_subplot(gs[0, i])
+                    if i < n_drugs:
+                        img = all_samples[i]
+                        img_01 = (img * 0.5 + 0.5).clamp(0, 1)
+                        ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
+                        ax.set_xlabel(class_names[drug_viz[i]].replace('_', ' '), fontsize=3)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+                    ax = fig.add_subplot(gs[1, i])
+                    if i < n_mutants:
+                        img = all_samples[n_drugs + i]
+                        img_01 = (img * 0.5 + 0.5).clamp(0, 1)
+                        ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
+                        ax.set_xlabel(class_names[mutant_viz[i]].replace('_', ' '), fontsize=3)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+                plt.suptitle(f'Epoch {epoch+1}: All classes (drugs 2x top, mutants 1 bottom)', fontsize=7, y=0.98)
+                plt.tight_layout()
+                fig.savefig(os.path.join(OUTPUT_DIR, f'samples_{epoch+1:03d}.png'),
+                           dpi=200, bbox_inches='tight')
+                plt.close(fig)
 
     is_best = val_loss < best_val_loss
     if is_best:

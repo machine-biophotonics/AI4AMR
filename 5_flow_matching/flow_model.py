@@ -44,22 +44,16 @@ def Fourier_filter(x, D):
 
 
 class GaussianMixture(nn.Module):
-    """Learnable GMM prior for structured latent space (SCFM).
+    """Learnable GMM prior for structured latent (VaDE, SCFM).
 
     p_psi(z) = sum_k pi_k * N(z | mu_k, diag(sigma_k^2))
 
-    Modes:
-      - Supervised (default): one component per class, selected by labels.
-      - Unsupervised (VaDE-style): categorical assignment head q(c|x) learns
-        component responsibilities from data. K components, no labels needed.
-
     Unsupervised KL (VaDE decomposition):
-        KL(q(z,c|x) || p(z,c))
-          = KL(q(c|x) || p(c)) + Σ_c q(c|x) · KL(N(μ_z, σ²_z) || N(μ_c, σ²_c))
+      KL(q(z,c|x) || p(z,c))
+        = KL(q(c|x) || p(c)) + sum_c q(c|x) * KL(N(mu_z, sigma^2_z) || N(mu_c, sigma^2_c))
 
-    References:
-        - Jiang et al., VaDE (NeurIPS 2016)
-        - Sumba et al., SCFM (arXiv 2026)
+    q(c|x) computed via closed-form Bayes rule (NOT a learned head):
+      q(c|x) = p(c|z) = pi_c * N(mu_z|mu_c, sigma^2_c) / sum_j pi_j * N(mu_z|mu_j, sigma^2_j)
     """
     def __init__(self, n_components: int, latent_dim: int, unsupervised: bool = False):
         super().__init__()
@@ -69,6 +63,7 @@ class GaussianMixture(nn.Module):
         self.register_parameter('means', nn.Parameter(torch.randn(n_components, latent_dim) * 0.1))
         self.register_parameter('logvars', nn.Parameter(torch.zeros(n_components, latent_dim)))
         self.register_parameter('logits', nn.Parameter(torch.zeros(n_components)))
+
     def get_component(self, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.means[labels], self.logvars[labels]
 
@@ -76,7 +71,6 @@ class GaussianMixture(nn.Module):
            labels: torch.Tensor | None = None) -> torch.Tensor:
         if self.unsupervised:
             return self._kl_unsupervised(mu_z, logvar_z)
-        # Supervised: per-class components
         mu_k, logvar_k = self.get_component(labels)
         return 0.5 * (
             logvar_k - logvar_z
@@ -84,12 +78,40 @@ class GaussianMixture(nn.Module):
             - 1
         ).sum(dim=1).mean()
 
+    def _kl_unsupervised(self, mu_z: torch.Tensor,
+                         logvar_z: torch.Tensor) -> torch.Tensor:
+        """VaDE KL with q(c|x) via Bayes rule."""
+        B, D = mu_z.shape
+        log_pi = F.log_softmax(self.logits, dim=-1)
+
+        mu_z_exp = mu_z.unsqueeze(1)
+        mu_k = self.means.unsqueeze(0)
+        logvar_k = self.logvars.unsqueeze(0)
+
+        log_N_z_given_c = -0.5 * (
+            math.log(2 * math.pi) + logvar_k
+            + (mu_z_exp - mu_k).pow(2) / logvar_k.exp()
+        ).sum(dim=-1)
+
+        log_p_c_z = log_pi.unsqueeze(0) + log_N_z_given_c
+        q_c = F.softmax(log_p_c_z, dim=-1)
+        log_q_c = F.log_softmax(log_p_c_z, dim=-1)
+
+        kl_cat = (q_c * (log_q_c - log_pi.unsqueeze(0))).sum(dim=1)
+
+        logvar_z_exp = logvar_z.unsqueeze(1)
+        kl_gauss = 0.5 * (
+            logvar_k - logvar_z_exp
+            + (logvar_z_exp.exp() + (mu_z_exp - mu_k).pow(2)) / logvar_k.exp()
+            - 1
+        ).sum(dim=-1)
+
+        kl_weighted = (q_c * kl_gauss).sum(dim=1)
+        return (kl_cat + kl_weighted).mean()
+
     @torch.no_grad()
     def responsibilities(self, mu_z: torch.Tensor) -> torch.Tensor:
-        """Compute q(c|x) = p(c|z) via Bayes rule for diagnostics.
-
-        Returns [B, K] responsibility matrix (soft-assignments).
-        """
+        """q(c|x) for diagnostics. Returns [B, K] soft assignments."""
         log_pi = F.log_softmax(self.logits, dim=-1)
         mu_z_exp = mu_z.unsqueeze(1)
         mu_k = self.means.unsqueeze(0)
@@ -100,55 +122,30 @@ class GaussianMixture(nn.Module):
         ).sum(dim=-1)
         return F.softmax(log_pi.unsqueeze(0) + log_N, dim=-1)
 
-    def _kl_unsupervised(self, mu_z: torch.Tensor,
-                         logvar_z: torch.Tensor) -> torch.Tensor:
-        """VaDE-style KL decomposition.
-
-        KL(q(z,c|x) || p(z,c))
-          = KL(q(c|x) || p(c)) + Σ_c q(c|x) · KL(N(μ_z, σ²_z) || N(μ_c, σ²_c))
-
-        Key difference from prior version: q(c|x) is computed via Bayes rule
-        from the GMM parameters (VaDE, Eq 16) instead of a learned linear head.
-        This couples the GMM and assignments, preventing mode collapse.
-        """
-        B, D = mu_z.shape
+    @torch.no_grad()
+    def diagnostics(self, mu_z: torch.Tensor) -> dict[str, float]:
+        """Full GMM health report."""
         K = self.n_components
-
-        # 1. Prior over components: p(c) = softmax(logits)
-        log_pi = F.log_softmax(self.logits, dim=-1)
-
-        mu_z_exp = mu_z.unsqueeze(1)
-        mu_k = self.means.unsqueeze(0)
-        logvar_k = self.logvars.unsqueeze(0)
-
-        # 2. q(c|x) = p(c|z) via Bayes rule (VaDE, Eq 16)
-        #    log p(c|z) = log π_c + log N(μ_z | μ_c, σ²_c)
-        log_N_z_given_c = -0.5 * (
-            math.log(2 * math.pi) + logvar_k
-            + (mu_z_exp - mu_k).pow(2) / logvar_k.exp()
-        ).sum(dim=-1)
-
-        log_p_c_z = log_pi.unsqueeze(0) + log_N_z_given_c
-        q_c = F.softmax(log_p_c_z, dim=-1)
-        log_q_c = F.log_softmax(log_p_c_z, dim=-1)
-
-        # 3. KL(q(c|x) || p(c)) — closed form categorical KL
-        kl_cat = (q_c * (log_q_c - log_pi.unsqueeze(0))).sum(dim=1)
-
-        # 4. Per-component Gaussian KL
-        logvar_z_exp = logvar_z.unsqueeze(1)
-
-        kl_gauss = 0.5 * (
-            logvar_k - logvar_z_exp
-            + (logvar_z_exp.exp() + (mu_z_exp - mu_k).pow(2)) / logvar_k.exp()
-            - 1
-        ).sum(dim=-1)
-
-        # 5. Weighted sum: Σ_c q(c|x) · KL_c(x)
-        kl_weighted = (q_c * kl_gauss).sum(dim=1)
-
-        # 6. Total (mean over batch)
-        return (kl_cat + kl_weighted).mean()
+        pi = F.softmax(self.logits, dim=-1)
+        var = self.logvars.exp()
+        q = self.responsibilities(mu_z)
+        hard = q.argmax(dim=-1)
+        active = hard.unique().numel()
+        pairwise = torch.cdist(self.means, self.means)
+        triu = pairwise[~torch.eye(K, dtype=bool, device=pairwise.device)]
+        assignment_ent = -(q * torch.log(q.clamp(1e-10, 1))).sum(dim=-1)
+        return dict(
+            pi_entropy=(-(pi * torch.log(pi + 1e-10)).sum()).item(),
+            pi_max=pi.max().item(),
+            pi_min=pi.min().item(),
+            var_min=var.min().item(),
+            var_max=var.max().item(),
+            var_mean=var.mean().item(),
+            mean_norm=self.means.norm(dim=-1).mean().item(),
+            mean_pair_dist=triu.mean().item(),
+            active_ratio=active / K,
+            assignment_perplexity=assignment_ent.exp().mean().item(),
+        )
 
     @torch.no_grad()
     def sample(self, n: int, labels: torch.Tensor | None = None) -> torch.Tensor:
@@ -299,15 +296,16 @@ class FreqFlowUNet(nn.Module):
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        v_spatial = self.spatial_unet(
-            x_t, timestep=t, class_labels=class_labels, return_dict=True
-        ).sample
+        def _unet_kwargs(unet):
+            k = dict(timestep=t, return_dict=True)
+            if class_labels is not None and unet.config.num_class_embeds is not None:
+                k['class_labels'] = class_labels
+            return k
 
-        # Frequency branch: predict high-frequency velocity from high-pass x_t
+        v_spatial = self.spatial_unet(x_t, **_unet_kwargs(self.spatial_unet)).sample
+
         _, x_high = Fourier_filter(x_t, self.freq_filter_D)
-        v_freq = self.freq_unet(
-            x_high, timestep=t, class_labels=class_labels, return_dict=True
-        ).sample
+        v_freq = self.freq_unet(x_high, **_unet_kwargs(self.freq_unet)).sample
 
         return v_freq, v_spatial
 
@@ -331,14 +329,18 @@ class StructFlowUNet(nn.Module):
         layers_per_block: int = 2,
         num_class_embeds: int = 50,
         latent_dim: int = 64,
+        predict_mu: bool = False,
+        exogenous_dim: int = 64,
         use_gmm: bool = False,
-        gmm_components: int = 185,
+        gmm_components: int = 30,
         unsupervised_gmm: bool = False,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.sample_size = sample_size
         self.in_channels = in_channels
+        self.predict_mu = predict_mu
+        self.exogenous_dim = exogenous_dim
 
         down_block_types = (
             "DownBlock2D", "DownBlock2D",
@@ -365,13 +367,18 @@ class StructFlowUNet(nn.Module):
         )
         self.unet.enable_gradient_checkpointing()
 
-        # Encoder: mid-block features → (μ_z, logvar_z)
+        # Encoder: mid-block features → (μ_z, logvar_z, [μ_ε])
         mid_dim = block_out_channels[-1]
-        self.encoder_head = nn.Sequential(
-            nn.Linear(mid_dim, mid_dim),
-            nn.SiLU(),
-            nn.Linear(mid_dim, latent_dim * 2),
-        )
+        if predict_mu:
+            self.mu_z_head = nn.Linear(mid_dim, latent_dim)
+            self.logvar_z_head = nn.Linear(mid_dim, latent_dim)
+            self.mu_eps_head = nn.Linear(mid_dim, exogenous_dim)
+        else:
+            self.encoder_head = nn.Sequential(
+                nn.Linear(mid_dim, mid_dim),
+                nn.SiLU(),
+                nn.Linear(mid_dim, latent_dim * 2),
+            )
 
         # Decoder: z → pixel-space reconstruction
         self.decoder = nn.Sequential(
@@ -380,7 +387,7 @@ class StructFlowUNet(nn.Module):
             nn.Linear(512, in_channels * sample_size * sample_size),
         )
 
-        # Learnable GMM prior (structured prior, replaces N(0,I))
+        # GMM prior (SCFM VaDE-style)
         if use_gmm:
             self.gmm = GaussianMixture(gmm_components, latent_dim,
                                        unsupervised=unsupervised_gmm)
@@ -398,14 +405,26 @@ class StructFlowUNet(nn.Module):
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.unet(x_t, timestep=t, class_labels=class_labels, return_dict=True).sample
+        kwargs = dict(timestep=t, return_dict=True)
+        if class_labels is not None and self.unet.config.num_class_embeds is not None:
+            kwargs['class_labels'] = class_labels
+        return self.unet(x_t, **kwargs).sample
 
     def encode(self, x: torch.Tensor, t: torch.Tensor,
-               class_labels: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode x at timestep t into structured latent parameters."""
+               class_labels: torch.Tensor | None = None) -> tuple[torch.Tensor, ...]:
+        """Encode x at timestep t into structured latent parameters.
+
+        Returns (μ_z, logvar_z) in velocity mode,
+        or (μ_z, logvar_z, μ_ε) in predict_mu mode.
+        """
         _ = self.forward(x, t, class_labels)
         feat = self._mid_feat
         pooled = feat.flatten(2).mean(dim=2)
+        if self.predict_mu:
+            mu_z = self.mu_z_head(pooled)
+            logvar_z = self.logvar_z_head(pooled)
+            mu_eps = self.mu_eps_head(pooled)
+            return mu_z, logvar_z, mu_eps
         params = self.encoder_head(pooled)
         mu, logvar = params.chunk(2, dim=-1)
         return mu, logvar
@@ -421,6 +440,13 @@ class StructFlowUNet(nn.Module):
         """Convenience: encode at t=1 (VAE posterior)."""
         t = torch.full((x.shape[0],), 1.0, device=x.device)
         return self.encode(x, t, class_labels)
+
+    @torch.no_grad()
+    def sample_prior_z(self, n: int) -> torch.Tensor:
+        """Sample z from GMM prior or N(0,I)."""
+        if hasattr(self, 'gmm') and self.gmm is not None:
+            return self.gmm.sample(n)
+        return torch.randn(n, self.latent_dim, device=next(self.parameters()).device)
 
 
 class CombinedFlowUNet(nn.Module):
@@ -449,8 +475,10 @@ class CombinedFlowUNet(nn.Module):
         use_freq: bool = False,
         use_struct: bool = False,
         latent_dim: int = 64,
+        predict_mu: bool = False,
+        exogenous_dim: int = 64,
         use_gmm: bool = False,
-        gmm_components: int = 185,
+        gmm_components: int = 30,
         unsupervised_gmm: bool = False,
     ):
         super().__init__()
@@ -460,6 +488,8 @@ class CombinedFlowUNet(nn.Module):
         self.latent_dim = latent_dim
         self.sample_size = sample_size
         self.in_ch = in_channels
+        self.predict_mu = predict_mu
+        self.exogenous_dim = exogenous_dim
 
         down_block_types = (
             "DownBlock2D",
@@ -509,11 +539,16 @@ class CombinedFlowUNet(nn.Module):
 
         if use_struct:
             mid_dim = block_out_channels[-1]
-            self.encoder_head = nn.Sequential(
-                nn.Linear(mid_dim, mid_dim),
-                nn.SiLU(),
-                nn.Linear(mid_dim, latent_dim * 2),
-            )
+            if predict_mu:
+                self.mu_z_head = nn.Linear(mid_dim, latent_dim)
+                self.logvar_z_head = nn.Linear(mid_dim, latent_dim)
+                self.mu_eps_head = nn.Linear(mid_dim, exogenous_dim)
+            else:
+                self.encoder_head = nn.Sequential(
+                    nn.Linear(mid_dim, mid_dim),
+                    nn.SiLU(),
+                    nn.Linear(mid_dim, latent_dim * 2),
+                )
             self.decoder = nn.Sequential(
                 nn.Linear(latent_dim, 512),
                 nn.SiLU(),
@@ -535,24 +570,31 @@ class CombinedFlowUNet(nn.Module):
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        v_pred = self.main_unet(
-            x_t, timestep=t, class_labels=class_labels, return_dict=True
-        ).sample
+        def _unet_kwargs(unet):
+            k = dict(timestep=t, return_dict=True)
+            if class_labels is not None and unet.config.num_class_embeds is not None:
+                k['class_labels'] = class_labels
+            return k
+
+        v_pred = self.main_unet(x_t, **_unet_kwargs(self.main_unet)).sample
 
         if self.use_freq:
             _, x_high = Fourier_filter(x_t, self.freq_filter_D)
-            v_freq = self.freq_unet(
-                x_high, timestep=t, class_labels=class_labels, return_dict=True
-            ).sample
+            v_freq = self.freq_unet(x_high, **_unet_kwargs(self.freq_unet)).sample
             return v_freq, v_pred
 
         return v_pred
 
     def encode(self, x: torch.Tensor, t: torch.Tensor,
-               class_labels: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+               class_labels: torch.Tensor | None = None) -> tuple[torch.Tensor, ...]:
         _ = self.forward(x, t, class_labels)
         feat = self._mid_feat
         pooled = feat.flatten(2).mean(dim=2)
+        if self.predict_mu:
+            mu_z = self.mu_z_head(pooled)
+            logvar_z = self.logvar_z_head(pooled)
+            mu_eps = self.mu_eps_head(pooled)
+            return mu_z, logvar_z, mu_eps
         params = self.encoder_head(pooled)
         mu, logvar = params.chunk(2, dim=-1)
         return mu, logvar
@@ -566,6 +608,13 @@ class CombinedFlowUNet(nn.Module):
                      class_labels: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         t = torch.full((x.shape[0],), 1.0, device=x.device)
         return self.encode(x, t, class_labels)
+
+    @torch.no_grad()
+    def sample_prior_z(self, n: int) -> torch.Tensor:
+        """Sample z from GMM prior or N(0,I)."""
+        if hasattr(self, 'gmm') and self.gmm is not None:
+            return self.gmm.sample(n)
+        return torch.randn(n, self.latent_dim, device=next(self.parameters()).device)
 
 
 def supervised_contrastive_loss(
@@ -600,40 +649,43 @@ def compute_struct_flow_loss(
     model: StructFlowUNet | CombinedFlowUNet,
     x_1: torch.Tensor,
     class_labels: torch.Tensor | None = None,
-    kl_weight: float = 0.1,
+    kl_weight: float = 0.001,
     recon_weight: float = 0.1,
     delta_fm_lambda: float = 0.0,
     supcon_weight: float = 0.0,
     supcon_temperature: float = 0.1,
+    predict_mu: bool = False,
+    beta: float | None = None,
     use_gmm: bool = False,
     unsupervised_gmm: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """StructFlow loss: flow matching + VAE-style KL + reconstruction + SupCon.
 
-    Constructs structured source: x_0 = decode(z) + ε, where
-    z ~ q_φ(z|x_1) captures semantic content and ε is random noise.
-    When supcon_weight > 0, applies supervised contrastive loss on μ_z.
+    Two modes:
+      - Standard (predict_mu=False): UNet predicts velocity v, loss = MSE(v, u_t).
+      - SCFM (predict_mu=True): UNet predicts posterior mean μ, loss = MSE(μ, sg(x₀)).
+        Velocity derived: v = (x_t - μ) / t. Adds R_ε = ½·||μ_ε||².
+
+    When predict_mu=True, `beta` overrides `kl_weight` for the effective β-VAE ratio.
     """
     B = x_1.shape[0]
     device = x_1.device
 
     # 1. Encode: structured latent z at t=1
     t_enc = torch.full((B,), 1.0, device=device)
-    mu_z, logvar_z = model.encode(x_1, t_enc, class_labels)
+    if predict_mu:
+        mu_z, logvar_z, mu_eps = model.encode(x_1, t_enc, class_labels)
+    else:
+        mu_z, logvar_z = model.encode(x_1, t_enc, class_labels)
 
     std = torch.exp(0.5 * logvar_z)
     eps_z = torch.randn_like(std)
     z = mu_z + eps_z * std
 
-    # 2. KL divergence: KL(q(z|x_1) || prior)
-    #    Prior is N(0,I), per-class GMM, or unsupervised VaDE GMM (SCFM structured prior)
-    if use_gmm and hasattr(model, 'gmm'):
-        if unsupervised_gmm:
-            kl_loss = model.gmm.kl(mu_z, logvar_z)
-        elif class_labels is not None:
-            kl_loss = model.gmm.kl(mu_z, logvar_z, class_labels)
-        else:
-            kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+    # 2. KL divergence
+    if predict_mu and use_gmm and hasattr(model, 'gmm'):
+        kl_labels = None if unsupervised_gmm else class_labels
+        kl_loss = model.gmm.kl(mu_z, logvar_z, kl_labels)
     else:
         kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
 
@@ -652,10 +704,18 @@ def compute_struct_flow_loss(
     x_t = (1 - t_b) * x_0 + t_b * x_1
     u_t = x_1 - x_0
 
-    v_pred = model(x_t, t, class_labels=class_labels)
-    flow_loss = F.mse_loss(v_pred, u_t)
+    model_out = model(x_t, t, class_labels=class_labels)
 
-    total = flow_loss + kl_weight * kl_loss + recon_weight * recon_loss
+    if predict_mu:
+        mu_pred = model_out
+        flow_loss = F.mse_loss(mu_pred, x_0.detach())
+        v_pred = (x_t - mu_pred) / t_b.clamp(min=1e-5)
+    else:
+        v_pred = model_out
+        flow_loss = F.mse_loss(v_pred, u_t)
+
+    effective_kl_weight = beta if (predict_mu and beta is not None) else kl_weight
+    total = flow_loss + effective_kl_weight * kl_loss + recon_weight * recon_loss
 
     comp: dict[str, float] = {}
     comp['flow'] = flow_loss.item()
@@ -663,6 +723,13 @@ def compute_struct_flow_loss(
     comp['recon'] = recon_loss.item()
     comp['neg'] = 0.0
     comp['supcon'] = 0.0
+    comp['r_eps'] = 0.0
+
+    # Exogenous regularization R_ε (Eq 15)
+    if predict_mu:
+        r_eps = 0.5 * mu_eps.pow(2).sum(dim=1).mean()
+        total = total + r_eps
+        comp['r_eps'] = r_eps.item()
 
     if supcon_weight > 0.0 and class_labels is not None:
         supcon_loss = supervised_contrastive_loss(mu_z, class_labels, temperature=supcon_temperature)
@@ -670,11 +737,16 @@ def compute_struct_flow_loss(
         comp['supcon'] = supcon_loss.item()
 
     if delta_fm_lambda > 0.0 and class_labels is not None:
-        neg_idxs = _sample_different_class(class_labels)
-        x_neg = x_1[neg_idxs]
-        x_0_neg = torch.randn_like(x_1)
-        u_neg = x_neg - x_0_neg
-        loss_neg = F.mse_loss(v_pred, u_neg)
+        if predict_mu:
+            # μ-space DeltaFM: repel posterior mean from pure noise
+            # Avoids 1/t² blowup of MSE((x_t-μ)/t, u_neg) for small t
+            loss_neg = F.mse_loss(mu_pred, torch.randn_like(x_1))
+        else:
+            neg_idxs = _sample_different_class(class_labels)
+            x_neg = x_1[neg_idxs]
+            x_0_neg = torch.randn_like(x_1)
+            u_neg = x_neg - x_0_neg
+            loss_neg = F.mse_loss(v_pred, u_neg)
         total = total - delta_fm_lambda * loss_neg
         comp['neg'] = loss_neg.item()
 
@@ -688,10 +760,11 @@ def sample_struct(
     num_steps: int = 100,
     class_labels: torch.Tensor | None = None,
     device: str = 'cuda',
+    predict_mu: bool = False,
 ) -> torch.Tensor:
     """Generate samples via structured prior + ODE refinement.
 
-    1. Sample z ~ N(0, I) (structured prior)
+    1. Sample z ~ N(0, I) or GMM (structured prior)
     2. Decode: x_z = decoder(z)
     3. Add exogenous noise: x_0 = x_z + ε
     4. Integrate ODE from x_0 → x_1
@@ -700,9 +773,8 @@ def sample_struct(
     latent_dim = model.latent_dim
     device = next(model.parameters()).device
 
-    if hasattr(model, 'gmm') and model.gmm is not None:
-        z = model.gmm.sample(num_samples,
-                             labels=None if model.gmm.unsupervised else class_labels)
+    if predict_mu and hasattr(model, 'sample_prior_z'):
+        z = model.sample_prior_z(num_samples)
     else:
         z = torch.randn(num_samples, latent_dim, device=device)
     x_z = model.decode(z)
@@ -716,7 +788,11 @@ def sample_struct(
 
     for i in range(num_steps):
         t = torch.full((num_samples,), i * dt, device=device)
-        v = model(x, t, class_labels=class_labels)
+        out = model(x, t, class_labels=class_labels)
+        if predict_mu:
+            v = (x - out) / t.view(-1, *([1] * (x.ndim - 1))).clamp(min=1e-5)
+        else:
+            v = out
         x = x + v * dt
 
     return x.clamp(-1, 1)
@@ -831,44 +907,57 @@ def compute_unified_loss(
     use_struct: bool = False,
     freq_filter_D: float = 8.0,
     freq_loss_weight: float = 0.25,
-    kl_weight: float = 0.1,
+    kl_weight: float = 0.001,
     recon_weight: float = 0.1,
     delta_fm_lambda: float = 0.0,
     supcon_weight: float = 0.0,
     supcon_temperature: float = 0.1,
+    predict_mu: bool = False,
+    beta: float | None = None,
     use_gmm: bool = False,
     unsupervised_gmm: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Unified loss supporting all FreqFlow + StructFlow + DeltaFM + SupCon combinations."""
+    """Unified loss supporting all FreqFlow + StructFlow + DeltaFM + SupCon combinations.
+
+    When predict_mu=True, UNet predicts posterior mean μ (SCFM mode):
+      - Spatial branch μ_pred_main, loss = MSE(μ, sg(x₀)).
+      - Freq branch μ_pred_freq, loss = MSE(μ, sg(Fourier_filter(x₀)_high)).
+      - Velocity derived: v = (x_t - μ_pred_main) / t, used for DeltaFM.
+    """
     B = x_1.shape[0]
     device = x_1.device
     comp: dict[str, float] = {}
 
     kl_loss = torch.tensor(0.0, device=device)
     recon_loss = torch.tensor(0.0, device=device)
+    r_eps = torch.tensor(0.0, device=device)
     mu_z = None
 
     if use_struct:
         t_enc = torch.full((B,), 1.0, device=device)
-        mu_z, logvar_z = model.encode(x_1, t_enc, class_labels)
+        if predict_mu:
+            mu_z, logvar_z, mu_eps = model.encode(x_1, t_enc, class_labels)
+        else:
+            mu_z, logvar_z = model.encode(x_1, t_enc, class_labels)
 
         std = torch.exp(0.5 * logvar_z)
         eps_z = torch.randn_like(std)
         z = mu_z + eps_z * std
 
-        if use_gmm and hasattr(model, 'gmm'):
-            if unsupervised_gmm:
-                kl_loss = model.gmm.kl(mu_z, logvar_z)
-            elif class_labels is not None:
-                kl_loss = model.gmm.kl(mu_z, logvar_z, class_labels)
-            else:
-                kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+        if predict_mu and use_gmm and hasattr(model, 'gmm'):
+            kl_labels = None if unsupervised_gmm else class_labels
+            kl_loss = model.gmm.kl(mu_z, logvar_z, kl_labels)
         else:
             kl_loss = -0.5 * (1 + logvar_z - mu_z.pow(2) - logvar_z.exp()).sum(dim=1).mean()
+
         recon_loss = F.mse_loss(model.decode(z), x_1)
         x_z = model.decode(z).detach()
         noise = torch.randn_like(x_1)
         x_0 = x_z + noise
+
+        if predict_mu:
+            r_eps = 0.5 * mu_eps.pow(2).sum(dim=1).mean()
+
         comp['kl'] = kl_loss.item()
         comp['recon'] = recon_loss.item()
     else:
@@ -883,7 +972,27 @@ def compute_unified_loss(
 
     output = model(x_t, t, class_labels=class_labels)
 
-    if use_freq:
+    mu_spatial = None
+    if predict_mu and use_freq:
+        mu_high, mu_main = output
+        mu_spatial = mu_main
+        x_0_sg = x_0.detach()
+        loss_spatial = F.mse_loss(mu_main, x_0_sg)
+        _, x_0_high = Fourier_filter(x_0_sg, freq_filter_D)
+        loss_freq = F.mse_loss(mu_high, x_0_high) * freq_loss_weight
+        flow_loss = loss_spatial + loss_freq
+        v_pred = (x_t - mu_main) / t_b.clamp(min=1e-5)
+        comp['spatial'] = loss_spatial.item()
+        comp['freq'] = loss_freq.item()
+    elif predict_mu and not use_freq:
+        mu_pred = output
+        mu_spatial = mu_pred
+        x_0_sg = x_0.detach()
+        flow_loss = F.mse_loss(mu_pred, x_0_sg)
+        v_pred = (x_t - mu_pred) / t_b.clamp(min=1e-5)
+        comp['spatial'] = flow_loss.item()
+        comp['freq'] = 0.0
+    elif not predict_mu and use_freq:
         v_freq, v_pred = output
         loss_spatial = F.mse_loss(v_pred, u_t)
         _, u_high = Fourier_filter(u_t, freq_filter_D)
@@ -897,10 +1006,12 @@ def compute_unified_loss(
         comp['spatial'] = flow_loss.item()
         comp['freq'] = 0.0
 
-    total = flow_loss + kl_weight * kl_loss + recon_weight * recon_loss
+    effective_kl_weight = beta if (predict_mu and beta is not None) else kl_weight
+    total = flow_loss + effective_kl_weight * kl_loss + recon_weight * recon_loss + r_eps
     comp['flow'] = flow_loss.item()
     comp['neg'] = 0.0
     comp['supcon'] = 0.0
+    comp['r_eps'] = r_eps.item()
 
     if supcon_weight > 0.0 and class_labels is not None and mu_z is not None and use_struct:
         supcon_loss = supervised_contrastive_loss(mu_z, class_labels, temperature=supcon_temperature)
@@ -908,11 +1019,14 @@ def compute_unified_loss(
         comp['supcon'] = supcon_loss.item()
 
     if delta_fm_lambda > 0.0 and class_labels is not None:
-        neg_idxs = _sample_different_class(class_labels)
-        x_neg = x_1[neg_idxs]
-        x_0_neg = torch.randn_like(x_1)
-        u_neg = x_neg - x_0_neg
-        loss_neg = F.mse_loss(v_pred, u_neg)
+        if predict_mu and mu_spatial is not None:
+            loss_neg = F.mse_loss(mu_spatial, torch.randn_like(x_1))
+        else:
+            neg_idxs = _sample_different_class(class_labels)
+            x_neg = x_1[neg_idxs]
+            x_0_neg = torch.randn_like(x_1)
+            u_neg = x_neg - x_0_neg
+            loss_neg = F.mse_loss(v_pred, u_neg)
         total = total - delta_fm_lambda * loss_neg
         comp['neg'] = loss_neg.item()
 
@@ -928,17 +1042,20 @@ def sample_combined(
     device: str = 'cuda',
     use_freq: bool = False,
     use_struct: bool = False,
+    predict_mu: bool = False,
 ) -> torch.Tensor:
-    """Generate samples supporting FreqFlow + StructFlow combinations."""
+    """Generate samples supporting FreqFlow + StructFlow combinations.
+
+    When predict_mu=True, velocity is derived from posterior mean prediction.
+    """
     model.eval()
     C = model.main_unet.config.in_channels
     H = W = model.main_unet.config.sample_size
     device = next(model.parameters()).device
 
     if use_struct:
-        if hasattr(model, 'gmm') and model.gmm is not None:
-            z = model.gmm.sample(num_samples,
-                                 labels=None if model.gmm.unsupervised else class_labels)
+        if predict_mu and hasattr(model, 'sample_prior_z'):
+            z = model.sample_prior_z(num_samples)
         else:
             z = torch.randn(num_samples, model.latent_dim, device=device)
         x_z = model.decode(z)
@@ -953,7 +1070,11 @@ def sample_combined(
     for i in range(num_steps):
         t = torch.full((num_samples,), i * dt, device=device)
         out = model(x, t, class_labels=class_labels)
-        v = out[1] if use_freq else out
+        if predict_mu:
+            mu_main = out[1] if use_freq else out
+            v = (x - mu_main) / t.view(-1, *([1] * (x.ndim - 1))).clamp(min=1e-5)
+        else:
+            v = out[1] if use_freq else out
         x = x + v * dt
 
     return x.clamp(-1, 1)
