@@ -685,6 +685,7 @@ def compute_struct_flow_loss(
     predict_mu: bool = False,
     beta: float | None = None,
     use_gmm: bool = False,
+    use_gmm_kl: bool = False,
     unsupervised_gmm: bool = False,
     r_eps_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
@@ -711,8 +712,8 @@ def compute_struct_flow_loss(
     eps_z = torch.randn_like(std)
     z = mu_z + eps_z * std
 
-    # 2. KL divergence
-    if predict_mu and use_gmm and hasattr(model, 'gmm'):
+    # 2. KL divergence (Phase 1: N(0,I), Phase 2: GMM)
+    if predict_mu and use_gmm_kl and hasattr(model, 'gmm'):
         kl_labels = None if unsupervised_gmm else class_labels
         kl_loss = model.gmm.kl(mu_z, logvar_z, kl_labels)
     else:
@@ -934,6 +935,7 @@ def compute_unified_loss(
     predict_mu: bool = False,
     beta: float | None = None,
     use_gmm: bool = False,
+    use_gmm_kl: bool = False,
     unsupervised_gmm: bool = False,
     dual_predict_mu: bool = False,
     r_eps_weight: float = 1.0,
@@ -946,6 +948,11 @@ def compute_unified_loss(
       - DeltaFM operates on v_pred directly (stable).
     When predict_mu=True (and dual_predict_mu=False):
       - SCFM: only posterior mean, velocity derived as (x_t - μ) / t.
+
+    Phase 1 (epoch < kmeans_init_epoch, use_gmm_kl=False):
+      Uses standard normal N(0,I) KL for clean Phase 1 metrics.
+    Phase 2 (epoch >= kmeans_init_epoch, use_gmm_kl=True):
+      Uses GMM KL (VaDE-style) after k-means init provides real anchors.
     """
     B = x_1.shape[0]
     device = x_1.device
@@ -969,7 +976,7 @@ def compute_unified_loss(
         eps_z = torch.randn_like(std)
         z = mu_z + eps_z * std
 
-        if effective_predict_mu and use_gmm and hasattr(model, 'gmm'):
+        if effective_predict_mu and use_gmm_kl and hasattr(model, 'gmm'):
             kl_labels = None if unsupervised_gmm else class_labels
             kl_loss = model.gmm.kl(mu_z, logvar_z, kl_labels)
         else:

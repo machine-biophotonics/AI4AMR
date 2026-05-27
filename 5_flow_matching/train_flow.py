@@ -408,6 +408,8 @@ for epoch in range(start_epoch, args.epochs):
     else:
         beta_used = None
 
+    use_gmm_kl = args.use_gmm and (epoch >= args.kmeans_init_epoch)
+
     # K-means GMM initialization
     if (args.kmeans_init and args.use_gmm and args.unsupervised_gmm and
             epoch == args.kmeans_init_epoch and hasattr(model, 'gmm') and model.gmm is not None):
@@ -450,6 +452,7 @@ for epoch in range(start_epoch, args.epochs):
                     predict_mu=args.predict_mu,
                     beta=beta_used,
                     use_gmm=args.use_gmm,
+                    use_gmm_kl=use_gmm_kl,
                     unsupervised_gmm=args.unsupervised_gmm,
                     dual_predict_mu=args.dual_predict_mu,
                     r_eps_weight=args.r_eps_weight,
@@ -465,6 +468,7 @@ for epoch in range(start_epoch, args.epochs):
                     predict_mu=args.predict_mu,
                     beta=beta_used,
                     use_gmm=args.use_gmm,
+                    use_gmm_kl=use_gmm_kl,
                     unsupervised_gmm=args.unsupervised_gmm,
                     r_eps_weight=args.r_eps_weight,
                 )
@@ -557,6 +561,7 @@ for epoch in range(start_epoch, args.epochs):
                         predict_mu=args.predict_mu,
                         beta=beta_used,
                         use_gmm=args.use_gmm,
+                        use_gmm_kl=use_gmm_kl,
                         unsupervised_gmm=args.unsupervised_gmm,
                         dual_predict_mu=args.dual_predict_mu,
                         r_eps_weight=args.r_eps_weight,
@@ -572,6 +577,7 @@ for epoch in range(start_epoch, args.epochs):
                         predict_mu=args.predict_mu,
                         beta=beta_used,
                         use_gmm=args.use_gmm,
+                        use_gmm_kl=use_gmm_kl,
                         unsupervised_gmm=args.unsupervised_gmm,
                         r_eps_weight=args.r_eps_weight,
                     )
@@ -672,7 +678,8 @@ for epoch in range(start_epoch, args.epochs):
 
     # GMM health diagnostics (SCFM mode)
     gmm_diag = None
-    if use_beta and args.use_gmm and args.unsupervised_gmm and args.struct_flow:
+    if use_beta and args.use_gmm and args.unsupervised_gmm and args.struct_flow \
+       and epoch >= args.kmeans_init_epoch:
         with torch.no_grad():
             mu_z_all = []
             for imgs, class_ids in val_loader:
