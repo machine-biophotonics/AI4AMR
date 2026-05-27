@@ -737,16 +737,11 @@ def compute_struct_flow_loss(
         comp['supcon'] = supcon_loss.item()
 
     if delta_fm_lambda > 0.0 and class_labels is not None:
-        if predict_mu:
-            # μ-space DeltaFM: repel posterior mean from pure noise
-            # Avoids 1/t² blowup of MSE((x_t-μ)/t, u_neg) for small t
-            loss_neg = F.mse_loss(mu_pred, torch.randn_like(x_1))
-        else:
-            neg_idxs = _sample_different_class(class_labels)
-            x_neg = x_1[neg_idxs]
-            x_0_neg = torch.randn_like(x_1)
-            u_neg = x_neg - x_0_neg
-            loss_neg = F.mse_loss(v_pred, u_neg)
+        neg_idxs = _sample_different_class(class_labels)
+        x_neg = x_1[neg_idxs]
+        x_0_neg = torch.randn_like(x_1)
+        u_neg = x_neg - x_0_neg
+        loss_neg = F.mse_loss(v_pred, u_neg)
         total = total - delta_fm_lambda * loss_neg
         comp['neg'] = loss_neg.item()
 
@@ -972,10 +967,8 @@ def compute_unified_loss(
 
     output = model(x_t, t, class_labels=class_labels)
 
-    mu_spatial = None
     if predict_mu and use_freq:
         mu_high, mu_main = output
-        mu_spatial = mu_main
         x_0_sg = x_0.detach()
         loss_spatial = F.mse_loss(mu_main, x_0_sg)
         _, x_0_high = Fourier_filter(x_0_sg, freq_filter_D)
@@ -986,7 +979,6 @@ def compute_unified_loss(
         comp['freq'] = loss_freq.item()
     elif predict_mu and not use_freq:
         mu_pred = output
-        mu_spatial = mu_pred
         x_0_sg = x_0.detach()
         flow_loss = F.mse_loss(mu_pred, x_0_sg)
         v_pred = (x_t - mu_pred) / t_b.clamp(min=1e-5)
@@ -1019,14 +1011,11 @@ def compute_unified_loss(
         comp['supcon'] = supcon_loss.item()
 
     if delta_fm_lambda > 0.0 and class_labels is not None:
-        if predict_mu and mu_spatial is not None:
-            loss_neg = F.mse_loss(mu_spatial, torch.randn_like(x_1))
-        else:
-            neg_idxs = _sample_different_class(class_labels)
-            x_neg = x_1[neg_idxs]
-            x_0_neg = torch.randn_like(x_1)
-            u_neg = x_neg - x_0_neg
-            loss_neg = F.mse_loss(v_pred, u_neg)
+        neg_idxs = _sample_different_class(class_labels)
+        x_neg = x_1[neg_idxs]
+        x_0_neg = torch.randn_like(x_1)
+        u_neg = x_neg - x_0_neg
+        loss_neg = F.mse_loss(v_pred, u_neg)
         total = total - delta_fm_lambda * loss_neg
         comp['neg'] = loss_neg.item()
 
