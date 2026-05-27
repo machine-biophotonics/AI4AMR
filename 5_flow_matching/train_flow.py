@@ -81,6 +81,8 @@ parser.add_argument('--supcon_temperature', type=float, default=0.1,
     help='SupCon temperature parameter')
 parser.add_argument('--predict_mu', action='store_true', default=False,
     help='UNet predicts posterior mean μ (SCFM) instead of velocity v')
+parser.add_argument('--dual_predict_mu', action='store_true', default=False,
+    help='UNet outputs both v (channel 0) and μ (channel 1) — stable class-conditional ΔFM')
 parser.add_argument('--exogenous_dim', type=int, default=64,
     help='Exogenous dimension d_ε for μ_ε head (SCFM, default: 64)')
 parser.add_argument('--use_gmm', action='store_true', default=False,
@@ -153,7 +155,7 @@ block_channels = tuple(int(x) for x in args.block_channels.split(','))
 freq_block_channels = tuple(int(x) for x in args.freq_block_channels.split(',')) if args.freq_flow else block_channels
 
 # Unconditional UNet (no class embedding) when using SCFM posterior-mean mode
-model_num_classes = None if args.predict_mu else num_classes
+model_num_classes = None if (args.predict_mu and not args.dual_predict_mu) else num_classes
 if model_num_classes is None and args.struct_flow:
     print(f"  Unconditional UNet: class conditioning removed (SCFM mode)")
 
@@ -175,6 +177,7 @@ if args.freq_flow and args.struct_flow:
         use_gmm=args.use_gmm,
         gmm_components=args.gmm_components,
         unsupervised_gmm=args.unsupervised_gmm,
+        dual_predict_mu=args.dual_predict_mu,
     ).to(device)
     print(f"  CombinedFlow: freq_branch={freq_block_channels}, latent_dim={args.struct_latent_dim}")
 elif args.freq_flow:
@@ -289,7 +292,7 @@ with open(metrics_path, 'w', newline='') as f:
                       'train_neg', 'val_neg']
         if args.supcon:
             csv_header += ['train_supcon', 'val_supcon']
-        if args.predict_mu:
+        if args.predict_mu or args.dual_predict_mu:
             csv_header += ['beta']
         csv_header += ['lr', 'time_s']
     elif args.struct_flow:
@@ -300,7 +303,7 @@ with open(metrics_path, 'w', newline='') as f:
                       'train_neg', 'val_neg']
         if args.supcon:
             csv_header += ['train_supcon', 'val_supcon']
-        if args.predict_mu:
+        if args.predict_mu or args.dual_predict_mu:
             csv_header += ['beta']
         csv_header += ['lr', 'time_s']
     else:
@@ -313,10 +316,11 @@ for epoch in range(start_epoch, args.epochs):
     train_ds.set_epoch(epoch)
     val_ds.set_epoch(epoch)
 
-    # Beta annealing for SCFM mode
-    if args.predict_mu and args.mu_anneal:
+    # Beta annealing for SCFM / dual-predict-μ mode
+    use_beta = args.predict_mu or args.dual_predict_mu
+    if use_beta and args.mu_anneal:
         beta_used = args.struct_kl_weight * min(epoch / args.mu_warmup_epochs, 1.0)
-    elif args.predict_mu:
+    elif use_beta:
         beta_used = args.struct_kl_weight
     else:
         beta_used = None
@@ -355,6 +359,7 @@ for epoch in range(start_epoch, args.epochs):
                     beta=beta_used,
                     use_gmm=args.use_gmm,
                     unsupervised_gmm=args.unsupervised_gmm,
+                    dual_predict_mu=args.dual_predict_mu,
                 )
             elif args.struct_flow:
                 loss, comp = compute_struct_flow_loss(
@@ -459,6 +464,7 @@ for epoch in range(start_epoch, args.epochs):
                         beta=beta_used,
                         use_gmm=args.use_gmm,
                         unsupervised_gmm=args.unsupervised_gmm,
+                        dual_predict_mu=args.dual_predict_mu,
                     )
                 elif args.struct_flow:
                     loss, comp = compute_struct_flow_loss(
@@ -517,15 +523,16 @@ for epoch in range(start_epoch, args.epochs):
             writer.add_scalar('val/supcon', val_supcon, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
+    use_beta = args.predict_mu or args.dual_predict_mu
     if use_unified:
         supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
-        beta_str = f" β={beta_used:.4f}" if args.predict_mu else ""
+        beta_str = f" β={beta_used:.4f}" if use_beta else ""
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(spat={val_spatial:.4f} freq={val_freq:.4f} kl={val_kl:.4f} "
               f"recon={val_recon:.4f} r_eps={val_r_eps:.4f} neg={val_neg:.4f}{supcon_str}{beta_str}) ({epoch_time:.0f}s)")
     elif args.struct_flow:
         supcon_str = f" supcon={val_supcon:.4f}" if args.supcon else ""
-        beta_str = f" β={beta_used:.4f}" if args.predict_mu else ""
+        beta_str = f" β={beta_used:.4f}" if use_beta else ""
         print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
               f"(flow={val_spatial:.4f} kl={val_kl:.4f} recon={val_recon:.4f} r_eps={val_r_eps:.4f} neg={val_neg:.4f}{supcon_str}{beta_str}) ({epoch_time:.0f}s)")
     else:
@@ -544,7 +551,7 @@ for epoch in range(start_epoch, args.epochs):
                    f'{train_neg:.4f}', f'{val_neg:.4f}']
             if args.supcon:
                 row += [f'{train_supcon:.4f}', f'{val_supcon:.4f}']
-            if args.predict_mu:
+            if args.predict_mu or args.dual_predict_mu:
                 row += [f'{beta_used:.4e}']
             row += [f'{lr_now:.2e}', f'{epoch_time:.0f}']
         elif args.struct_flow:
@@ -556,7 +563,7 @@ for epoch in range(start_epoch, args.epochs):
                    f'{train_neg:.4f}', f'{val_neg:.4f}']
             if args.supcon:
                 row += [f'{train_supcon:.4f}', f'{val_supcon:.4f}']
-            if args.predict_mu:
+            if args.predict_mu or args.dual_predict_mu:
                 row += [f'{beta_used:.4e}']
             row += [f'{lr_now:.2e}', f'{epoch_time:.0f}']
         else:
@@ -569,7 +576,7 @@ for epoch in range(start_epoch, args.epochs):
 
     # GMM health diagnostics (SCFM mode)
     gmm_diag = None
-    if args.predict_mu and args.use_gmm and args.unsupervised_gmm and args.struct_flow:
+    if use_beta and args.use_gmm and args.unsupervised_gmm and args.struct_flow:
         with torch.no_grad():
             mu_z_all = []
             for imgs, class_ids in val_loader:
@@ -600,13 +607,14 @@ for epoch in range(start_epoch, args.epochs):
     if epoch % 1 == 0:
         model.eval()
         with torch.no_grad():
-            if args.predict_mu:
+            if args.predict_mu and not args.dual_predict_mu:
                 # Unconditional: 5 random samples (no class labels)
                 samp = sample_combined(model, 5, num_steps=args.num_steps,
                                        class_labels=None, device=device,
                                        use_freq=args.freq_flow,
                                        use_struct=args.struct_flow,
-                                       predict_mu=args.predict_mu)
+                                       predict_mu=args.predict_mu,
+                                       dual_predict_mu=args.dual_predict_mu)
                 fig, axes = plt.subplots(1, 5, figsize=(5 * 0.9, 2.5))
                 for i in range(5):
                     img = samp[i].cpu()
@@ -628,7 +636,8 @@ for epoch in range(start_epoch, args.epochs):
                                                class_labels=cid, device=device,
                                                use_freq=args.freq_flow,
                                                use_struct=args.struct_flow,
-                                               predict_mu=args.predict_mu)
+                                               predict_mu=args.predict_mu,
+                                               dual_predict_mu=args.dual_predict_mu)
                     elif args.struct_flow:
                         samp = sample_struct(model, 1, num_steps=args.num_steps,
                                              class_labels=cid, device=device,
