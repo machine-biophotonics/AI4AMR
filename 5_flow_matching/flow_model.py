@@ -90,14 +90,8 @@ class FlowUNet(nn.Module):
         self.unet.enable_gradient_checkpointing()
 
         self._mid_bottleneck = None
-        self._mid_hook_handle = self.unet.mid_block.register_forward_hook(
-            self._mid_bottleneck_hook
-        )
 
-    def _mid_bottleneck_hook(self, module, input, output):
-        self._mid_bottleneck = output.mean(dim=[2, 3])
-
-    def get_mid_bottleneck(self):
+    def get_last_bottleneck(self):
         return self._mid_bottleneck
 
     def forward(
@@ -106,7 +100,12 @@ class FlowUNet(nn.Module):
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        self._mid_bottleneck = None
+        handle = self.unet.mid_block.register_forward_hook(
+            lambda m, i, o: setattr(self, '_mid_bottleneck', o.mean(dim=[2, 3]))
+        )
         output = self.unet(x_t, timestep=t, class_labels=class_labels, return_dict=True)
+        handle.remove()
         return output.sample
 
 
@@ -245,9 +244,6 @@ class FreqFlowUNet(nn.Module):
         self.spatial_unet.enable_gradient_checkpointing()
 
         self._mid_bottleneck = None
-        self._mid_hook_handle = self.spatial_unet.mid_block.register_forward_hook(
-            self._mid_bottleneck_hook
-        )
 
         # Frequency branch: 1ch high-pass input → 1ch high-pass velocity
         self.freq_unet = UNet2DModel(
@@ -266,15 +262,23 @@ class FreqFlowUNet(nn.Module):
         )
         self.freq_unet.enable_gradient_checkpointing()
 
+    def get_last_bottleneck(self):
+        return self._mid_bottleneck
+
     def forward(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        self._mid_bottleneck = None
+        handle = self.spatial_unet.mid_block.register_forward_hook(
+            lambda m, i, o: setattr(self, '_mid_bottleneck', o.mean(dim=[2, 3]))
+        )
         v_spatial = self.spatial_unet(
             x_t, timestep=t, class_labels=class_labels, return_dict=True
         ).sample
+        handle.remove()
 
         # Frequency branch: predict high-frequency velocity from high-pass x_t
         _, x_high = Fourier_filter(x_t, self.freq_filter_D)
@@ -283,12 +287,6 @@ class FreqFlowUNet(nn.Module):
         ).sample
 
         return v_freq, v_spatial
-
-    def _mid_bottleneck_hook(self, module, input, output):
-        self._mid_bottleneck = output.mean(dim=[2, 3])
-
-    def get_mid_bottleneck(self):
-        return self._mid_bottleneck
 
 
 
@@ -350,23 +348,17 @@ def compute_flow_loss(
 
     t_flat = t.view(B)
 
-    # Capture bottleneck features via local hook (reliable in train AND eval)
-    mid_bottleneck_container = []
-    hook_handle = None
+    output = model(x_t, t_flat, class_labels=class_labels)
+
+    mid_feats = model.get_last_bottleneck()
     need_bottleneck = (
         (aux_ce_head is not None and aux_ce_weight > 0.0)
         or (coral_proj is not None and coral_weight > 0.0)
     )
-    if need_bottleneck and class_labels is not None:
-        mid_block = (model.spatial_unet.mid_block if freq_flow else model.unet.mid_block)
-        hook_handle = mid_block.register_forward_hook(
-            lambda m, i, o: mid_bottleneck_container.append(o.mean(dim=[2, 3]))
-        )
-
-    output = model(x_t, t_flat, class_labels=class_labels)
-
-    if hook_handle is not None:
-        hook_handle.remove()
+    if need_bottleneck and class_labels is not None and mid_feats is None:
+        print(f"[WARNING] bottleneck is None: need_bottleneck={need_bottleneck}, "
+              f"class_labels={class_labels is not None}, "
+              f"model_type={type(model).__name__}")
 
     components = {}
 
@@ -405,8 +397,7 @@ def compute_flow_loss(
 
     # Auxiliary CE loss on bottleneck features
     components['ce'] = 0.0
-    if aux_ce_head is not None and aux_ce_weight > 0.0 and class_labels is not None and mid_bottleneck_container:
-        mid_feats = mid_bottleneck_container[0]
+    if aux_ce_head is not None and aux_ce_weight > 0.0 and class_labels is not None and mid_feats is not None:
         logits = aux_ce_head(mid_feats)
         loss_ce = F.cross_entropy(logits, class_labels) * aux_ce_weight
         loss = loss + loss_ce
@@ -414,8 +405,7 @@ def compute_flow_loss(
 
     # CORAL supervised contrastive loss on bottleneck features
     components['coral'] = 0.0
-    if coral_proj is not None and coral_weight > 0.0 and class_labels is not None and mid_bottleneck_container:
-        mid_feats = mid_bottleneck_container[0]
+    if coral_proj is not None and coral_weight > 0.0 and class_labels is not None and mid_feats is not None:
         proj = coral_proj(mid_feats)
         loss_coral = supervised_contrastive_loss(proj, class_labels, coral_temperature) * coral_weight
         loss = loss + loss_coral
