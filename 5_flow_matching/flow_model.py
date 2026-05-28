@@ -145,6 +145,50 @@ class AuxProjectionHead(nn.Module):
         return self.fc(x)
 
 
+class CoralProjection(nn.Module):
+    """CORAL-style projection head (NeurIPS 2025).
+
+    Bottleneck(256) → Linear → SiLU → 128-dim → L2 normalize.
+    Projected features used for supervised contrastive loss.
+    """
+    def __init__(self, bottleneck_dim: int = 256, latent_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(bottleneck_dim, latent_dim),
+            nn.SiLU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(self.net(x), p=2, dim=1)
+
+
+def supervised_contrastive_loss(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """SupCon loss: pull same-class together, push different-class apart.
+
+    Args:
+        features: L2-normalized features (B, D)
+        labels: class labels (B,)
+        temperature: SupCon temperature
+    """
+    B = features.shape[0]
+    labels = labels.contiguous().view(-1, 1)
+    mask = torch.eq(labels, labels.T).float()
+    mask = mask - torch.eye(B, device=features.device)
+
+    sim = features @ features.T / temperature
+    sim_max, _ = sim.max(dim=1, keepdim=True)
+    sim = sim - sim_max.detach()
+    exp_sim = torch.exp(sim) * (1 - torch.eye(B, device=features.device))
+
+    log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True))
+    loss = -(mask * log_prob).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+    return loss.mean()
+
+
 class FreqFlowUNet(nn.Module):
     """Two-branch FreqFlow: spatial UNet + frequency UNet with FFT decomposition.
 
@@ -276,6 +320,9 @@ def compute_flow_loss(
     aux_path_weight: float = 0.0,
     aux_ce_head: AuxProjectionHead | None = None,
     aux_ce_weight: float = 0.0,
+    coral_proj: CoralProjection | None = None,
+    coral_weight: float = 0.0,
+    coral_temperature: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     B = x_1.shape[0]
     device = x_1.device
@@ -306,7 +353,11 @@ def compute_flow_loss(
     # Capture bottleneck features via local hook (reliable in train AND eval)
     mid_bottleneck_container = []
     hook_handle = None
-    if aux_ce_head is not None and aux_ce_weight > 0.0 and class_labels is not None:
+    need_bottleneck = (
+        (aux_ce_head is not None and aux_ce_weight > 0.0)
+        or (coral_proj is not None and coral_weight > 0.0)
+    )
+    if need_bottleneck and class_labels is not None:
         mid_block = (model.spatial_unet.mid_block if freq_flow else model.unet.mid_block)
         hook_handle = mid_block.register_forward_hook(
             lambda m, i, o: mid_bottleneck_container.append(o.mean(dim=[2, 3]))
@@ -360,6 +411,15 @@ def compute_flow_loss(
         loss_ce = F.cross_entropy(logits, class_labels) * aux_ce_weight
         loss = loss + loss_ce
         components['ce'] = loss_ce.item()
+
+    # CORAL supervised contrastive loss on bottleneck features
+    components['coral'] = 0.0
+    if coral_proj is not None and coral_weight > 0.0 and class_labels is not None and mid_bottleneck_container:
+        mid_feats = mid_bottleneck_container[0]
+        proj = coral_proj(mid_feats)
+        loss_coral = supervised_contrastive_loss(proj, class_labels, coral_temperature) * coral_weight
+        loss = loss + loss_coral
+        components['coral'] = loss_coral.item()
 
     return loss, components
 
