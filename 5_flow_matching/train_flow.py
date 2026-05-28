@@ -25,7 +25,7 @@ from datetime import datetime
 import csv
 
 from mil_model import FlowCropDataset, load_labels
-from flow_model import FlowUNet, FreqFlowUNet
+from flow_model import FlowUNet, FreqFlowUNet, SemanticPrototype, AuxProjectionHead
 from flow_model import compute_flow_loss, sample
 
 
@@ -64,6 +64,12 @@ parser.add_argument('--delta_fm', action='store_true', default=False,
                     help='Use Contrastive Flow Matching (DeltaFM) loss (Stoica et al., ICCV 2025)')
 parser.add_argument('--delta_fm_lambda', type=float, default=0.05,
                     help='Contrastive loss weight lambda for DeltaFM (default: 0.05)')
+parser.add_argument('--aux_path', action='store_true', default=False,
+                    help='Use AuxPath-FM semantic prototype path (arXiv:2605.06364)')
+parser.add_argument('--aux_path_weight', type=float, default=0.01,
+                    help='Prototype supervision weight for AuxPath-FM')
+parser.add_argument('--aux_ce_weight', type=float, default=0.01,
+                    help='Weight for auxiliary CE head on bottleneck features (default 0.01, auto-enabled with --aux_path)')
 
 args = parser.parse_args()
 
@@ -148,6 +154,18 @@ else:
 n_params = sum(p.numel() for p in model.parameters())
 print(f"  Params: {n_params:,}")
 
+prototype = None
+if args.aux_path:
+    prototype = SemanticPrototype(num_classes=num_classes).to(device)
+    n_proto = sum(p.numel() for p in prototype.parameters())
+    print(f"  AuxPath-FM prototype: {n_proto:,} params (class-specific path encoding)")
+
+aux_ce_head = None
+if args.aux_ce_weight > 0.0:
+    aux_ce_head = AuxProjectionHead(bottleneck_dim=256, num_classes=num_classes).to(device)
+    n_ce = sum(p.numel() for p in aux_ce_head.parameters())
+    print(f"  Aux CE head: {n_ce:,} params (weight={args.aux_ce_weight})")
+
 def add_weight_decay(model, wd=0.05):
     decay, no_decay = [], []
     skip = {'bias', 'norm', 'embed'}
@@ -164,6 +182,10 @@ def add_weight_decay(model, wd=0.05):
     ]
 
 param_groups = add_weight_decay(model, args.weight_decay)
+if prototype is not None:
+    param_groups.append({'params': prototype.parameters(), 'weight_decay': 0.0})
+if aux_ce_head is not None:
+    param_groups.append({'params': aux_ce_head.parameters(), 'weight_decay': 0.0})
 optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
 
 total_steps = len(train_loader) * args.epochs
@@ -184,6 +206,10 @@ if args.resume:
     model.load_state_dict(ckpt['model_state_dict'])
     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+    if prototype is not None and 'prototype_state_dict' in ckpt:
+        prototype.load_state_dict(ckpt['prototype_state_dict'])
+    if aux_ce_head is not None and 'aux_ce_state_dict' in ckpt:
+        aux_ce_head.load_state_dict(ckpt['aux_ce_state_dict'])
     start_epoch = ckpt['epoch'] + 1
     print(f"  Resumed epoch {ckpt['epoch']}")
 
@@ -208,7 +234,8 @@ with open(metrics_path, 'w', newline='') as f:
     w = csv.writer(f)
     csv_header = ['epoch', 'train_loss', 'val_loss',
                   'train_spatial', 'val_spatial', 'train_freq', 'val_freq',
-                  'train_neg', 'val_neg', 'lr', 'time_s']
+                  'train_neg', 'val_neg', 'train_aux', 'val_aux',
+                  'train_ce', 'val_ce', 'lr', 'time_s']
     w.writerow(csv_header)
 
 for epoch in range(start_epoch, args.epochs):
@@ -216,11 +243,15 @@ for epoch in range(start_epoch, args.epochs):
     val_ds.set_epoch(epoch)
 
     model.train()
+    prototype.train() if prototype is not None else None
+    aux_ce_head.train() if aux_ce_head is not None else None
     train_loss = 0.0
     train_steps = 0
     train_spatial = 0.0
     train_freq = 0.0
     train_neg = 0.0
+    train_aux = 0.0
+    train_ce = 0.0
     t0 = time.time()
 
     pbar = tqdm(train_loader, desc=f"E{epoch+1:03d}", leave=False)
@@ -236,12 +267,21 @@ for epoch in range(start_epoch, args.epochs):
                 freq_filter_D=args.freq_filter_D,
                 freq_loss_weight=args.freq_loss_weight,
                 delta_fm_lambda=delta_lambda,
+                aux_path=args.aux_path,
+                prototype=prototype,
+                aux_path_weight=args.aux_path_weight,
+                aux_ce_head=aux_ce_head,
+                aux_ce_weight=args.aux_ce_weight,
             )
 
         optimizer.zero_grad()
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if prototype is not None:
+            torch.nn.utils.clip_grad_norm_(prototype.parameters(), 1.0)
+        if aux_ce_head is not None:
+            torch.nn.utils.clip_grad_norm_(aux_ce_head.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
@@ -250,6 +290,8 @@ for epoch in range(start_epoch, args.epochs):
         train_spatial += comp.get('spatial', 0.0)
         train_freq += comp.get('freq', 0.0)
         train_neg += comp.get('neg', 0.0)
+        train_aux += comp.get('aux', 0.0)
+        train_ce += comp.get('ce', 0.0)
         train_steps += 1
         pbar.set_postfix(loss=loss.item())
 
@@ -257,18 +299,26 @@ for epoch in range(start_epoch, args.epochs):
     train_spatial /= max(1, train_steps)
     train_freq /= max(1, train_steps)
     train_neg /= max(1, train_steps)
+    train_aux /= max(1, train_steps)
+    train_ce /= max(1, train_steps)
     epoch_time = time.time() - t0
     writer.add_scalar('train/loss', train_loss, epoch)
     writer.add_scalar('train/spatial', train_spatial, epoch)
     writer.add_scalar('train/freq', train_freq, epoch)
     writer.add_scalar('train/neg', train_neg, epoch)
+    writer.add_scalar('train/aux', train_aux, epoch)
+    writer.add_scalar('train/ce', train_ce, epoch)
 
     model.eval()
+    prototype.eval() if prototype is not None else None
+    aux_ce_head.eval() if aux_ce_head is not None else None
     val_loss = 0.0
     val_steps = 0
     val_spatial = 0.0
     val_freq = 0.0
     val_neg = 0.0
+    val_aux = 0.0
+    val_ce = 0.0
     with torch.no_grad():
         for imgs, class_ids in tqdm(val_loader, desc=f"E{epoch+1:03d} val", leave=False):
             imgs = imgs.to(device, non_blocking=True)
@@ -281,24 +331,36 @@ for epoch in range(start_epoch, args.epochs):
                     freq_filter_D=args.freq_filter_D,
                     freq_loss_weight=args.freq_loss_weight,
                     delta_fm_lambda=delta_lambda,
+                    aux_path=args.aux_path,
+                    prototype=prototype,
+                    aux_path_weight=args.aux_path_weight,
+                    aux_ce_head=aux_ce_head,
+                    aux_ce_weight=args.aux_ce_weight,
                 )
             val_loss += loss.item()
             val_spatial += comp.get('spatial', 0.0)
             val_freq += comp.get('freq', 0.0)
             val_neg += comp.get('neg', 0.0)
+            val_aux += comp.get('aux', 0.0)
+            val_ce += comp.get('ce', 0.0)
             val_steps += 1
     val_loss /= max(1, val_steps)
     val_spatial /= max(1, val_steps)
     val_freq /= max(1, val_steps)
     val_neg /= max(1, val_steps)
+    val_aux /= max(1, val_steps)
+    val_ce /= max(1, val_steps)
     writer.add_scalar('val/loss', val_loss, epoch)
     writer.add_scalar('val/spatial', val_spatial, epoch)
     writer.add_scalar('val/freq', val_freq, epoch)
     writer.add_scalar('val/neg', val_neg, epoch)
+    writer.add_scalar('val/aux', val_aux, epoch)
+    writer.add_scalar('val/ce', val_ce, epoch)
 
     lr_now = optimizer.param_groups[0]['lr']
     print(f"  E{epoch+1:03d} train={train_loss:.6f} val={val_loss:.6f} "
-          f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}) ({epoch_time:.0f}s)")
+          f"(spat={val_spatial:.4f} freq={val_freq:.4f} neg={val_neg:.4f}"
+          f" aux={val_aux:.4f} ce={val_ce:.4f}) ({epoch_time:.0f}s)")
 
     with open(metrics_path, 'a', newline='') as f:
         w = csv.writer(f)
@@ -306,6 +368,8 @@ for epoch in range(start_epoch, args.epochs):
                f'{train_spatial:.4f}', f'{val_spatial:.4f}',
                f'{train_freq:.4f}', f'{val_freq:.4f}',
                f'{train_neg:.4f}', f'{val_neg:.4f}',
+               f'{train_aux:.4f}', f'{val_aux:.4f}',
+               f'{train_ce:.4f}', f'{val_ce:.4f}',
                f'{lr_now:.2e}', f'{epoch_time:.0f}']
         w.writerow(row)
 
@@ -318,7 +382,9 @@ for epoch in range(start_epoch, args.epochs):
                 cid = torch.tensor([ci], device=device)
                 samp = sample(model, 1, num_steps=args.num_steps,
                               class_labels=cid, device=device,
-                              freq_flow=args.freq_flow)
+                              freq_flow=args.freq_flow,
+                              aux_path=args.aux_path,
+                              prototype=prototype)
                 all_samples.append(samp.cpu())
 
             n_drugs, n_mutants = len(drug_viz), len(mutant_viz)
@@ -365,6 +431,8 @@ for epoch in range(start_epoch, args.epochs):
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
+            'prototype_state_dict': prototype.state_dict() if prototype is not None else None,
+            'aux_ce_state_dict': aux_ce_head.state_dict() if aux_ce_head is not None else None,
             'train_loss': train_loss,
             'val_loss': val_loss,
             'args': vars(args),
