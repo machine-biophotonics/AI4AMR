@@ -86,6 +86,8 @@ def main() -> None:
                         help='Grid size for raster mode - centered on image (default: 2500)')
     parser.add_argument('--run_all_folds', action='store_true', default=False,
                         help='Run prediction for all 6 folds (P1-P6)')
+    parser.add_argument('--guide', type=int, default=None,
+                        help='Filter to specific guide number (e.g. 1 for guide 1) in mutant mode')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -93,6 +95,8 @@ def main() -> None:
     data_mode_folder = args.data_mode
     if args.data_mode == 'drug' and args.drug_no_concentration:
         data_mode_folder = 'drug_noconcentration'
+    if args.guide is not None:
+        data_mode_folder = f"{args.data_mode}_guide_{args.guide}"
     
     # Load JSON mappings based on data_mode
     if args.data_mode in ['drug', 'both']:
@@ -240,6 +244,12 @@ def main() -> None:
                         mutant_classes.add(info['id'])
         all_classes = sorted(drug_classes | mutant_classes)
         all_classes = sorted(drug_classes | mutant_classes)
+    
+    # Filter to specific guide if requested
+    if args.guide is not None:
+        guide_suffix = f"_{args.guide}"
+        all_classes = sorted([c for c in all_classes if c.endswith(guide_suffix)])
+        print(f"Guide {args.guide} filter: {len(all_classes)} remaining classes")
     
     classes = {i: name for i, name in enumerate(all_classes)}
     idx_to_label = classes
@@ -900,6 +910,18 @@ def main() -> None:
                     filtered_paths.append(img_path)
             image_paths = filtered_paths
             print(f"Filtered images by '{args.filter_class}': {len(image_paths)} images")
+
+        # Filter images by guide if requested (only keep guide N wells)
+        if args.guide is not None:
+            guide_suffix = f"_{args.guide}"
+            filtered_paths: list[Path] = []
+            for img_path in image_paths:
+                well = parse_well_from_filename(str(img_path))
+                label = get_ground_truth_label(test_plate, well)
+                if label and label.endswith(guide_suffix):
+                    filtered_paths.append(img_path)
+            image_paths = filtered_paths
+            print(f"Filtered images by guide {args.guide}: {len(image_paths)} images")
     
         # Sample N images per class if requested
         if args.sample_per_class:

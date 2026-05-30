@@ -129,12 +129,16 @@ parser.add_argument('--drug_no_concentration', action='store_true', default=Fals
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
 parser.add_argument('--freeze', action='store_true', default=False,
                     help='Freeze backbone, only train attention pool + classifier head')
+parser.add_argument('--guide', type=int, default=None,
+                    help='Filter to specific guide number (e.g. 1 for guide 1) in mutant mode')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
 data_mode_folder = args.data_mode
 if args.data_mode == 'drug' and args.drug_no_concentration:
     data_mode_folder = 'drug_noconcentration'
+if args.guide is not None:
+    data_mode_folder = f"{args.data_mode}_guide_{args.guide}"
 
 if args.warmup_epochs is None:
     args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
@@ -430,6 +434,32 @@ def train_single_fold(test_plate: str) -> None:
     train_labels = np.array(train_labels)
     val_labels = np.array(val_labels)
     test_labels = np.array(test_labels)
+    
+    # Filter to specific guide if requested (mutant mode)
+    if args.guide is not None:
+        guide_suffix = f"_{args.guide}"
+        train_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in train_labels]])
+        val_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in val_labels]])
+        test_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in test_labels]])
+        
+        train_paths = [p for p, m in zip(train_paths, train_mask) if m]
+        train_labels = train_labels[train_mask]
+        val_paths = [p for p, m in zip(val_paths, val_mask) if m]
+        val_labels = val_labels[val_mask]
+        test_paths = [p for p, m in zip(test_paths, test_mask) if m]
+        test_labels = test_labels[test_mask]
+        
+        # Recompute class mapping with only remaining classes
+        remaining_classes = sorted(set(all_classes[i] for i in np.concatenate([train_labels, val_labels, test_labels])))
+        old_all_classes = all_classes
+        class_to_idx = {cls: idx for idx, cls in enumerate(remaining_classes)}
+        num_classes = len(remaining_classes)
+        all_classes = remaining_classes
+        train_labels = np.array([class_to_idx[old_all_classes[i]] for i in train_labels])
+        val_labels = np.array([class_to_idx[old_all_classes[i]] for i in val_labels])
+        test_labels = np.array([class_to_idx[old_all_classes[i]] for i in test_labels])
+        
+        print(f"Guide {args.guide} filter applied: Train={len(train_paths)}, Val={len(val_paths)}, Test={len(test_paths)}, Classes={num_classes}")
     
     print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
     

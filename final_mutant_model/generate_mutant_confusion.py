@@ -394,7 +394,8 @@ def main():
     parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
     parser.add_argument('--single_fold', type=str, default=None,
                         help='Generate for a single fold (e.g., P1 or Plate_1) - creates fold-specific output directory')
-    parser.add_argument('--guide', action='store_true', help='Generate only guide-level')
+    parser.add_argument('--guide', type=int, default=None,
+                        help='Filter to specific guide number (e.g. 1 for guide 1) and skip to gene-level')
     parser.add_argument('--family', action='store_true', help='Generate only family-level')
     parser.add_argument('--csv_name', type=str, default=None, 
                         help='CSV filename to look for (default: predictions_all_crops.csv or predictions_all_crops_mil_100pos.csv)')
@@ -431,8 +432,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Aggregating across folds: {folds}")
-    if args.guide:
-        print("Mode: Guide only")
+    if args.guide is not None:
+        print(f"Mode: Gene-level (filtered to guide {args.guide})")
     elif args.family:
         print("Mode: Family only")
     print(f"Output directory: {output_dir}")
@@ -482,6 +483,12 @@ def main():
 
         df_valid = df[df['ground_truth_label'].notna()].copy()
 
+        # Filter to specific guide if requested
+        if args.guide is not None:
+            guide_suffix = f"_{args.guide}"
+            df_valid = df_valid[df_valid['ground_truth_label'].str.endswith(guide_suffix, na=False)].copy()
+            print(f"  Guide {args.guide} filter: {len(df_valid)} remaining rows")
+
         image_df, well_df = aggregate_crop_to_well(df_valid)
         all_fold_data[fold] = {
             'crop': df_valid,
@@ -490,8 +497,8 @@ def main():
         }
 
     levels = [('crop', 'crop'), ('image', 'image'), ('well', 'well')]
-    if args.guide:
-        hierarchies = ['guide']
+    if args.guide is not None:
+        hierarchies = ['gene', 'pathway', 'family']
     elif args.family:
         hierarchies = ['family']
     else:

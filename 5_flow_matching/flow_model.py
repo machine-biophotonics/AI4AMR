@@ -89,103 +89,14 @@ class FlowUNet(nn.Module):
         )
         self.unet.enable_gradient_checkpointing()
 
-        self._mid_bottleneck = None
-
-    def get_last_bottleneck(self):
-        return self._mid_bottleneck
-
     def forward(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        self._mid_bottleneck = None
-        handle = self.unet.mid_block.register_forward_hook(
-            lambda m, i, o: setattr(self, '_mid_bottleneck', o.mean(dim=[2, 3]))
-        )
         output = self.unet(x_t, timestep=t, class_labels=class_labels, return_dict=True)
-        handle.remove()
         return output.sample
-
-
-class SemanticPrototype(nn.Module):
-    """Learns class-specific prototypes η = F_φ(Y) for AuxPath-FM.
-
-    Paper: AuxPath-FM (arXiv:2605.06364, May 2026).
-    Maps class labels to a prototype image (same spatial dims as data).
-    Lightweight: embed → MLP → 1×16×16 → upsample to 224×224.
-    """
-    def __init__(self, num_classes: int, latent_dim: int = 64):
-        super().__init__()
-        self.embed = nn.Embedding(num_classes, latent_dim)
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim, 128),
-            nn.SiLU(),
-            nn.Linear(128, 256),
-        )
-
-    def forward(self, class_labels: torch.Tensor) -> torch.Tensor:
-        B = class_labels.shape[0]
-        h = self.embed(class_labels)
-        h = self.net(h)
-        h = h.view(B, 1, 16, 16)
-        h = F.interpolate(h, size=(224, 224), mode='bilinear', align_corners=False)
-        return h
-
-
-class AuxProjectionHead(nn.Module):
-    """Linear probe on GAP-pooled bottleneck features for auxiliary CE regularization."""
-    def __init__(self, bottleneck_dim: int = 256, num_classes: int = 185):
-        super().__init__()
-        self.fc = nn.Linear(bottleneck_dim, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
-
-
-class CoralProjection(nn.Module):
-    """CORAL-style projection head (NeurIPS 2025).
-
-    Bottleneck(256) → Linear → SiLU → 128-dim → L2 normalize.
-    Projected features used for supervised contrastive loss.
-    """
-    def __init__(self, bottleneck_dim: int = 256, latent_dim: int = 128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(bottleneck_dim, latent_dim),
-            nn.SiLU(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.normalize(self.net(x), p=2, dim=1)
-
-
-def supervised_contrastive_loss(
-    features: torch.Tensor,
-    labels: torch.Tensor,
-    temperature: float = 0.1,
-) -> torch.Tensor:
-    """SupCon loss: pull same-class together, push different-class apart.
-
-    Args:
-        features: L2-normalized features (B, D)
-        labels: class labels (B,)
-        temperature: SupCon temperature
-    """
-    B = features.shape[0]
-    labels = labels.contiguous().view(-1, 1)
-    mask = torch.eq(labels, labels.T).float()
-    mask = mask - torch.eye(B, device=features.device)
-
-    sim = features @ features.T / temperature
-    sim_max, _ = sim.max(dim=1, keepdim=True)
-    sim = sim - sim_max.detach()
-    exp_sim = torch.exp(sim) * (1 - torch.eye(B, device=features.device))
-
-    log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True))
-    loss = -(mask * log_prob).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-    return loss.mean()
 
 
 class FreqFlowUNet(nn.Module):
@@ -243,8 +154,6 @@ class FreqFlowUNet(nn.Module):
         )
         self.spatial_unet.enable_gradient_checkpointing()
 
-        self._mid_bottleneck = None
-
         # Frequency branch: 1ch high-pass input → 1ch high-pass velocity
         self.freq_unet = UNet2DModel(
             sample_size=sample_size,
@@ -262,23 +171,15 @@ class FreqFlowUNet(nn.Module):
         )
         self.freq_unet.enable_gradient_checkpointing()
 
-    def get_last_bottleneck(self):
-        return self._mid_bottleneck
-
     def forward(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor,
         class_labels: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        self._mid_bottleneck = None
-        handle = self.spatial_unet.mid_block.register_forward_hook(
-            lambda m, i, o: setattr(self, '_mid_bottleneck', o.mean(dim=[2, 3]))
-        )
         v_spatial = self.spatial_unet(
             x_t, timestep=t, class_labels=class_labels, return_dict=True
         ).sample
-        handle.remove()
 
         # Frequency branch: predict high-frequency velocity from high-pass x_t
         _, x_high = Fourier_filter(x_t, self.freq_filter_D)
@@ -287,6 +188,7 @@ class FreqFlowUNet(nn.Module):
         ).sample
 
         return v_freq, v_spatial
+
 
 
 
@@ -313,14 +215,6 @@ def compute_flow_loss(
     freq_filter_D: float = 8.0,
     freq_loss_weight: float = 0.25,
     delta_fm_lambda: float = 0.0,
-    aux_path: bool = False,
-    prototype: SemanticPrototype | None = None,
-    aux_path_weight: float = 0.0,
-    aux_ce_head: AuxProjectionHead | None = None,
-    aux_ce_weight: float = 0.0,
-    coral_proj: CoralProjection | None = None,
-    coral_weight: float = 0.0,
-    coral_temperature: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     B = x_1.shape[0]
     device = x_1.device
@@ -330,35 +224,11 @@ def compute_flow_loss(
 
     x_0 = torch.randn_like(x_1)
 
-    # AuxPath-FM (arXiv:2605.06364, Algorithm 3):
-    # X_t = Interpolant(X1, X0) + c(t)·η   where η = F_φ(Y)
-    # Our convention: noise→data direction (for forward Euler sampling)
-    # x_0=noise, x_1=data, a(t)=1-t, b(t)=t
-    # X_t = (1-t)·X0 + t·X1 + t·(1-t)·η,  v_t = X1 - X0
-    # (Equivalent to paper's repo with X0↔X1 and sign flip)
-    eta = None
-    if aux_path and prototype is not None:
-        eta = prototype(class_labels)
-        x_t = (1 - t) * x_0 + t * x_1 + t * (1 - t) * eta
-    else:
-        x_t = (1 - t) * x_0 + t * x_1
-
-    # Target velocity: data - noise
+    x_t = (1 - t) * x_0 + t * x_1
     u_t = x_1 - x_0
 
     t_flat = t.view(B)
-
     output = model(x_t, t_flat, class_labels=class_labels)
-
-    mid_feats = model.get_last_bottleneck()
-    need_bottleneck = (
-        (aux_ce_head is not None and aux_ce_weight > 0.0)
-        or (coral_proj is not None and coral_weight > 0.0)
-    )
-    if need_bottleneck and class_labels is not None and mid_feats is None:
-        print(f"[WARNING] bottleneck is None: need_bottleneck={need_bottleneck}, "
-              f"class_labels={class_labels is not None}, "
-              f"model_type={type(model).__name__}")
 
     components = {}
 
@@ -388,29 +258,6 @@ def compute_flow_loss(
         loss = loss - delta_fm_lambda * loss_neg
         components['neg'] = loss_neg.item()
 
-    # AuxPath-FM: L_F = MSE(F_φ(Y), X_1)  (paper Algorithm 3, Stage 1)
-    components['aux'] = 0.0
-    if aux_path and prototype is not None and aux_path_weight > 0.0 and eta is not None:
-        loss_aux = F.mse_loss(eta, x_1.detach()) * aux_path_weight
-        loss = loss + loss_aux
-        components['aux'] = loss_aux.item()
-
-    # Auxiliary CE loss on bottleneck features
-    components['ce'] = 0.0
-    if aux_ce_head is not None and aux_ce_weight > 0.0 and class_labels is not None and mid_feats is not None:
-        logits = aux_ce_head(mid_feats)
-        loss_ce = F.cross_entropy(logits, class_labels) * aux_ce_weight
-        loss = loss + loss_ce
-        components['ce'] = loss_ce.item()
-
-    # CORAL supervised contrastive loss on bottleneck features
-    components['coral'] = 0.0
-    if coral_proj is not None and coral_weight > 0.0 and class_labels is not None and mid_feats is not None:
-        proj = coral_proj(mid_feats)
-        loss_coral = supervised_contrastive_loss(proj, class_labels, coral_temperature) * coral_weight
-        loss = loss + loss_coral
-        components['coral'] = loss_coral.item()
-
     return loss, components
 
 
@@ -422,13 +269,10 @@ def sample(
     class_labels: torch.Tensor | None = None,
     device: str = 'cuda',
     freq_flow: bool = False,
-    aux_path: bool = False,
-    prototype: SemanticPrototype | None = None,
 ) -> torch.Tensor:
     """Generate samples via Euler integration of the ODE.
 
     For FreqFlowUNet, uses output[1] (spatial branch) as the velocity.
-    For AuxPath-FM, adds ċ(t)*η = (1-2t)*η to velocity (η from prototype).
     """
     model.eval()
     C = model.spatial_unet.config.in_channels if freq_flow else model.unet.config.in_channels
@@ -438,20 +282,12 @@ def sample(
     x = torch.randn(num_samples, C, H, W, device=device)
     if class_labels is not None:
         class_labels = class_labels.to(device)
-
-    eta = None
-    if aux_path and prototype is not None:
-        eta = prototype(class_labels)
-
     dt = 1.0 / num_steps
 
     for i in range(num_steps):
-        t_val = i * dt
-        t = torch.full((num_samples,), t_val, device=device)
+        t = torch.full((num_samples,), i * dt, device=device)
         out = model(x, t, class_labels=class_labels)
         v = out[1] if freq_flow else out
-        if eta is not None:
-            v = v + (1 - 2 * t_val) * eta
         x = x + v * dt
 
     return x.clamp(-1, 1)
