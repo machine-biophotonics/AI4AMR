@@ -1,0 +1,246 @@
+================================================================================
+PHENOTYPE CLUSTERS (from HDBSCAN on bottleneck centroids)
+================================================================================
+min_cluster_size=3
+17 clusters + 43 noise
+
+─── MIXED Drug+Mutant Phenotype Clusters ───
+
+Cluster 1: 3 Drugs + 2 Mutants + 0 Controls = 5 total
+  ------------------------------------------------------------
+  [Drug    ] Aztreonam_2x
+  [Drug    ] Ceftriaxone_1x
+  [Drug    ] Ceftriaxone_2x
+  [Mutant  ] ftsZ_1
+  [Mutant  ] ftsZ_3
+
+Cluster 0: 2 Drugs + 1 Mutants + 0 Controls = 3 total
+  ------------------------------------------------------------
+  [Drug    ] Cefepim_2x
+  [Drug    ] Sulbactam_2x
+  [Mutant  ] ftsZ_2
+
+
+─── ALL CLUSTERS ───
+
+Noise: 27D + 16M + 0C = 43 total
+  [Drug    ] Avibactam_0.5x
+  [Drug    ] Aztreonam_0.25x
+  [Drug    ] Aztreonam_1x
+  [Drug    ] Cefepim_1x
+  [Drug    ] Cefsulodin_2x
+  [Drug    ] Ceftriaxone_0.5x
+  [Drug    ] Clavulanic_Acid_0.25x
+  [Drug    ] Clavulanic_Acid_0.5x
+  [Drug    ] Colistin_0.5x
+  [Drug    ] Colistin_2x
+  [Drug    ] Doxicyclin_0.5x
+  [Drug    ] Kanamycin_0.25x
+  [Drug    ] Levofloxacin_1x
+  [Drug    ] Mecillinam_0.25x
+  [Drug    ] Mecillinam_2x
+  [Drug    ] Meropenem_0.25x
+  [Drug    ] Meropenem_2x
+  [Drug    ] Norfloxacin_1x
+  [Drug    ] Penicillin_1x
+  [Drug    ] Penicillin_2x
+  [Drug    ] Polymyxin_B_0.25x
+  [Drug    ] Polymyxin_B_1x
+  [Drug    ] Polymyxin_B_2x
+  [Drug    ] Relebactam_1x
+  [Drug    ] Relebactam_2x
+  [Drug    ] Sulbactam_0.25x
+  [Drug    ] Trimethoprim_1x
+  [Mutant  ] ftsI_1
+  [Mutant  ] ftsI_2
+  [Mutant  ] ftsI_3
+  [Mutant  ] lptC_3
+  [Mutant  ] lpxC_1
+  [Mutant  ] lpxC_2
+  [Mutant  ] mrdA_1
+  [Mutant  ] mrdA_2
+  [Mutant  ] murA_2
+  [Mutant  ] rplA_2
+  [Mutant  ] rplC_1
+  [Mutant  ] rpoA_1
+  [Mutant  ] rpoA_2
+  [Mutant  ] rpoA_3
+  [Mutant  ] rpsL_2
+  [Mutant  ] rpsL_3
+
+Cluster 0: 2D + 1M + 0C = 3 total
+  [Drug    ] Cefepim_2x
+  [Drug    ] Sulbactam_2x
+  [Mutant  ] ftsZ_2
+
+Cluster 1: 3D + 2M + 0C = 5 total
+  [Drug    ] Aztreonam_2x
+  [Drug    ] Ceftriaxone_1x
+  [Drug    ] Ceftriaxone_2x
+  [Mutant  ] ftsZ_1
+  [Mutant  ] ftsZ_3
+
+Cluster 2: 10D + 0M + 0C = 10 total
+  [Drug    ] Avibactam_1x
+  [Drug    ] Avibactam_2x
+  [Drug    ] Clarithromycin_0.5x
+  [Drug    ] Clavulanic_Acid_1x
+  [Drug    ] Clavulanic_Acid_2x
+  [Drug    ] Mecillinam_0.5x
+  [Drug    ] Mecillinam_1x
+  [Drug    ] Meropenem_0.5x
+  [Drug    ] Meropenem_1x
+  [Drug    ] Trimethoprim_0.5x
+
+Cluster 3: 3D + 0M + 0C = 3 total
+  [Drug    ] Ciprofloxacin_1x
+  [Drug    ] Levofloxacin_2x
+  [Drug    ] Norfloxacin_2x
+
+Cluster 4: 3D + 0M + 0C = 3 total
+  [Drug    ] Chloramphenicol_1x
+  [Drug    ] Ciprofloxacin_2x
+  [Drug    ] Trimethoprim_2x
+
+Cluster 5: 3D + 0M + 0C = 3 total
+  [Drug    ] Chloramphenicol_2x
+  [Drug    ] Clarithromycin_2x
+  [Drug    ] Doxicyclin_2x
+
+Cluster 6: 0D + 5M + 0C = 5 total
+  [Mutant  ] lpxC_3
+  [Mutant  ] murC_1
+  [Mutant  ] murC_2
+  [Mutant  ] murC_3
+  [Mutant  ] rpoB_2
+
+Cluster 7: 0D + 5M + 0C = 5 total
+  [Mutant  ] folA_2
+  [Mutant  ] gyrB_3
+  [Mutant  ] rplA_3
+  [Mutant  ] secA_3
+  [Mutant  ] secY_3
+
+Cluster 8: 3D + 0M + 0C = 3 total
+  [Drug    ] Colistin_1x
+  [Drug    ] Doxicyclin_1x
+  [Drug    ] Kanamycin_2x
+
+Cluster 9: 0D + 49M + 12C = 61 total
+  [Control ] NC_1
+  [Control ] NC_2
+  [Control ] NC_3
+  [Control ] NC_4
+  [Control ] NC_5
+  [Control ] NC_6
+  [Control ] WT NC_1
+  [Control ] WT NC_2
+  [Control ] WT NC_3
+  [Control ] WT NC_4
+  [Control ] WT NC_5
+  [Control ] WT NC_6
+  [Mutant  ] dnaB_1
+  [Mutant  ] dnaB_2
+  [Mutant  ] dnaB_3
+  [Mutant  ] dnaE_1
+  [Mutant  ] dnaE_2
+  [Mutant  ] dnaE_3
+  [Mutant  ] folA_1
+  [Mutant  ] folA_3
+  [Mutant  ] folP_1
+  [Mutant  ] folP_2
+  [Mutant  ] folP_3
+  [Mutant  ] gyrA_1
+  [Mutant  ] gyrA_2
+  [Mutant  ] gyrA_3
+  [Mutant  ] gyrB_1
+  [Mutant  ] gyrB_2
+  [Mutant  ] lptA_1
+  [Mutant  ] lptA_3
+  [Mutant  ] lptC_2
+  [Mutant  ] lpxA_1
+  [Mutant  ] lpxA_2
+  [Mutant  ] lpxA_3
+  [Mutant  ] mrcA_1
+  [Mutant  ] mrcA_2
+  [Mutant  ] mrcA_3
+  [Mutant  ] mrcB_1
+  [Mutant  ] mrcB_2
+  [Mutant  ] mrcB_3
+  [Mutant  ] mrdA_3
+  [Mutant  ] msbA_1
+  [Mutant  ] msbA_2
+  [Mutant  ] msbA_3
+  [Mutant  ] murA_1
+  [Mutant  ] murA_3
+  [Mutant  ] parC_1
+  [Mutant  ] parC_2
+  [Mutant  ] parC_3
+  [Mutant  ] parE_1
+  [Mutant  ] parE_2
+  [Mutant  ] parE_3
+  [Mutant  ] rplC_2
+  [Mutant  ] rpsA_1
+  [Mutant  ] rpsA_2
+  [Mutant  ] rpsA_3
+  [Mutant  ] rpsL_1
+  [Mutant  ] secA_1
+  [Mutant  ] secA_2
+  [Mutant  ] secY_1
+  [Mutant  ] secY_2
+
+Cluster 10: 0D + 6M + 0C = 6 total
+  [Mutant  ] lptA_2
+  [Mutant  ] lptC_1
+  [Mutant  ] rplA_1
+  [Mutant  ] rplC_3
+  [Mutant  ] rpoB_1
+  [Mutant  ] rpoB_3
+
+Cluster 11: 3D + 0M + 0C = 3 total
+  [Drug    ] Levofloxacin_0.5x
+  [Drug    ] Polymyxin_B_0.5x
+  [Drug    ] Trimethoprim_0.25x
+
+Cluster 12: 5D + 0M + 0C = 5 total
+  [Drug    ] Aztreonam_0.5x
+  [Drug    ] Ciprofloxacin_0.5x
+  [Drug    ] Norfloxacin_0.5x
+  [Drug    ] Penicillin_0.5x
+  [Drug    ] Sulbactam_1x
+
+Cluster 13: 9D + 0M + 0C = 9 total
+  [Drug    ] Cefsulodin_1x
+  [Drug    ] Chloramphenicol_0.25x
+  [Drug    ] Chloramphenicol_0.5x
+  [Drug    ] Clarithromycin_0.25x
+  [Drug    ] Clarithromycin_1x
+  [Drug    ] Colistin_0.25x
+  [Drug    ] Kanamycin_1x
+  [Drug    ] Rifampicin_2x
+  [Drug    ] Sulbactam_0.5x
+
+Cluster 14: 3D + 0M + 0C = 3 total
+  [Drug    ] Avibactam_0.25x
+  [Drug    ] Norfloxacin_0.25x
+  [Drug    ] Rifampicin_0.5x
+
+Cluster 15: 9D + 0M + 1C = 10 total
+  [Drug    ] Cefepim_0.25x
+  [Drug    ] Doxicyclin_0.25x
+  [Drug    ] Kanamycin_0.5x
+  [Drug    ] Levofloxacin_0.25x
+  [Drug    ] Penicillin_0.25x
+  [Drug    ] Relebactam_0.25x
+  [Drug    ] Relebactam_0.5x
+  [Drug    ] Rifampicin_0.25x
+  [Drug    ] Rifampicin_1x
+  [Control ] control
+
+Cluster 16: 5D + 0M + 0C = 5 total
+  [Drug    ] Cefepim_0.5x
+  [Drug    ] Cefsulodin_0.25x
+  [Drug    ] Cefsulodin_0.5x
+  [Drug    ] Ceftriaxone_0.25x
+  [Drug    ] Ciprofloxacin_0.25x
+

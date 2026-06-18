@@ -14,17 +14,12 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
 from PIL import Image
 from tqdm import tqdm
 from pathlib import Path
-
-try:
-    from skimage.feature import canny as _canny
-    _HAS_SKIMAGE = True
-except ImportError:
-    _HAS_SKIMAGE = False
 
 
 SCRIPT_DIR: str = os.path.dirname(os.path.abspath(__file__))
@@ -94,22 +89,17 @@ def main() -> None:
                         help='Run prediction for all 6 folds (P1-P6)')
     parser.add_argument('--guide', type=int, default=None,
                         help='Filter to specific guide number (e.g. 1 for guide 1) in mutant mode')
-    parser.add_argument('--edge_sigma', type=float, default=None,
-                        help='Apply Canny edge detection with given sigma before normalization (e.g., 2.0)')
+    parser.add_argument('--bn_adapt', action='store_true', default=False,
+                        help='Adapt BatchNorm stats using all images from target plate at inference')
     
     args: argparse.Namespace = parser.parse_args()
     
-    if args.edge_sigma is not None and not _HAS_SKIMAGE:
-        raise ImportError("skimage.feature.canny required for --edge_sigma. Install: pip install scikit-image")
-
     # Determine folder name for results (drug_noconcentration vs drug)
     data_mode_folder = args.data_mode
     if args.data_mode == 'drug' and args.drug_no_concentration:
         data_mode_folder = 'drug_noconcentration'
     if args.guide is not None:
         data_mode_folder = f"{args.data_mode}_guide_{args.guide}"
-    if args.edge_sigma is not None:
-        data_mode_folder = f"canny_{data_mode_folder}"
     
     # Load JSON mappings based on data_mode
     if args.data_mode in ['drug', 'both']:
@@ -134,8 +124,6 @@ def main() -> None:
             MUTANT_DATA: dict = json.load(f)
         # Set data_mode_folder to drug_on_mutant for output
         data_mode_folder = 'drug_on_mutant'
-        if args.edge_sigma is not None:
-            data_mode_folder = f'canny_{data_mode_folder}'
         # Override data_mode for BASE_DIR to point to mutant
         actual_data_mode = 'mutant'
         print(f"\n*** DRUG ON MUTANT MODE ***")
@@ -150,8 +138,6 @@ def main() -> None:
             IC50_DATA: dict = json.load(f)
         # Set data_mode_folder to mutant_on_drug for output
         data_mode_folder = 'mutant_on_drug'
-        if args.edge_sigma is not None:
-            data_mode_folder = f'canny_{data_mode_folder}'
         # Override data_mode for BASE_DIR to point to drug
         actual_data_mode = 'drug'
         print(f"\n*** MUTANT ON DRUG MODE ***")
@@ -279,6 +265,9 @@ def main() -> None:
     print(f"Using device: {device}")
 
     from mil_model import MILEncoder
+    from cs_arm_bn import (
+        update_bn_with_full_domain,
+    )
     
     # Define _load_image function - EXACT same as trial_daniel (min-max normalization)
     def _load_image(img_path: str) -> Image.Image:
@@ -406,14 +395,38 @@ def main() -> None:
             # Drug model on mutant: keep all weights, allow classifier mismatch
             model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         elif args.mutant_on_drug:
-            # Mutant model on drug: load only backbone and attention, skip classifier (different classes)
-            state_dict = checkpoint['model_state_dict']
-            filtered_state_dict = {k: v for k, v in state_dict.items() if 'classifier' not in k}
-            model.load_state_dict(filtered_state_dict, strict=False)
+            # Mutant model on drug: load all weights (classifier dims match if same guide)
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         else:
             model.load_state_dict(checkpoint['model_state_dict'], strict=True)
         model.eval()
         print(f"MILEncoder model loaded successfully (SC-MIL: {use_sc_mil})")
+
+        # ─── BN adaptation: update running stats using full target domain ───
+        if args.bn_adapt:
+            print(f"\n{'='*60}")
+            print(f"BN adaptation: Updating statistics using images from {image_plate_key}...")
+
+            all_plate_paths = sorted(Path(image_dir).rglob('*.tif')) + sorted(Path(image_dir).rglob('*.tiff'))
+            if args.max_images:
+                all_plate_paths = all_plate_paths[:args.max_images]
+
+            from mil_model import MultiCropDataset
+            adapt_dataset = MultiCropDataset([str(p) for p in all_plate_paths], [0]*len(all_plate_paths), None,
+                               neighborhood=args.crop_neighborhood, grid_size=args.grid_size,
+                               augment=False, seed=42, num_channels=args.num_channels,
+                               extraction_mode=args.extraction_mode,
+                               raster_crop_size=args.raster_crop_size,
+                               raster_resize_size=args.raster_resize_size,
+                               raster_num_crops=args.raster_num_crops,
+                               raster_grid_size=args.raster_grid_size)
+            adapt_dataset.set_epoch(0)
+            adapt_loader = DataLoader(adapt_dataset, batch_size=args.batch_size, shuffle=False,
+                                     num_workers=0, pin_memory=False)
+
+            update_bn_with_full_domain(adapt_loader, model, device)
+            print(f"BN adaptation complete using {len(all_plate_paths)} images from {image_plate_key}.")
+            print(f"{'='*60}\n")
 
         def extract_all_crops(img_path: str, crop_size: int, grid_size: int) -> list[tuple[torch.Tensor, int, int, int]]:
             """Extract all crops from an image in deterministic order using proper image loading."""
@@ -455,15 +468,6 @@ def main() -> None:
                     crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
                 else:
                     crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
-            
-                if args.edge_sigma is not None:
-                    if args.num_channels == 1:
-                        crop_np = _canny(crop_np[0], sigma=args.edge_sigma).astype(np.uint8) * 255
-                        crop_np = crop_np[np.newaxis, ...]
-                    else:
-                        gray = np.mean(crop_np, axis=0).astype(np.uint8)
-                        crop_np = _canny(gray, sigma=args.edge_sigma).astype(np.uint8) * 255
-                        crop_np = np.stack([crop_np] * 3, axis=0)
             
                 # Normalize using ImageNet stats
                 if args.num_channels == 1:
@@ -546,15 +550,6 @@ def main() -> None:
                 else:
                     crop_np = np.transpose(crop_np, (2, 0, 1))
             
-                if args.edge_sigma is not None:
-                    if args.num_channels == 1:
-                        crop_np = _canny(crop_np[0], sigma=args.edge_sigma).astype(np.uint8) * 255
-                        crop_np = crop_np[np.newaxis, ...]
-                    else:
-                        gray = np.mean(crop_np, axis=0).astype(np.uint8)
-                        crop_np = _canny(gray, sigma=args.edge_sigma).astype(np.uint8) * 255
-                        crop_np = np.stack([crop_np] * 3, axis=0)
-            
                 if args.num_channels == 1:
                     mean: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
                     std: np.ndarray = np.array([0.5], dtype=np.float32).reshape(1, 1, 1)
@@ -633,15 +628,6 @@ def main() -> None:
                             crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
                         else:
                             crop_np = img_np[:, top:top+crop_size, left:left+crop_size]
-                    
-                        if args.edge_sigma is not None:
-                            if args.num_channels == 1:
-                                crop_np = _canny(crop_np[0], sigma=args.edge_sigma).astype(np.uint8) * 255
-                                crop_np = crop_np[np.newaxis, ...]
-                            else:
-                                gray = np.mean(crop_np, axis=0).astype(np.uint8)
-                                crop_np = _canny(gray, sigma=args.edge_sigma).astype(np.uint8) * 255
-                                crop_np = np.stack([crop_np] * 3, axis=0)
                     
                         # Normalize using ImageNet stats
                         if args.num_channels == 1:
@@ -956,7 +942,7 @@ def main() -> None:
             print(f"Filtered images by '{args.filter_class}': {len(image_paths)} images")
 
         # Filter images by guide if requested (only keep guide N wells)
-        if args.guide is not None:
+        if args.guide is not None and not args.mutant_on_drug and not args.drug_on_mutant:
             guide_suffix = f"_{args.guide}"
             filtered_paths: list[Path] = []
             for img_path in image_paths:

@@ -16,13 +16,7 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
 import re
 import os
-
-try:
-    from skimage.feature import canny as _canny
-    _HAS_SKIMAGE = True
-except ImportError:
-    _HAS_SKIMAGE = False
-
+from typing import Optional
 
 class AttentionPooling(nn.Module):
     """Gated attention MIL pooling (Ilse et al. 2018, Eq 9 - with gating)"""
@@ -284,7 +278,7 @@ class MILEncoder(nn.Module):
             results.append(instance_logits)
         
         return results[0] if len(results) == 1 else tuple(results)
-    
+
     def get_contrastive_embedding(self, x):
         batch_size, num_crops = x.shape[:2]
         x = x.view(batch_size * num_crops, *x.shape[2:])
@@ -515,8 +509,7 @@ class MultiCropDataset(Dataset):
         raster_crop_size: int = 500,
         raster_resize_size: int = 256,
         raster_num_crops: int = 25,
-        raster_grid_size: int = 2500,
-        edge_sigma: float | None = None
+        raster_grid_size: int = 2500
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
@@ -533,9 +526,6 @@ class MultiCropDataset(Dataset):
         self.raster_resize_size = raster_resize_size
         self.raster_num_crops = raster_num_crops
         self.raster_grid_size = raster_grid_size
-        self.edge_sigma = edge_sigma
-        if edge_sigma is not None and not _HAS_SKIMAGE:
-            raise ImportError("skimage.feature.canny required for --edge_sigma. Install: pip install scikit-image")
         
         sample_img = Image.open(image_paths[0])
         # Convert to grayscale ('L') for 1-channel, or RGB for 3-channel
@@ -609,23 +599,14 @@ class MultiCropDataset(Dataset):
             norm_std = [0.229, 0.224, 0.225]
         
         if augment:
-            if edge_sigma is not None:
-                self.transform = A.Compose([
-                    A.RandomRotate90(p=0.5),
-                    A.HorizontalFlip(p=0.5),
-                    A.VerticalFlip(p=0.5),
-                    A.Normalize(mean=norm_mean, std=norm_std),
-                    ToTensorV2(),
-                ])
-            else:
-                self.transform = A.Compose([
-                    A.RandomRotate90(p=0.5),
-                    A.HorizontalFlip(p=0.5),
-                    A.VerticalFlip(p=0.5),
-                    A.RandomBrightnessContrast(brightness_limit=0.5, contrast_limit=0.5, p=0.3),
-                    A.Normalize(mean=norm_mean, std=norm_std),
-                    ToTensorV2(),
-                ])
+            self.transform = A.Compose([
+                A.RandomRotate90(p=0.5),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.5, contrast_limit=0.5, p=0.3),
+                A.Normalize(mean=norm_mean, std=norm_std),
+                ToTensorV2(),
+            ])
         else:
             self.transform = A.Compose([
                 A.Normalize(mean=norm_mean, std=norm_std),
@@ -722,8 +703,6 @@ class MultiCropDataset(Dataset):
         if self.single_crop:
             crop = image.crop((center_left, center_top, center_left + self.crop_size, center_top + self.crop_size))
             crop = np.array(crop)
-            if self.edge_sigma is not None:
-                crop = _canny(crop, sigma=self.edge_sigma).astype(np.uint8) * 255
             crop = self.transform(image=crop)['image']
             crops = crop.unsqueeze(0)
         elif self.extraction_mode == 'raster':
@@ -749,8 +728,6 @@ class MultiCropDataset(Dataset):
                 # Resize to 256x256
                 crop = crop.resize((self.raster_resize_size, self.raster_resize_size), Image.BILINEAR)
                 crop = np.array(crop)
-                if self.edge_sigma is not None:
-                    crop = _canny(crop, sigma=self.edge_sigma).astype(np.uint8) * 255
                 crop = self.transform(image=crop)['image']
                 crops_list.append(crop)
             
@@ -782,8 +759,6 @@ class MultiCropDataset(Dataset):
                     top = max(0, min(top, self.image_size - self.crop_size))
                     crop = image.crop((left, top, left + self.crop_size, top + self.crop_size))
                     crop = np.array(crop)
-                    if self.edge_sigma is not None:
-                        crop = _canny(crop, sigma=self.edge_sigma).astype(np.uint8) * 255
                     crop = self.transform(image=crop)['image']
                     crops_list.append(crop)
             
@@ -829,11 +804,9 @@ def get_gene_from_path(img_path: str, plate_maps: dict) -> str:
     if not well:
         return None
     
-    # Determine if this is drug, mutant, or control data based on path
+    # Determine if this is drug or mutant data based on path
     if '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
         source_prefix = 'mutant_'
-    elif '/controls_data/' in path_lower or '\\controls_data\\' in path_lower:
-        source_prefix = 'control_'
     else:
         # Default to drug (for drug mode or fallback)
         source_prefix = 'drug_'

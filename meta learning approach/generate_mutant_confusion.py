@@ -409,8 +409,6 @@ def main():
                         help='Use best_model_acc for P1-P5, best_model for P6')
     parser.add_argument('--compare', action='store_true',
                         help='Generate confusion matrices for both baseline and CS-ARM-BN predictions with _cs_arm_bn suffix')
-    parser.add_argument('--edge_sigma', type=float, default=None,
-                        help='Apply Canny edge detection with given sigma (looks in canny_mutant/ folder)')
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -418,11 +416,6 @@ def main():
     def run_generation(suffix=''):
         """Run confusion matrix generation for a given CSV/output suffix."""
         
-        base_dir = f'canny_mutant_guide_{args.guide}' if args.edge_sigma is not None and args.guide is not None \
-                    else 'canny_mutant' if args.edge_sigma is not None \
-                    else f'mutant_guide_{args.guide}' if args.guide is not None \
-                    else 'mutant'
-
         if args.fold:
             fold_input = args.fold
             if fold_input.startswith('fold_'):
@@ -432,7 +425,7 @@ def main():
             else:
                 fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
             folds = [fold_input]
-            out_dir = os.path.join(SCRIPT_DIR, base_dir, fold_key)
+            out_dir = os.path.join(SCRIPT_DIR, f'mutant_guide_{args.guide}' if args.guide is not None else 'mutant', fold_key)
         elif args.single_fold:
             folds = [args.single_fold]
             fold_input = args.single_fold
@@ -442,7 +435,7 @@ def main():
                 fold_key = f'fold_{fold_input}'
             else:
                 fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
-            out_dir = os.path.join(SCRIPT_DIR, base_dir, fold_key, f'confusion_matrices{suffix}')
+            out_dir = os.path.join(SCRIPT_DIR, 'mutant', fold_key, f'confusion_matrices{suffix}')
         elif args.output_dir:
             folds = args.folds.split(',')
             out_dir = args.output_dir
@@ -458,8 +451,6 @@ def main():
             print(f"{'='*60}")
 
         print(f"Aggregating across folds: {folds}")
-        if args.edge_sigma is not None:
-            print(f"Edge sigma: {args.edge_sigma} → folder: {base_dir}")
         if args.guide is not None:
             print(f"Mode: Gene-level (filtered to guide {args.guide})")
         elif args.family:
@@ -477,7 +468,7 @@ def main():
             else:
                 fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
         
-            fold_dir = os.path.join(SCRIPT_DIR, base_dir, fold_key)
+            fold_dir = os.path.join(SCRIPT_DIR, f'mutant_guide_{args.guide}' if args.guide is not None else 'mutant', fold_key)
         
             if args.prediction_csv:
                 csv_path = os.path.join(fold_dir, args.prediction_csv)
@@ -485,10 +476,8 @@ def main():
                 csv_path = os.path.join(fold_dir, args.csv_name)
             else:
                 csv_name_attempts = [
-                    f'predictions_all_crops_mil_best_model_auc_n3{suffix}.csv',
                     f'predictions_all_crops_mil_best_model_acc_n3{suffix}.csv',
                     f'predictions_all_crops_mil_best_model{suffix}.csv',
-                    f'predictions_all_crops_mil_best_model_auc{suffix}.csv',
                     f'predictions_all_crops_mil_best_model_acc{suffix}.csv',
                     f'predictions_all_crops_mil_checkpoint_epoch_n3{suffix}.csv',
                     f'predictions_all_crops{suffix}.csv',

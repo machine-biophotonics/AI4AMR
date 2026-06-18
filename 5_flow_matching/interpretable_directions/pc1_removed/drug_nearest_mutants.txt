@@ -1,0 +1,644 @@
+================================================================================
+DRUG → NEAREST MUTANTS IN t-SNE SPACE (PC1 removed)
+================================================================================
+
+Avibactam_0.25x:
+  → rplC_2 (dist=2.409)
+  → secA_1 (dist=2.604)
+  → parC_3 (dist=3.198)
+  → dnaB_2 (dist=3.254)
+  → parC_2 (dist=3.547)
+
+Avibactam_0.5x:
+  → rplC_2 (dist=1.475)
+  → dnaB_2 (dist=2.078)
+  → dnaE_1 (dist=2.993)
+  → folA_2 (dist=3.173)
+  → parC_3 (dist=3.601)
+
+Avibactam_1x:
+  → lptA_1 (dist=1.441)
+  → lptA_3 (dist=1.472)
+  → gyrB_1 (dist=1.758)
+  → lptC_1 (dist=2.507)
+  → dnaE_1 (dist=3.270)
+
+Avibactam_2x:
+  → lptA_1 (dist=1.710)
+  → lptA_3 (dist=1.727)
+  → gyrB_1 (dist=1.908)
+  → lptC_1 (dist=2.691)
+  → dnaE_1 (dist=3.463)
+
+Aztreonam_0.25x:
+  → lptC_2 (dist=15.273)
+  → rpoB_1 (dist=16.467)
+  → rpoB_2 (dist=18.348)
+  → folP_3 (dist=18.554)
+  → murC_2 (dist=18.929)
+
+Aztreonam_0.5x:
+  → rpoB_2 (dist=0.880)
+  → ftsI_3 (dist=3.572)
+  → rplC_1 (dist=4.563)
+  → gyrB_1 (dist=4.596)
+  → murC_2 (dist=5.478)
+
+Aztreonam_1x:
+  → ftsZ_3 (dist=4.389)
+  → ftsI_2 (dist=7.089)
+  → ftsZ_2 (dist=7.340)
+  → ftsZ_1 (dist=8.052)
+  → rpoA_1 (dist=8.108)
+
+Aztreonam_2x:
+  → ftsZ_3 (dist=5.677)
+  → ftsZ_2 (dist=8.432)
+  → rpoA_1 (dist=9.453)
+  → ftsZ_1 (dist=9.632)
+  → ftsI_2 (dist=11.919)
+
+Cefepim_0.25x:
+  → lptC_2 (dist=12.336)
+  → murC_2 (dist=14.123)
+  → rpoB_2 (dist=14.141)
+  → rpoB_1 (dist=14.935)
+  → ftsI_3 (dist=14.949)
+
+Cefepim_0.5x:
+  → lptC_2 (dist=5.277)
+  → rpoB_1 (dist=6.803)
+  → rpoB_2 (dist=9.957)
+  → lptC_1 (dist=10.454)
+  → folP_3 (dist=10.757)
+
+Cefepim_1x:
+  → ftsZ_3 (dist=5.504)
+  → ftsZ_2 (dist=6.434)
+  → rpoA_1 (dist=7.299)
+  → ftsZ_1 (dist=7.598)
+  → rpoA_3 (dist=11.796)
+
+Cefepim_2x:
+  → ftsZ_3 (dist=9.465)
+  → ftsZ_2 (dist=11.382)
+  → rpoA_1 (dist=12.329)
+  → ftsZ_1 (dist=12.596)
+  → ftsI_2 (dist=16.035)
+
+Cefsulodin_0.25x:
+  → lptA_3 (dist=0.961)
+  → lptA_1 (dist=1.018)
+  → gyrB_1 (dist=1.750)
+  → lptC_1 (dist=2.074)
+  → dnaE_1 (dist=2.815)
+
+Cefsulodin_0.5x:
+  → lptC_2 (dist=5.936)
+  → rpoB_2 (dist=6.328)
+  → murC_2 (dist=7.427)
+  → ftsI_3 (dist=7.570)
+  → rpoA_2 (dist=9.631)
+
+Cefsulodin_1x:
+  → murC_2 (dist=6.962)
+  → rpoB_2 (dist=7.340)
+  → ftsI_3 (dist=7.743)
+  → lptC_2 (dist=8.122)
+  → lpxC_3 (dist=9.188)
+
+Cefsulodin_2x:
+  → rpoA_1 (dist=2.076)
+  → ftsZ_1 (dist=2.376)
+  → ftsZ_2 (dist=2.387)
+  → ftsZ_3 (dist=5.396)
+  → rpoA_3 (dist=6.234)
+
+Ceftriaxone_0.25x:
+  → gyrA_1 (dist=4.644)
+  → murA_2 (dist=4.988)
+  → dnaE_3 (dist=5.237)
+  → mrcA_3 (dist=5.489)
+  → secA_1 (dist=5.851)
+
+Ceftriaxone_0.5x:
+  → lpxC_1 (dist=7.970)
+  → lpxC_3 (dist=9.341)
+  → murC_2 (dist=9.609)
+  → rpoB_3 (dist=9.841)
+  → murC_1 (dist=10.561)
+
+Ceftriaxone_1x:
+  → ftsZ_2 (dist=1.591)
+  → ftsZ_3 (dist=1.983)
+  → rpoA_1 (dist=2.612)
+  → ftsZ_1 (dist=2.800)
+  → rpoA_3 (dist=6.706)
+
+Ceftriaxone_2x:
+  → ftsZ_3 (dist=4.646)
+  → ftsZ_2 (dist=5.336)
+  → rpoA_1 (dist=6.197)
+  → ftsZ_1 (dist=6.496)
+  → rpoA_3 (dist=10.702)
+
+Chloramphenicol_0.25x:
+  → rpsL_2 (dist=2.139)
+  → rplC_1 (dist=3.540)
+  → murC_3 (dist=3.799)
+  → rpoB_2 (dist=4.194)
+  → ftsI_3 (dist=4.564)
+
+Chloramphenicol_0.5x:
+  → lpxC_2 (dist=2.347)
+  → lptC_3 (dist=3.911)
+  → rpoA_2 (dist=4.138)
+  → murC_3 (dist=4.284)
+  → parE_2 (dist=4.395)
+
+Chloramphenicol_1x:
+  → secA_1 (dist=3.190)
+  → rpsL_2 (dist=3.361)
+  → gyrB_1 (dist=4.390)
+  → lptA_1 (dist=5.062)
+  → lptA_3 (dist=5.714)
+
+Chloramphenicol_2x:
+  → rpoA_3 (dist=4.334)
+  → ftsZ_1 (dist=5.606)
+  → rpoA_1 (dist=5.761)
+  → ftsZ_2 (dist=6.783)
+  → ftsI_2 (dist=7.820)
+
+Ciprofloxacin_0.25x:
+  → murC_2 (dist=4.890)
+  → ftsI_3 (dist=6.060)
+  → rpoB_2 (dist=6.457)
+  → lpxC_3 (dist=6.920)
+  → murC_1 (dist=7.082)
+
+Ciprofloxacin_0.5x:
+  → lptC_2 (dist=10.962)
+  → rpoB_1 (dist=12.419)
+  → rpoB_2 (dist=14.312)
+  → folP_3 (dist=15.191)
+  → murC_2 (dist=15.464)
+
+Ciprofloxacin_1x:
+  → ftsZ_3 (dist=5.544)
+  → ftsI_2 (dist=6.577)
+  → ftsZ_2 (dist=8.154)
+  → ftsZ_1 (dist=8.682)
+  → rpoA_1 (dist=8.796)
+
+Ciprofloxacin_2x:
+  → parE_2 (dist=1.194)
+  → lptC_3 (dist=1.746)
+  → lpxC_2 (dist=2.777)
+  → rpoA_3 (dist=5.437)
+  → rpoB_3 (dist=5.724)
+
+Clarithromycin_0.25x:
+  → murC_2 (dist=4.508)
+  → rpoB_2 (dist=5.053)
+  → ftsI_3 (dist=5.146)
+  → rpoA_2 (dist=6.876)
+  → murC_1 (dist=6.887)
+
+Clarithromycin_0.5x:
+  → parE_2 (dist=1.843)
+  → lptC_3 (dist=2.909)
+  → lpxC_2 (dist=3.900)
+  → rpoA_3 (dist=4.352)
+  → ftsI_2 (dist=5.367)
+
+Clarithromycin_1x:
+  → murC_2 (dist=8.931)
+  → lptC_2 (dist=9.397)
+  → rpoB_2 (dist=9.418)
+  → ftsI_3 (dist=9.845)
+  → lpxC_3 (dist=10.897)
+
+Clarithromycin_2x:
+  → ftsI_2 (dist=3.528)
+  → lpxC_1 (dist=3.564)
+  → lpxC_3 (dist=5.831)
+  → lptC_3 (dist=5.930)
+  → rpoB_3 (dist=6.210)
+
+Clavulanic_Acid_0.25x:
+  → lptC_2 (dist=9.828)
+  → rpoB_2 (dist=12.241)
+  → rpoB_1 (dist=12.330)
+  → murC_2 (dist=12.961)
+  → ftsI_3 (dist=13.450)
+
+Clavulanic_Acid_0.5x:
+  → lptC_2 (dist=14.234)
+  → rpoB_1 (dist=15.537)
+  → rpoB_2 (dist=17.304)
+  → folP_3 (dist=17.814)
+  → murC_2 (dist=17.958)
+
+Clavulanic_Acid_1x:
+  → lptC_2 (dist=2.564)
+  → gyrB_1 (dist=3.928)
+  → lptA_3 (dist=4.057)
+  → rpoB_2 (dist=4.066)
+  → lptA_1 (dist=4.114)
+
+Clavulanic_Acid_2x:
+  → rpsA_1 (dist=2.606)
+  → gyrB_2 (dist=4.185)
+  → gyrB_3 (dist=4.375)
+  → secY_3 (dist=4.881)
+  → msbA_1 (dist=5.628)
+
+Colistin_0.25x:
+  → lpxC_3 (dist=1.730)
+  → rpoB_3 (dist=2.193)
+  → lpxC_1 (dist=2.219)
+  → murC_1 (dist=2.921)
+  → murC_2 (dist=3.011)
+
+Colistin_0.5x:
+  → lptC_2 (dist=16.123)
+  → rpoB_1 (dist=17.215)
+  → folP_3 (dist=19.139)
+  → rpoB_2 (dist=19.224)
+  → murC_2 (dist=19.767)
+
+Colistin_1x:
+  → murC_2 (dist=1.600)
+  → ftsI_3 (dist=2.610)
+  → rpoA_2 (dist=3.956)
+  → murC_1 (dist=4.011)
+  → rpoB_2 (dist=4.094)
+
+Colistin_2x:
+  → dnaB_3 (dist=18.871)
+  → rpsL_3 (dist=21.260)
+  → parE_2 (dist=22.411)
+  → rpoA_3 (dist=22.455)
+  → ftsZ_1 (dist=23.281)
+
+Doxicyclin_0.25x:
+  → rpoB_2 (dist=4.575)
+  → lptC_2 (dist=4.749)
+  → ftsI_3 (dist=6.219)
+  → murC_2 (dist=6.537)
+  → rplC_1 (dist=8.285)
+
+Doxicyclin_0.5x:
+  → rpoB_2 (dist=5.126)
+  → murC_2 (dist=5.293)
+  → ftsI_3 (dist=5.688)
+  → lptC_2 (dist=6.872)
+  → rpoA_2 (dist=7.582)
+
+Doxicyclin_1x:
+  → lpxC_1 (dist=1.051)
+  → lpxC_3 (dist=2.655)
+  → rpoB_3 (dist=3.174)
+  → murC_1 (dist=4.205)
+  → murC_2 (dist=4.728)
+
+Doxicyclin_2x:
+  → rpoA_3 (dist=3.118)
+  → parE_2 (dist=4.631)
+  → ftsI_2 (dist=6.147)
+  → lptC_3 (dist=6.275)
+  → ftsZ_1 (dist=6.748)
+
+Kanamycin_0.25x:
+  → lptC_2 (dist=2.950)
+  → rpoB_1 (dist=4.264)
+  → lptC_1 (dist=7.636)
+  → lptA_3 (dist=8.064)
+  → dnaE_1 (dist=8.084)
+
+Kanamycin_0.5x:
+  → lptC_2 (dist=7.840)
+  → rpoB_1 (dist=10.106)
+  → rpoB_2 (dist=11.036)
+  → murC_2 (dist=12.530)
+  → ftsI_3 (dist=12.661)
+
+Kanamycin_1x:
+  → murC_2 (dist=10.456)
+  → lpxC_1 (dist=11.448)
+  → lpxC_3 (dist=11.765)
+  → ftsI_3 (dist=11.795)
+  → rpoB_2 (dist=11.885)
+
+Kanamycin_2x:
+  → lpxC_1 (dist=3.329)
+  → ftsI_2 (dist=4.238)
+  → lpxC_3 (dist=5.691)
+  → rpoB_3 (dist=6.113)
+  → lptC_3 (dist=6.335)
+
+Levofloxacin_0.25x:
+  → rpoB_1 (dist=1.720)
+  → ftsI_1 (dist=3.606)
+  → dnaE_1 (dist=4.231)
+  → lptC_1 (dist=4.307)
+  → dnaB_2 (dist=4.436)
+
+Levofloxacin_0.5x:
+  → secA_1 (dist=2.220)
+  → gyrB_1 (dist=3.786)
+  → rpsL_2 (dist=4.118)
+  → lptA_1 (dist=4.206)
+  → lptA_3 (dist=4.810)
+
+Levofloxacin_1x:
+  → lpxC_1 (dist=6.592)
+  → lpxC_3 (dist=7.830)
+  → murC_2 (dist=8.078)
+  → rpoB_3 (dist=8.325)
+  → murC_1 (dist=9.023)
+
+Levofloxacin_2x:
+  → ftsZ_3 (dist=3.697)
+  → ftsZ_2 (dist=6.891)
+  → rpoA_1 (dist=7.883)
+  → ftsZ_1 (dist=7.982)
+  → ftsI_2 (dist=9.378)
+
+Mecillinam_0.25x:
+  → rpoB_1 (dist=2.647)
+  → folP_3 (dist=3.073)
+  → ftsI_1 (dist=3.343)
+  → mrcB_2 (dist=4.871)
+  → murA_1 (dist=5.205)
+
+Mecillinam_0.5x:
+  → murA_1 (dist=0.711)
+  → mrcB_2 (dist=1.123)
+  → rplC_3 (dist=1.708)
+  → secY_2 (dist=1.772)
+  → lpxA_3 (dist=2.641)
+
+Mecillinam_1x:
+  → murC_2 (dist=2.851)
+  → ftsI_3 (dist=3.290)
+  → rpoB_2 (dist=3.750)
+  → rpoA_2 (dist=5.074)
+  → murC_1 (dist=5.264)
+
+Mecillinam_2x:
+  → parE_2 (dist=7.375)
+  → rpoA_3 (dist=7.864)
+  → lpxC_2 (dist=9.371)
+  → lptC_3 (dist=9.482)
+  → dnaB_3 (dist=9.548)
+
+Meropenem_0.25x:
+  → ftsI_1 (dist=1.328)
+  → murA_1 (dist=2.473)
+  → mrcB_2 (dist=2.642)
+  → folP_3 (dist=3.865)
+  → rplC_3 (dist=4.057)
+
+Meropenem_0.5x:
+  → rpsL_3 (dist=5.357)
+  → murA_2 (dist=5.366)
+  → gyrA_1 (dist=5.639)
+  → dnaE_3 (dist=5.886)
+  → rpsL_2 (dist=6.460)
+
+Meropenem_1x:
+  → rpsL_2 (dist=2.428)
+  → gyrB_1 (dist=3.640)
+  → secA_1 (dist=3.900)
+  → lptA_1 (dist=4.591)
+  → lptA_3 (dist=5.296)
+
+Meropenem_2x:
+  → ftsZ_3 (dist=9.762)
+  → ftsZ_2 (dist=12.768)
+  → rpoA_1 (dist=13.787)
+  → ftsZ_1 (dist=13.936)
+  → ftsI_2 (dist=15.336)
+
+Norfloxacin_0.25x:
+  → rpsL_2 (dist=3.743)
+  → murC_3 (dist=4.924)
+  → rpsL_3 (dist=5.826)
+  → secA_1 (dist=6.501)
+  → gyrB_1 (dist=7.560)
+
+Norfloxacin_0.5x:
+  → murC_2 (dist=2.325)
+  → ftsI_3 (dist=3.242)
+  → rpoB_2 (dist=4.252)
+  → rpoA_2 (dist=4.709)
+  → murC_1 (dist=4.720)
+
+Norfloxacin_1x:
+  → ftsI_2 (dist=4.979)
+  → lpxC_1 (dist=5.671)
+  → lpxC_3 (dist=8.057)
+  → rpoA_3 (dist=8.468)
+  → rpoB_3 (dist=8.519)
+
+Norfloxacin_2x:
+  → rpoA_3 (dist=3.367)
+  → parE_2 (dist=5.974)
+  → ftsZ_1 (dist=6.167)
+  → rpoA_1 (dist=6.410)
+  → ftsI_2 (dist=6.765)
+
+Penicillin_0.25x:
+  → lptC_2 (dist=7.754)
+  → rpoB_1 (dist=10.455)
+  → rpoB_2 (dist=10.468)
+  → murC_2 (dist=11.733)
+  → ftsI_3 (dist=11.954)
+
+Penicillin_0.5x:
+  → secA_1 (dist=1.751)
+  → gyrB_1 (dist=4.185)
+  → lptA_1 (dist=4.438)
+  → rpsL_2 (dist=4.654)
+  → lptA_3 (dist=4.990)
+
+Penicillin_1x:
+  → rpoA_1 (dist=18.668)
+  → ftsZ_2 (dist=18.819)
+  → ftsZ_1 (dist=18.954)
+  → ftsZ_3 (dist=20.845)
+  → rpoA_3 (dist=21.967)
+
+Penicillin_2x:
+  → ftsZ_2 (dist=35.654)
+  → rpoA_1 (dist=35.986)
+  → ftsZ_3 (dist=36.151)
+  → ftsZ_1 (dist=36.331)
+  → rpoA_3 (dist=40.299)
+
+Polymyxin_B_0.25x:
+  → murC_2 (dist=12.777)
+  → lptC_2 (dist=13.622)
+  → lpxC_1 (dist=13.698)
+  → rpoB_2 (dist=13.934)
+  → ftsI_3 (dist=14.048)
+
+Polymyxin_B_0.5x:
+  → secA_1 (dist=1.785)
+  → rplC_2 (dist=3.183)
+  → parC_3 (dist=3.186)
+  → parC_2 (dist=3.527)
+  → dnaB_2 (dist=4.097)
+
+Polymyxin_B_1x:
+  → parE_2 (dist=3.236)
+  → rpoA_3 (dist=4.214)
+  → lptC_3 (dist=5.095)
+  → lpxC_2 (dist=5.579)
+  → ftsI_2 (dist=6.653)
+
+Polymyxin_B_2x:
+  → ftsZ_2 (dist=32.562)
+  → rpoA_1 (dist=32.839)
+  → ftsZ_1 (dist=33.181)
+  → ftsZ_3 (dist=33.256)
+  → rpoA_3 (dist=37.064)
+
+Relebactam_0.25x:
+  → lptC_1 (dist=1.527)
+  → lptA_3 (dist=1.877)
+  → dnaE_1 (dist=2.219)
+  → lptA_1 (dist=2.490)
+  → gyrB_1 (dist=3.533)
+
+Relebactam_0.5x:
+  → dnaB_2 (dist=0.764)
+  → folA_2 (dist=1.626)
+  → rplC_2 (dist=1.742)
+  → dnaE_1 (dist=2.783)
+  → lptC_1 (dist=3.568)
+
+Relebactam_1x:
+  → rpoB_1 (dist=2.717)
+  → folP_3 (dist=4.734)
+  → ftsI_1 (dist=6.373)
+  → lptC_2 (dist=6.552)
+  → mrcB_2 (dist=7.882)
+
+Relebactam_2x:
+  → rpsL_3 (dist=3.344)
+  → dnaB_3 (dist=3.624)
+  → murC_3 (dist=4.772)
+  → rpsL_2 (dist=6.537)
+  → rplC_1 (dist=8.972)
+
+Rifampicin_0.25x:
+  → secA_1 (dist=1.578)
+  → lptA_1 (dist=3.032)
+  → gyrB_1 (dist=3.099)
+  → lptA_3 (dist=3.528)
+  → lptC_1 (dist=4.427)
+
+Rifampicin_0.5x:
+  → dnaE_1 (dist=2.938)
+  → rpoB_1 (dist=2.946)
+  → lptC_1 (dist=3.041)
+  → dnaB_2 (dist=3.365)
+  → ftsI_1 (dist=3.778)
+
+Rifampicin_1x:
+  → lptC_2 (dist=1.637)
+  → rpoB_1 (dist=5.011)
+  → lptC_1 (dist=6.998)
+  → rpoB_2 (dist=7.097)
+  → lptA_3 (dist=7.176)
+
+Rifampicin_2x:
+  → gyrB_1 (dist=2.121)
+  → rpsL_2 (dist=3.410)
+  → lptA_1 (dist=3.560)
+  → rpoB_2 (dist=3.983)
+  → lptA_3 (dist=4.193)
+
+Sulbactam_0.25x:
+  → rpoB_1 (dist=3.544)
+  → folP_3 (dist=4.458)
+  → ftsI_1 (dist=6.834)
+  → lptC_2 (dist=7.357)
+  → mrcB_2 (dist=7.962)
+
+Sulbactam_0.5x:
+  → rpoB_2 (dist=3.291)
+  → ftsI_3 (dist=4.515)
+  → murC_2 (dist=4.862)
+  → lptC_2 (dist=5.685)
+  → rplC_1 (dist=6.620)
+
+Sulbactam_1x:
+  → rpoB_2 (dist=0.629)
+  → ftsI_3 (dist=2.448)
+  → rplC_1 (dist=3.683)
+  → murC_2 (dist=4.358)
+  → rpoA_2 (dist=4.742)
+
+Sulbactam_2x:
+  → ftsZ_3 (dist=10.316)
+  → ftsZ_2 (dist=12.015)
+  → rpoA_1 (dist=12.930)
+  → ftsZ_1 (dist=13.213)
+  → ftsI_2 (dist=16.910)
+
+Trimethoprim_0.25x:
+  → ftsI_1 (dist=1.191)
+  → rpoB_1 (dist=3.459)
+  → folA_2 (dist=3.700)
+  → murA_1 (dist=3.837)
+  → dnaB_2 (dist=4.138)
+
+Trimethoprim_0.5x:
+  → rpsL_3 (dist=3.249)
+  → dnaB_3 (dist=4.792)
+  → murC_3 (dist=4.896)
+  → rpsL_2 (dist=5.935)
+  → rplC_1 (dist=9.101)
+
+Trimethoprim_1x:
+  → lptC_2 (dist=3.020)
+  → rpoB_1 (dist=4.879)
+  → lptC_1 (dist=8.026)
+  → lptA_3 (dist=8.369)
+  → rpoB_2 (dist=8.465)
+
+Trimethoprim_2x:
+  → secA_1 (dist=2.042)
+  → gyrB_1 (dist=3.362)
+  → lptA_1 (dist=3.697)
+  → lptA_3 (dist=4.291)
+  → rpsL_2 (dist=4.324)
+
+================================================================================
+ORPHAN DRUGS (furthest from any mutant in t-SNE)
+================================================================================
+
+  Penicillin_2x: nearest mutant = ftsZ_2 (dist=35.654)
+  Polymyxin_B_2x: nearest mutant = ftsZ_2 (dist=32.562)
+  Colistin_2x: nearest mutant = dnaB_3 (dist=18.871)
+  Penicillin_1x: nearest mutant = rpoA_1 (dist=18.668)
+  Colistin_0.5x: nearest mutant = lptC_2 (dist=16.123)
+  Aztreonam_0.25x: nearest mutant = lptC_2 (dist=15.273)
+  Clavulanic_Acid_0.5x: nearest mutant = lptC_2 (dist=14.234)
+  Polymyxin_B_0.25x: nearest mutant = murC_2 (dist=12.777)
+  Cefepim_0.25x: nearest mutant = lptC_2 (dist=12.336)
+  Ciprofloxacin_0.5x: nearest mutant = lptC_2 (dist=10.962)
+  Kanamycin_1x: nearest mutant = murC_2 (dist=10.456)
+  Sulbactam_2x: nearest mutant = ftsZ_3 (dist=10.316)
+  Clavulanic_Acid_0.25x: nearest mutant = lptC_2 (dist=9.828)
+  Meropenem_2x: nearest mutant = ftsZ_3 (dist=9.762)
+  Cefepim_2x: nearest mutant = ftsZ_3 (dist=9.465)
+  Clarithromycin_1x: nearest mutant = murC_2 (dist=8.931)
+  Ceftriaxone_0.5x: nearest mutant = lpxC_1 (dist=7.970)
+  Kanamycin_0.5x: nearest mutant = lptC_2 (dist=7.840)
+  Penicillin_0.25x: nearest mutant = lptC_2 (dist=7.754)
+  Mecillinam_2x: nearest mutant = parE_2 (dist=7.375)

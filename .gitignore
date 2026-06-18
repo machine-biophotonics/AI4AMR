@@ -23,6 +23,7 @@ P3/
 P4/
 P5/
 P6/
+Controls_Data/
 
 # DINOv3 cloned repository
 dinov3/
@@ -158,6 +159,7 @@ final_mutant_model/training_results.json
 final_mutant_model/all_folds_results.json
 !final_mutant_model/classes.txt
 !final_mutant_model/plate_well_id_path.json
+!final_mutant_model/plate_well_control_id_path.json
 !final_mutant_model/mil_model.py
 !final_mutant_model/train_mil.py
 !final_mutant_model/predict_all_crops.py

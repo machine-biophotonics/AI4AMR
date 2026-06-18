@@ -1,0 +1,374 @@
+
+============================================================
+PC1 (var=2.53%)
+============================================================
+  Top 10 (positive loading):
+    Clarithromycin_2x                        [Drug]
+    rpoA_1                                   [Mutant]
+    Norfloxacin_1x                           [Drug]
+    Cefsulodin_2x                            [Drug]
+    gyrA_3                                   [Mutant]
+    Mecillinam_2x                            [Drug]
+    NC_2                                     [Control]
+    rpsL_2                                   [Mutant]
+    Kanamycin_0.5x                           [Drug]
+    folA_3                                   [Mutant]
+  Bottom 10 (negative loading):
+    Kanamycin_2x                             [Drug]
+    folP_3                                   [Mutant]
+    lpxA_2                                   [Mutant]
+    rpoB_3                                   [Mutant]
+    dnaE_1                                   [Mutant]
+    dnaE_3                                   [Mutant]
+    gyrB_2                                   [Mutant]
+    rpsL_3                                   [Mutant]
+    Cefsulodin_0.25x                         [Drug]
+    rpoA_3                                   [Mutant]
+
+============================================================
+PC2 (var=2.46%)
+============================================================
+  Top 10 (positive loading):
+    rpsL_1                                   [Mutant]
+    Chloramphenicol_0.25x                    [Drug]
+    secY_1                                   [Mutant]
+    parC_2                                   [Mutant]
+    WT NC_2                                  [Control]
+    Relebactam_2x                            [Drug]
+    folP_2                                   [Mutant]
+    parE_1                                   [Mutant]
+    lpxC_2                                   [Mutant]
+    control                                  [Control]
+  Bottom 10 (negative loading):
+    mrdA_2                                   [Mutant]
+    mrcA_2                                   [Mutant]
+    gyrA_1                                   [Mutant]
+    lpxC_3                                   [Mutant]
+    Aztreonam_0.5x                           [Drug]
+    Chloramphenicol_1x                       [Drug]
+    lpxA_3                                   [Mutant]
+    ftsZ_1                                   [Mutant]
+    gyrB_2                                   [Mutant]
+    Sulbactam_0.5x                           [Drug]
+
+============================================================
+PC3 (var=2.39%)
+============================================================
+  Top 10 (positive loading):
+    mrcA_2                                   [Mutant]
+    Polymyxin_B_0.5x                         [Drug]
+    Ceftriaxone_0.25x                        [Drug]
+    Aztreonam_0.25x                          [Drug]
+    folA_1                                   [Mutant]
+    Chloramphenicol_1x                       [Drug]
+    parC_2                                   [Mutant]
+    WT NC_2                                  [Control]
+    ftsZ_2                                   [Mutant]
+    dnaE_2                                   [Mutant]
+  Bottom 10 (negative loading):
+    Norfloxacin_0.5x                         [Drug]
+    Sulbactam_2x                             [Drug]
+    Cefepim_1x                               [Drug]
+    mrcB_3                                   [Mutant]
+    Kanamycin_0.25x                          [Drug]
+    Clarithromycin_0.25x                     [Drug]
+    mrdA_2                                   [Mutant]
+    Trimethoprim_1x                          [Drug]
+    Penicillin_0.5x                          [Drug]
+    WT NC_6                                  [Control]
+
+============================================================
+PC4 (var=2.24%)
+============================================================
+  Top 10 (positive loading):
+    Clavulanic_Acid_1x                       [Drug]
+    ftsI_3                                   [Mutant]
+    Avibactam_2x                             [Drug]
+    Chloramphenicol_1x                       [Drug]
+    NC_1                                     [Control]
+    parC_2                                   [Mutant]
+    NC_2                                     [Control]
+    folP_1                                   [Mutant]
+    NC_3                                     [Control]
+    folP_3                                   [Mutant]
+  Bottom 10 (negative loading):
+    secA_2                                   [Mutant]
+    Penicillin_0.5x                          [Drug]
+    Aztreonam_0.5x                           [Drug]
+    Kanamycin_2x                             [Drug]
+    lpxA_2                                   [Mutant]
+    dnaE_3                                   [Mutant]
+    lptC_2                                   [Mutant]
+    Relebactam_0.5x                          [Drug]
+    rplC_2                                   [Mutant]
+    rpoB_2                                   [Mutant]
+
+============================================================
+PC5 (var=2.20%)
+============================================================
+  Top 10 (positive loading):
+    folA_2                                   [Mutant]
+    lptC_1                                   [Mutant]
+    Relebactam_2x                            [Drug]
+    rplA_1                                   [Mutant]
+    WT NC_1                                  [Control]
+    Norfloxacin_0.5x                         [Drug]
+    Mecillinam_0.5x                          [Drug]
+    gyrB_2                                   [Mutant]
+    Penicillin_0.5x                          [Drug]
+    Clarithromycin_1x                        [Drug]
+  Bottom 10 (negative loading):
+    Cefepim_1x                               [Drug]
+    Clarithromycin_0.5x                      [Drug]
+    mrcB_2                                   [Mutant]
+    NC_6                                     [Control]
+    Clavulanic_Acid_0.25x                    [Drug]
+    Doxicyclin_1x                            [Drug]
+    Colistin_0.5x                            [Drug]
+    rpsL_3                                   [Mutant]
+    secY_3                                   [Mutant]
+    rpsA_1                                   [Mutant]
+
+============================================================
+PCs with mixed Drug+Mutant in top/bottom 10
+============================================================
+
+PC1: MIXED Drug+Mutant
+  Top 10:
+    folA_3                                   [Mutant]
+    Kanamycin_0.5x                           [Drug]
+    rpsL_2                                   [Mutant]
+    NC_2                                     [Control]
+    Mecillinam_2x                            [Drug]
+    gyrA_3                                   [Mutant]
+    Cefsulodin_2x                            [Drug]
+    Norfloxacin_1x                           [Drug]
+    rpoA_1                                   [Mutant]
+    Clarithromycin_2x                        [Drug]
+  Bottom 10:
+    Kanamycin_2x                             [Drug]
+    folP_3                                   [Mutant]
+    lpxA_2                                   [Mutant]
+    rpoB_3                                   [Mutant]
+    dnaE_1                                   [Mutant]
+    dnaE_3                                   [Mutant]
+    gyrB_2                                   [Mutant]
+    rpsL_3                                   [Mutant]
+    Cefsulodin_0.25x                         [Drug]
+    rpoA_3                                   [Mutant]
+
+PC2: MIXED Drug+Mutant
+  Top 10:
+    control                                  [Control]
+    lpxC_2                                   [Mutant]
+    parE_1                                   [Mutant]
+    folP_2                                   [Mutant]
+    Relebactam_2x                            [Drug]
+    WT NC_2                                  [Control]
+    parC_2                                   [Mutant]
+    secY_1                                   [Mutant]
+    Chloramphenicol_0.25x                    [Drug]
+    rpsL_1                                   [Mutant]
+  Bottom 10:
+    mrdA_2                                   [Mutant]
+    mrcA_2                                   [Mutant]
+    gyrA_1                                   [Mutant]
+    lpxC_3                                   [Mutant]
+    Aztreonam_0.5x                           [Drug]
+    Chloramphenicol_1x                       [Drug]
+    lpxA_3                                   [Mutant]
+    ftsZ_1                                   [Mutant]
+    gyrB_2                                   [Mutant]
+    Sulbactam_0.5x                           [Drug]
+
+PC3: MIXED Drug+Mutant
+  Top 10:
+    dnaE_2                                   [Mutant]
+    ftsZ_2                                   [Mutant]
+    WT NC_2                                  [Control]
+    parC_2                                   [Mutant]
+    Chloramphenicol_1x                       [Drug]
+    folA_1                                   [Mutant]
+    Aztreonam_0.25x                          [Drug]
+    Ceftriaxone_0.25x                        [Drug]
+    Polymyxin_B_0.5x                         [Drug]
+    mrcA_2                                   [Mutant]
+  Bottom 10:
+    Norfloxacin_0.5x                         [Drug]
+    Sulbactam_2x                             [Drug]
+    Cefepim_1x                               [Drug]
+    mrcB_3                                   [Mutant]
+    Kanamycin_0.25x                          [Drug]
+    Clarithromycin_0.25x                     [Drug]
+    mrdA_2                                   [Mutant]
+    Trimethoprim_1x                          [Drug]
+    Penicillin_0.5x                          [Drug]
+    WT NC_6                                  [Control]
+
+PC4: MIXED Drug+Mutant
+  Top 10:
+    folP_3                                   [Mutant]
+    NC_3                                     [Control]
+    folP_1                                   [Mutant]
+    NC_2                                     [Control]
+    parC_2                                   [Mutant]
+    NC_1                                     [Control]
+    Chloramphenicol_1x                       [Drug]
+    Avibactam_2x                             [Drug]
+    ftsI_3                                   [Mutant]
+    Clavulanic_Acid_1x                       [Drug]
+  Bottom 10:
+    secA_2                                   [Mutant]
+    Penicillin_0.5x                          [Drug]
+    Aztreonam_0.5x                           [Drug]
+    Kanamycin_2x                             [Drug]
+    lpxA_2                                   [Mutant]
+    dnaE_3                                   [Mutant]
+    lptC_2                                   [Mutant]
+    Relebactam_0.5x                          [Drug]
+    rplC_2                                   [Mutant]
+    rpoB_2                                   [Mutant]
+
+PC5: MIXED Drug+Mutant
+  Top 10:
+    Clarithromycin_1x                        [Drug]
+    Penicillin_0.5x                          [Drug]
+    gyrB_2                                   [Mutant]
+    Mecillinam_0.5x                          [Drug]
+    Norfloxacin_0.5x                         [Drug]
+    WT NC_1                                  [Control]
+    rplA_1                                   [Mutant]
+    Relebactam_2x                            [Drug]
+    lptC_1                                   [Mutant]
+    folA_2                                   [Mutant]
+  Bottom 10:
+    Cefepim_1x                               [Drug]
+    Clarithromycin_0.5x                      [Drug]
+    mrcB_2                                   [Mutant]
+    NC_6                                     [Control]
+    Clavulanic_Acid_0.25x                    [Drug]
+    Doxicyclin_1x                            [Drug]
+    Colistin_0.5x                            [Drug]
+    rpsL_3                                   [Mutant]
+    secY_3                                   [Mutant]
+    rpsA_1                                   [Mutant]
+
+PC6: MIXED Drug+Mutant
+  Top 10:
+    lptA_2                                   [Mutant]
+    gyrA_3                                   [Mutant]
+    secA_1                                   [Mutant]
+    Cefepim_1x                               [Drug]
+    Levofloxacin_0.25x                       [Drug]
+    murC_1                                   [Mutant]
+    secA_3                                   [Mutant]
+    Clarithromycin_1x                        [Drug]
+    Cefepim_0.5x                             [Drug]
+    folP_1                                   [Mutant]
+  Bottom 10:
+    Clavulanic_Acid_0.5x                     [Drug]
+    WT NC_2                                  [Control]
+    Aztreonam_0.25x                          [Drug]
+    Colistin_2x                              [Drug]
+    Relebactam_0.5x                          [Drug]
+    Ceftriaxone_0.25x                        [Drug]
+    Mecillinam_1x                            [Drug]
+    rpsA_1                                   [Mutant]
+    murA_3                                   [Mutant]
+    Polymyxin_B_1x                           [Drug]
+
+PC7: MIXED Drug+Mutant
+  Top 10:
+    Clavulanic_Acid_0.25x                    [Drug]
+    lptC_3                                   [Mutant]
+    rpsL_2                                   [Mutant]
+    msbA_1                                   [Mutant]
+    dnaB_3                                   [Mutant]
+    gyrA_1                                   [Mutant]
+    Kanamycin_1x                             [Drug]
+    rplC_1                                   [Mutant]
+    rpsA_1                                   [Mutant]
+    Meropenem_2x                             [Drug]
+  Bottom 10:
+    Meropenem_1x                             [Drug]
+    lpxA_2                                   [Mutant]
+    Trimethoprim_0.25x                       [Drug]
+    mrcA_2                                   [Mutant]
+    Trimethoprim_1x                          [Drug]
+    msbA_2                                   [Mutant]
+    Clarithromycin_1x                        [Drug]
+    NC_4                                     [Control]
+    WT NC_5                                  [Control]
+    Colistin_2x                              [Drug]
+
+PC8: MIXED Drug+Mutant
+  Top 10:
+    parE_1                                   [Mutant]
+    Relebactam_0.5x                          [Drug]
+    gyrA_3                                   [Mutant]
+    Kanamycin_1x                             [Drug]
+    Ciprofloxacin_2x                         [Drug]
+    gyrB_2                                   [Mutant]
+    Norfloxacin_1x                           [Drug]
+    Levofloxacin_0.5x                        [Drug]
+    gyrB_1                                   [Mutant]
+    lpxA_3                                   [Mutant]
+  Bottom 10:
+    ftsZ_2                                   [Mutant]
+    dnaB_3                                   [Mutant]
+    Ceftriaxone_2x                           [Drug]
+    lpxC_3                                   [Mutant]
+    murC_2                                   [Mutant]
+    Doxicyclin_0.25x                         [Drug]
+    folA_2                                   [Mutant]
+    Penicillin_2x                            [Drug]
+    Clarithromycin_1x                        [Drug]
+    parC_3                                   [Mutant]
+
+PC9: MIXED Drug+Mutant
+  Top 10:
+    Relebactam_1x                            [Drug]
+    Levofloxacin_0.5x                        [Drug]
+    Ceftriaxone_1x                           [Drug]
+    WT NC_6                                  [Control]
+    Aztreonam_0.25x                          [Drug]
+    Doxicyclin_1x                            [Drug]
+    NC_5                                     [Control]
+    Polymyxin_B_2x                           [Drug]
+    Norfloxacin_2x                           [Drug]
+    Norfloxacin_1x                           [Drug]
+  Bottom 10:
+    Trimethoprim_0.5x                        [Drug]
+    Mecillinam_0.25x                         [Drug]
+    rplA_2                                   [Mutant]
+    Polymyxin_B_0.25x                        [Drug]
+    WT NC_4                                  [Control]
+    lptC_2                                   [Mutant]
+    dnaB_2                                   [Mutant]
+    Colistin_0.5x                            [Drug]
+    Mecillinam_2x                            [Drug]
+    Relebactam_0.25x                         [Drug]
+
+PC10: MIXED Drug+Mutant
+  Top 10:
+    lptA_3                                   [Mutant]
+    Cefsulodin_0.5x                          [Drug]
+    NC_5                                     [Control]
+    Ceftriaxone_0.5x                         [Drug]
+    gyrA_1                                   [Mutant]
+    rplA_1                                   [Mutant]
+    parC_2                                   [Mutant]
+    Ceftriaxone_1x                           [Drug]
+    Cefsulodin_0.25x                         [Drug]
+    msbA_2                                   [Mutant]
+  Bottom 10:
+    dnaB_3                                   [Mutant]
+    Colistin_0.25x                           [Drug]
+    lptC_1                                   [Mutant]
+    rplC_1                                   [Mutant]
+    rpoA_2                                   [Mutant]
+    mrcB_3                                   [Mutant]
+    ftsZ_3                                   [Mutant]
+    lpxA_2                                   [Mutant]
+    Doxicyclin_0.25x                         [Drug]
+    rpsL_1                                   [Mutant]

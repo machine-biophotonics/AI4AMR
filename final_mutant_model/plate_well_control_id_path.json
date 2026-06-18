@@ -1,0 +1,1838 @@
+{
+  "P1": {
+    "A": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "B": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "C": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "D": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "E": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "F": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "G": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    },
+    "H": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    }
+  },
+  "P2": {
+    "A": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "B": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "C": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "D": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "E": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "F": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "G": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    },
+    "H": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    }
+  },
+  "P3": {
+    "A": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "B": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "C": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "D": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "E": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "F": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "G": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    },
+    "H": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    }
+  },
+  "P4": {
+    "A": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "B": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "C": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "D": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "E": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "F": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "G": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    },
+    "H": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    }
+  },
+  "P5": {
+    "A": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "B": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "C": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "D": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "E": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "F": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "G": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    },
+    "H": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    }
+  },
+  "P6": {
+    "A": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "B": {
+      "1": {
+        "id": "MG1655_NC_1_plusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_plusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_plusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_plusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_plusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_plusATC"
+      }
+    },
+    "C": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "D": {
+      "1": {
+        "id": "MG1655_NC_1_minusATC"
+      },
+      "2": {
+        "id": "MG1655_NC_2_minusATC"
+      },
+      "3": {
+        "id": "MG1655_NC_3_minusATC"
+      },
+      "4": {
+        "id": "MG1655_NC_4_minusATC"
+      },
+      "5": {
+        "id": "MG1655_NC_5_minusATC"
+      },
+      "6": {
+        "id": "MG1655_NC_6_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_NC_1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_NC_2_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_NC_3_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_NC_4_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_NC_5_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_NC_6_minusATC"
+      }
+    },
+    "E": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "F": {
+      "1": {
+        "id": "MG1655_plusATC"
+      },
+      "2": {
+        "id": "MG1655_plusATC"
+      },
+      "3": {
+        "id": "MG1655_plusATC"
+      },
+      "4": {
+        "id": "MG1655_plusATC"
+      },
+      "5": {
+        "id": "MG1655_plusATC"
+      },
+      "6": {
+        "id": "MG1655_plusATC"
+      },
+      "7": {
+        "id": "ACE-1_plusATC"
+      },
+      "8": {
+        "id": "ACE-1_plusATC"
+      },
+      "9": {
+        "id": "ACE-1_plusATC"
+      },
+      "10": {
+        "id": "ACE-1_plusATC"
+      },
+      "11": {
+        "id": "ACE-1_plusATC"
+      },
+      "12": {
+        "id": "ACE-1_plusATC"
+      }
+    },
+    "G": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    },
+    "H": {
+      "1": {
+        "id": "MG1655_minusATC"
+      },
+      "2": {
+        "id": "MG1655_minusATC"
+      },
+      "3": {
+        "id": "MG1655_minusATC"
+      },
+      "4": {
+        "id": "MG1655_minusATC"
+      },
+      "5": {
+        "id": "MG1655_minusATC"
+      },
+      "6": {
+        "id": "MG1655_minusATC"
+      },
+      "7": {
+        "id": "ACE-1_minusATC"
+      },
+      "8": {
+        "id": "ACE-1_minusATC"
+      },
+      "9": {
+        "id": "ACE-1_minusATC"
+      },
+      "10": {
+        "id": "ACE-1_minusATC"
+      },
+      "11": {
+        "id": "ACE-1_minusATC"
+      },
+      "12": {
+        "id": "ACE-1_minusATC"
+      }
+    }
+  }
+}

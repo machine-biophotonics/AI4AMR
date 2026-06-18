@@ -1,0 +1,53 @@
+================================================================================
+CONTRASTIVE DIRECTIONS
+For each mixed cluster, the direction from global centroid to cluster centroid.
+Project all 185 classes onto this direction to discover new members.
+================================================================================
+
+Cluster 0 direction:
+  Top 15 (most aligned with this phenotype):
+    Aztreonam_2x                                  [Drug    ]
+    Ceftriaxone_2x                                [Drug    ]
+    ftsZ_2                                        [Mutant  ]
+    Penicillin_2x                                 [Drug    ]
+    ftsZ_3                                        [Mutant  ]
+    Cefepim_2x                                    [Drug    ]
+    ftsZ_1                                        [Mutant  ]
+    Ceftriaxone_1x                                [Drug    ]
+    Sulbactam_2x                                  [Drug    ]
+    lpxC_3                                        [Mutant  ]
+    Aztreonam_1x                                  [Drug    ]
+    lpxC_1                                        [Mutant  ]
+    Polymyxin_B_2x                                [Drug    ]
+    murC_1                                        [Mutant  ]
+    Levofloxacin_2x                               [Drug    ]
+  Bottom 5 (most opposed):
+    Avibactam_2x                                  [Drug    ]
+    Relebactam_2x                                 [Drug    ]
+    Meropenem_1x                                  [Drug    ]
+    Mecillinam_0.5x                               [Drug    ]
+    Clavulanic_Acid_2x                            [Drug    ]
+
+Cluster 1 direction:
+  Top 15 (most aligned with this phenotype):
+    Aztreonam_2x                                  [Drug    ]
+    Ceftriaxone_2x                                [Drug    ]
+    ftsZ_2                                        [Mutant  ]
+    ftsZ_3                                        [Mutant  ]
+    lpxC_3                                        [Mutant  ]
+    ftsZ_1                                        [Mutant  ]
+    murC_1                                        [Mutant  ]
+    Ceftriaxone_1x                                [Drug    ]
+    ftsI_1                                        [Mutant  ]
+    lpxC_1                                        [Mutant  ]
+    Cefepim_2x                                    [Drug    ]
+    mrcA_3                                        [Mutant  ]
+    Aztreonam_1x                                  [Drug    ]
+    msbA_2                                        [Mutant  ]
+    mrcB_3                                        [Mutant  ]
+  Bottom 5 (most opposed):
+    Relebactam_2x                                 [Drug    ]
+    Avibactam_2x                                  [Drug    ]
+    Mecillinam_2x                                 [Drug    ]
+    Meropenem_1x                                  [Drug    ]
+    Mecillinam_1x                                 [Drug    ]

@@ -44,6 +44,10 @@ from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_
 from supcon_loss import SupConLoss, SupConLossMIL
 from torch.utils.tensorboard import SummaryWriter
 
+from cs_arm_bn import (
+    update_bn_with_full_domain,
+)
+
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -123,7 +127,7 @@ parser.add_argument('--pretrained', type=str, default='imagenet', choices=['imag
                     help='Pretrained weights: imagenet (default) or micronet (NASA microscopy pretrained)')
 parser.add_argument('--framework', type=str, default='pytorch', choices=['pytorch', 'tensorflow'],
                     help='Framework: pytorch (default) or tensorflow/keras')
-parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both', 'control'],
+parser.add_argument('--data_mode', type=str, default='mutant', choices=['drug', 'mutant', 'both'],
                     help='Data mode: drug (drug+concentration), mutant (gene/mutant), both (combine)')
 parser.add_argument('--drug_no_concentration', action='store_true', default=False,
                     help='Group drugs by antibiotic name only, ignoring concentration levels (e.g., Ciprofloxacin instead of Ciprofloxacin_2x)')
@@ -131,8 +135,6 @@ parser.add_argument('--freeze', action='store_true', default=False,
                     help='Freeze backbone, only train attention pool + classifier head')
 parser.add_argument('--guide', type=int, default=None,
                     help='Filter to specific guide number (e.g. 1 for guide 1) in mutant mode')
-parser.add_argument('--edge_sigma', type=float, default=None,
-                    help='Apply Canny edge detection with given sigma before normalization (e.g., 2.0)')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
@@ -141,8 +143,6 @@ if args.data_mode == 'drug' and args.drug_no_concentration:
     data_mode_folder = 'drug_noconcentration'
 if args.guide is not None:
     data_mode_folder = f"{args.data_mode}_guide_{args.guide}"
-if args.edge_sigma is not None:
-    data_mode_folder = f"canny_{data_mode_folder}"
 
 if args.warmup_epochs is None:
     args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
@@ -164,14 +164,11 @@ if args.data_root:
     BASE_DIR = args.data_root
 elif args.data_mode == 'drug':
     BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Drugs_Data')
-elif args.data_mode == 'control':
-    BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Controls_Data')
 else:
     BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
 
 IC50_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_ic50_mapping.json')
 MUTANT_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_id_path.json')
-CONTROL_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'plate_well_control_id_path.json')
 
 # Load drug mapping (antibiotic + concentration)
 with open(IC50_MAPPING_PATH, 'r') as f:
@@ -181,13 +178,8 @@ with open(IC50_MAPPING_PATH, 'r') as f:
 with open(MUTANT_MAPPING_PATH, 'r') as f:
     mutant_data = json.load(f)
 
-# Load control mapping (strain + mutant + ATC condition)
-with open(CONTROL_MAPPING_PATH, 'r') as f:
-    control_data = json.load(f)
-
 # Build plate_maps based on data_mode
-# Use prefixes to distinguish drug vs mutant vs control (they share same well positions)
-plate_key_map = {f'Plate_{i}': f'P{i}' for i in range(1, 7)}
+# Use prefixes to distinguish drug vs mutant (they share same well positions)
 plate_maps = {}
 for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
     plate_maps[plate] = {}
@@ -219,29 +211,6 @@ for plate in ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']:
                         well = f"{row}{int(col):02d}"  # Convert A, 1 -> A01 (2-digit format)
                         # Prefix with 'mutant_' to avoid overwriting drug data in same wells
                         plate_maps[plate][f"mutant_{well}"] = info['id']
-    
-    if args.data_mode in ['control']:
-        # (a) Control plate data (Controls_Data/)
-        if plate in control_data:
-            for row, cols in control_data[plate].items():
-                for col, info in cols.items():
-                    if 'id' in info:
-                        well = f"{row}{int(col):02d}"
-                        plate_maps[plate][f"control_{well}"] = info['id']
-        # (b) Mutant controls (NC_* and WT NC_* from Mutants_Data/)
-        if plate in mutant_data:
-            for row, cols in mutant_data[plate].items():
-                for col, info in cols.items():
-                    if 'id' in info:
-                        well = f"{row}{int(col):02d}"
-                        mid = info['id']
-                        if mid.startswith('NC_') or mid.startswith('WT NC_'):
-                            plate_maps[plate][f"mutant_{well}"] = mid
-        # (c) Drug controls (DMSO/control wells from Drugs_Data/)
-        if plate in ic50_data:
-            for well, info in ic50_data[plate].items():
-                if info.get('ic50_multiple') == 'control':
-                    plate_maps[plate][f"drug_{well}"] = 'drug_control'
 
 all_plates = ['Plate_1', 'Plate_2', 'Plate_3', 'Plate_4', 'Plate_5', 'Plate_6']
 
@@ -258,10 +227,6 @@ def get_image_paths_for_plate(plate: str) -> list[str]:
     elif args.data_mode == 'mutant':
         base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
         search_dirs.append((os.path.join(base, plate_key), 'mutant'))
-    elif args.data_mode == 'control':
-        for base_name, prefix in [('Controls_Data', 'control'), ('Mutants_Data', 'mutant'), ('Drugs_Data', 'drug')]:
-            base = os.path.join(os.path.dirname(os.path.dirname(__file__)), base_name)
-            search_dirs.append((os.path.join(base, plate_key), prefix))
     else:  # both - search both directories
         drug_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Drugs_Data')
         mutant_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Mutants_Data')
@@ -370,6 +335,9 @@ def train_single_fold(test_plate: str) -> None:
     # Build classes based on data_mode
     if args.data_mode == 'drug':
         # Use drug+concentration from plate_maps (well -> antibiotic + ic50_multiple)
+        # Map Plate_1 -> P1, Plate_2 -> P2, etc.
+        plate_key_map = {f'Plate_{i}': f'P{i}' for i in range(1, 7)}
+        
         # Collect all drug classes from plate_maps (including control)
         drug_classes = set()
         for pm_key, label in plate_maps.items():
@@ -399,35 +367,9 @@ def train_single_fold(test_plate: str) -> None:
         # Use gene/mutant from plate_maps
         all_classes = sorted(set(label for pm in plate_maps.values() for label in pm.values() if label))
         label_extractor = lambda path: get_gene_from_path(path, plate_maps)
-    elif args.data_mode == 'control':
-        # Combine all labels from control, mutant (NC/WT), and drug (DMSO) plate_maps
-        all_classes = sorted(set(label for pm in plate_maps.values() for label in pm.values() if label))
-        
-        def control_label_extractor(path, pm=plate_maps, pmap=plate_key_map):
-            path_lower = path.lower()
-            for plate_num in range(1, 7):
-                if f'/p{plate_num}/' in path_lower or f'\\p{plate_num}\\' in path_lower:
-                    plate_key = f'P{plate_num}'
-                    break
-            else:
-                return None
-            well = extract_well_from_filename(os.path.basename(path))
-            # Determine source from path
-            if '/controls_data/' in path_lower or '\\controls_data\\' in path_lower:
-                source_prefix = 'control_'
-            elif '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
-                source_prefix = 'mutant_'
-            elif '/drugs_data/' in path_lower or '\\drugs_data\\' in path_lower:
-                source_prefix = 'drug_'
-            else:
-                source_prefix = 'control_'
-            composite_well = f"{source_prefix}{well}"
-            if composite_well and plate_key in pm and composite_well in pm[plate_key]:
-                return pm[plate_key][composite_well]
-            return None
-        
-        label_extractor = control_label_extractor
     else:  # both - use plate_maps for both drug and mutant
+        plate_key_map = {f'Plate_{i}': f'P{i}' for i in range(1, 7)}
+        
         # Get all labels from plate_maps (both drug and control)
         all_labels = set()
         for pm in plate_maps.values():
@@ -446,15 +388,14 @@ def train_single_fold(test_plate: str) -> None:
                 return None
             well = extract_well_from_filename(os.path.basename(path))
             
-            # Determine source type from path (drug vs mutant vs control directory)
+            # Determine source type from path (drug vs mutant directory)
             if '/drugs_data/' in path_lower or '\\drugs_data\\' in path_lower or '/drugs_data/' in path_lower:
                 source_prefix = 'drug_'
             elif '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
                 source_prefix = 'mutant_'
-            elif '/controls_data/' in path_lower or '\\controls_data\\' in path_lower:
-                source_prefix = 'control_'
             else:
-                source_prefix = 'control_'
+                # Default to drug if can't determine
+                source_prefix = 'drug_'
             
             # Use composite key: drug_A01 or mutant_A01
             composite_well = f"{source_prefix}{well}"
@@ -532,9 +473,9 @@ def train_single_fold(test_plate: str) -> None:
     class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
     class_weights = class_weights / class_weights.sum() * num_classes
     
-    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
-    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
-    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
+    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
+    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
+    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -635,8 +576,8 @@ def train_single_fold(test_plate: str) -> None:
         print(f"{'='*60}")
         
         # Create two augmented views for each image
-        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
-        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
+        crop_dataset_v1 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
+        crop_dataset_v2 = MultiCropDataset(train_paths, train_labels, None, neighborhood=1, grid_size=args.grid_size, augment=True, seed=SEED+1, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size)
         
         # Set initial epoch for both
         crop_dataset_v1.set_epoch(0)
@@ -726,7 +667,7 @@ def train_single_fold(test_plate: str) -> None:
         effective_batch_size = args.batch_size  # Use full batch size (16)
         print(f"Using batch size: {effective_batch_size}")
         
-        # Recreate data loaders with smaller batch size
+        # Recreate train loader with SC-MIL batch size
         train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=effective_workers, pin_memory=True,
                                    persistent_workers=True if effective_workers > 0 else False, prefetch_factor=args.prefetch_factor, drop_last=True)
         
@@ -751,35 +692,33 @@ def train_single_fold(test_plate: str) -> None:
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
+            
             model.train()
             run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
+            n_batches = 0
             
             for images, labels in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
                 images, labels = images.to(device), labels.to(device)
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    # Single forward pass: get outputs, attn, crop, pooled embeddings, and instance logits
                     outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
                         images, return_attention=True, return_crop_embeddings=True, 
                         return_pooled_embeddings=True, return_instance_logits=True
                     )
                     
-                    # ============ CONTRASTIVE LOSSES ============
                     num_crops = crop_embeddings.shape[1]
                     
-                    # Instance-level contrastive
                     if args.contrastive_level in ['instance', 'both']:
                         crop_emb_flat = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
                         crop_emb_flat = F.normalize(crop_emb_flat, p=2, dim=-1)
                         instance_labels_exp = labels.repeat_interleave(num_crops)
-                        inst_temp = max(args.sc_mil_temp, 0.1)  # Higher temp for stability
+                        inst_temp = max(args.sc_mil_temp, 0.1)
                         criterion_inst = SupConLoss(temperature=inst_temp, contrast_mode='one')
                         instance_sc_loss = criterion_inst(crop_emb_flat, instance_labels_exp)
                     else:
                         instance_sc_loss = 0.0
                     
-                    # Bag-level contrastive
                     if args.contrastive_level in ['bag', 'both']:
                         bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
                         sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
@@ -787,28 +726,17 @@ def train_single_fold(test_plate: str) -> None:
                     else:
                         bag_sc_loss = 0.0
                     
-                    # ============ CLASSIFICATION LOSSES ============
                     num_crops = crop_embeddings.shape[1]
                     instance_labels = labels.repeat_interleave(num_crops)
                     instance_weights = class_weights[instance_labels]
-                    # Instance-level focal
                     instance_focal = weighted_focal_loss(
-                        instance_logits.view(-1, num_classes),
-                        instance_labels,
-                        instance_weights
+                        instance_logits.view(-1, num_classes), instance_labels, instance_weights
                     )
-                    # Bag-level focal
                     bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
                     
-                    # ============ COMBINE LOSSES ============
                     w = args.instance_weight
-                    
-                    # Combined focal: instance + bag
                     total_focal = w * instance_focal + (1 - w) * bag_focal
-                    # Combined contrastive: based on contrastive_level
                     total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
-                    
-                    # Combined with classification vs contrastive weight
                     loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
                 
                 sc_mil_scaler.scale(loss).backward()
@@ -820,18 +748,21 @@ def train_single_fold(test_plate: str) -> None:
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
+                n_batches += 1
             
             sc_mil_scheduler.step()
             
-            train_acc = 100. * correct / total
-            avg_cl_loss = run_cl_loss / len(train_loader)
-            avg_ce_loss = run_ce_loss / len(train_loader)
+            train_acc = 100. * correct / total if total > 0 else 0.0
+            avg_cl_loss = run_cl_loss / max(n_batches, 1)
+            avg_ce_loss = run_ce_loss / max(n_batches, 1)
             
             # VALIDATION after each SC-MIL epoch
-            model.eval()
-            val_cl_loss, val_ce_loss = 0.0, 0.0
+            val_ce_loss_total = 0.0
             val_correct, val_total = 0, 0
             all_val_preds, all_val_probs, all_val_labels = [], [], []
+            
+            # BN adaptation: update running stats using full validation set
+            update_bn_with_full_domain(val_loader, model, device)
             
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
                 for images, labels in tqdm(val_loader, desc='Validating', leave=False):
@@ -843,32 +774,26 @@ def train_single_fold(test_plate: str) -> None:
                     all_val_probs.extend(probs.cpu().numpy())
                     all_val_labels.extend(labels.cpu().numpy())
                     val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
-                    val_ce_loss += val_loss.item()
+                    val_ce_loss_total += val_loss.item()
                     val_correct += predicted.eq(labels).sum().item()
                     val_total += labels.size(0)
             
-            val_acc = 100. * val_correct / val_total
+            val_acc = 100. * val_correct / val_total if val_total > 0 else 0.0
             unique_val_classes = np.unique(np.array(all_val_labels))
             val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
-            avg_val_ce_loss = val_ce_loss / len(val_loader)
+            avg_val_ce_loss = val_ce_loss_total / max(len(val_loader), 1)
             
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s, Batches={n_batches}")
             
-            # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
             
-            # Save metrics to CSV
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
             
-            # TensorBoard logging - 2 cards only (SC-MIL)
-            # Card 1: Train CE Loss + Val CE Loss
             tb_writer.add_scalars('Loss', {'train': avg_ce_loss, 'val': avg_val_ce_loss}, epoch)
-            # Card 2: Train Acc + Val Acc
             tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
             
-            # Save best model based on validation AUC
             if not np.isnan(val_auc) and val_auc > best_val_auc:
                 best_val_auc = val_auc
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model.pth'))
@@ -883,7 +808,6 @@ def train_single_fold(test_plate: str) -> None:
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
         print(f"SC-MIL training complete!")
-        # Skip standard training, go directly to evaluation
         epoch = args.sc_mil_epochs  # Mark as complete
     
     else:

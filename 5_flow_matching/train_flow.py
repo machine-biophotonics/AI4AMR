@@ -24,7 +24,7 @@ from matplotlib.gridspec import GridSpec
 from datetime import datetime
 import csv
 
-from mil_model import FlowCropDataset, load_labels
+from mil_model import FlowCropDataset, load_labels, extract_plate_from_path
 from flow_model import FlowUNet, FreqFlowUNet
 from flow_model import compute_flow_loss, sample
 
@@ -64,6 +64,14 @@ parser.add_argument('--delta_fm', action='store_true', default=False,
                     help='Use Contrastive Flow Matching (DeltaFM) loss (Stoica et al., ICCV 2025)')
 parser.add_argument('--delta_fm_lambda', type=float, default=0.05,
                     help='Contrastive loss weight lambda for DeltaFM (default: 0.05)')
+parser.add_argument('--train_plates', type=str, default='P1,P2,P3,P4',
+                    help='Comma-separated plates for training')
+parser.add_argument('--val_plate', type=str, default='P5',
+                    help='Plate for validation')
+parser.add_argument('--test_plate', type=str, default='P6',
+                    help='Plate for testing (excluded from training/validation)')
+parser.add_argument('--unsupervised', action='store_true', default=False,
+                    help='Null label: all images get class 0, num_classes=1 (purely unconditional)')
 
 args = parser.parse_args()
 
@@ -91,12 +99,19 @@ image_list, class_names, label_to_idx = load_labels(PROJECT_ROOT, SCRIPT_DIR)
 num_classes = len(class_names)
 print(f"  {len(image_list)} images, {num_classes} classes")
 
-n_val = max(1, int(len(image_list) * args.val_split))
-rng = np.random.RandomState(SEED)
-perm = rng.permutation(len(image_list))
-val_items = [image_list[i] for i in perm[:n_val]]
-train_items = [image_list[i] for i in perm[n_val:]]
-print(f"  Train: {len(train_items)}, Val: {len(val_items)}")
+if args.unsupervised:
+    image_list = [(p, 0) for p, _ in image_list]
+    num_classes = 1
+    class_names = ['null']
+
+train_plates = set(args.train_plates.split(','))
+val_plate = args.val_plate
+test_plate = args.test_plate
+
+train_items = [x for x in image_list if extract_plate_from_path(x[0]) in train_plates]
+val_items   = [x for x in image_list if extract_plate_from_path(x[0]) == val_plate]
+test_items  = [x for x in image_list if extract_plate_from_path(x[0]) == test_plate]
+print(f"  Train: {len(train_items)}, Val: {len(val_items)}, Test: {len(test_items)} (test excluded from training)")
 
 train_ds = FlowCropDataset(train_items, augment=True)
 val_ds = FlowCropDataset(val_items, augment=False)
@@ -187,13 +202,19 @@ if args.resume:
     start_epoch = ckpt['epoch'] + 1
     print(f"  Resumed epoch {ckpt['epoch']}")
 
-# Visualization: all 22 antibiotics (2x) + control, all 28 mutants (1) + 2 controls
-drug_viz = sorted([i for i, n in enumerate(class_names) if n.endswith('_2x')])
-drug_viz += [i for i, n in enumerate(class_names) if n == 'control']
-mutant_viz = sorted([i for i, n in enumerate(class_names) if n.endswith('_1') and n not in ('NC_1', 'WT NC_1')])
-mutant_viz += [i for i, n in enumerate(class_names) if n in ('NC_1', 'WT NC_1')]
-vis_classes = drug_viz + mutant_viz
-print(f"  Drug viz: {len(drug_viz)} classes, Mutant viz: {len(mutant_viz)} classes, Total: {len(vis_classes)}")
+# Visualization
+if args.unsupervised:
+    n_viz = min(50, len(val_items))
+    vis_classes = [0] * n_viz
+    drug_viz = mutant_viz = list(range(n_viz))
+    print(f"  Unconditional viz: {n_viz} samples")
+else:
+    drug_viz = sorted([i for i, n in enumerate(class_names) if n.endswith('_2x')])
+    drug_viz += [i for i, n in enumerate(class_names) if n == 'control']
+    mutant_viz = sorted([i for i, n in enumerate(class_names) if n.endswith('_1') and n not in ('NC_1', 'WT NC_1')])
+    mutant_viz += [i for i, n in enumerate(class_names) if n in ('NC_1', 'WT NC_1')]
+    vis_classes = drug_viz + mutant_viz
+    print(f"  Drug viz: {len(drug_viz)} classes, Mutant viz: {len(mutant_viz)} classes, Total: {len(vis_classes)}")
 
 
 print("\n[3/5] Training ...")
@@ -309,47 +330,61 @@ for epoch in range(start_epoch, args.epochs):
                f'{lr_now:.2e}', f'{epoch_time:.0f}']
         w.writerow(row)
 
-    # Generate 1 sample per class in 2-row table: drugs top, mutants bottom
+    # Generate samples
     if epoch % 1 == 0:
         model.eval()
         with torch.no_grad():
-            all_samples = []
-            for ci in vis_classes:
-                cid = torch.tensor([ci], device=device)
-                samp = sample(model, 1, num_steps=args.num_steps,
-                              class_labels=cid, device=device,
+            if args.unsupervised:
+                samp = sample(model, n_viz, num_steps=args.num_steps,
+                              class_labels=torch.zeros(n_viz, dtype=torch.long, device=device),
                               freq_flow=args.freq_flow)
-                all_samples.append(samp.cpu())
+                all_samples = [samp[i:i+1].cpu() for i in range(n_viz)]
+                n_cols = min(n_viz, 10)
+                n_rows = (n_viz + n_cols - 1) // n_cols
+                fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 0.5, n_rows * 0.5))
+                axes = axes.flatten() if n_rows > 1 else [axes]
+                for i in range(n_cols * n_rows):
+                    ax = axes[i]
+                    if i < n_viz:
+                        img = (all_samples[i] * 0.5 + 0.5).clamp(0, 1)
+                        ax.imshow(img.squeeze(), cmap='gray', vmin=0, vmax=1)
+                    ax.set_xticks([]); ax.set_yticks([])
+                plt.suptitle(f'Epoch {epoch+1}: Unconditional samples', fontsize=7, y=0.98)
+            else:
+                all_samples = []
+                for ci in vis_classes:
+                    cid = torch.tensor([ci], device=device)
+                    samp = sample(model, 1, num_steps=args.num_steps,
+                                  class_labels=cid, device=device,
+                                  freq_flow=args.freq_flow)
+                    all_samples.append(samp.cpu())
 
-            n_drugs, n_mutants = len(drug_viz), len(mutant_viz)
-            n_cols = max(n_drugs, n_mutants)
+                n_drugs, n_mutants = len(drug_viz), len(mutant_viz)
+                n_cols = max(n_drugs, n_mutants)
 
-            fig = plt.figure(figsize=(n_cols * 0.45, 5))
-            gs = GridSpec(2, n_cols, figure=fig, hspace=0.35, wspace=0.02,
-                          height_ratios=[1, 1])
+                fig = plt.figure(figsize=(n_cols * 0.45, 5))
+                gs = GridSpec(2, n_cols, figure=fig, hspace=0.35, wspace=0.02,
+                              height_ratios=[1, 1])
 
-            for i in range(n_cols):
-                # Drug row
-                ax = fig.add_subplot(gs[0, i])
-                if i < n_drugs:
-                    img = all_samples[i]
-                    img_01 = (img * 0.5 + 0.5).clamp(0, 1)
-                    ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
-                    ax.set_xlabel(class_names[drug_viz[i]].replace('_', ' '), fontsize=3)
-                ax.set_xticks([])
-                ax.set_yticks([])
+                for i in range(n_cols):
+                    ax = fig.add_subplot(gs[0, i])
+                    if i < n_drugs:
+                        img = all_samples[i]
+                        img_01 = (img * 0.5 + 0.5).clamp(0, 1)
+                        ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
+                        ax.set_xlabel(class_names[drug_viz[i]].replace('_', ' '), fontsize=3)
+                    ax.set_xticks([]); ax.set_yticks([])
 
-                # Mutant row
-                ax = fig.add_subplot(gs[1, i])
-                if i < n_mutants:
-                    img = all_samples[n_drugs + i]
-                    img_01 = (img * 0.5 + 0.5).clamp(0, 1)
-                    ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
-                    ax.set_xlabel(class_names[mutant_viz[i]].replace('_', ' '), fontsize=3)
-                ax.set_xticks([])
-                ax.set_yticks([])
+                    ax = fig.add_subplot(gs[1, i])
+                    if i < n_mutants:
+                        img = all_samples[n_drugs + i]
+                        img_01 = (img * 0.5 + 0.5).clamp(0, 1)
+                        ax.imshow(img_01.squeeze(), cmap='gray', vmin=0, vmax=1)
+                        ax.set_xlabel(class_names[mutant_viz[i]].replace('_', ' '), fontsize=3)
+                    ax.set_xticks([]); ax.set_yticks([])
 
-            plt.suptitle(f'Epoch {epoch+1}: All classes (drugs 2x top, mutants 1 bottom)', fontsize=7, y=0.98)
+                plt.suptitle(f'Epoch {epoch+1}: All classes (drugs 2x top, mutants 1 bottom)', fontsize=7, y=0.98)
+
             plt.tight_layout()
             fig.savefig(os.path.join(OUTPUT_DIR, f'samples_{epoch+1:03d}.png'),
                        dpi=200, bbox_inches='tight')

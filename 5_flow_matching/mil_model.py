@@ -16,6 +16,13 @@ def extract_well_from_filename(filename: str) -> str | None:
     return match.group(1) if match else None
 
 
+def extract_plate_from_path(path: str) -> str:
+    match = re.search(r'/P(\d+)(?:/|$)', path)
+    if not match:
+        match = re.search(r'P(\d+)', path)
+    return f"P{match.group(1)}"
+
+
 def load_labels(project_root: str, data_dir: str) -> tuple[list, dict, list]:
     """Load all images with their 185 class labels (drugs + mutants combined).
 

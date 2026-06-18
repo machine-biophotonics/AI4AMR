@@ -1,0 +1,303 @@
+================================================================================
+BOTTLENECK CENTROID PCA: Top/Bottom Classes per PC
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+PC1 (var=54.05%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    murA_3                                        [Mutant  ] score=+13.377
+    msbA_2                                        [Mutant  ] score=+12.562
+    WT NC_6                                       [Control ] score=+12.350
+    mrcB_3                                        [Mutant  ] score=+12.133
+    mrcA_3                                        [Mutant  ] score=+11.906
+    NC_2                                          [Control ] score=+11.560
+    NC_6                                          [Control ] score=+11.524
+    mrcA_2                                        [Mutant  ] score=+10.637
+    folP_1                                        [Mutant  ] score=+10.474
+    mrdA_1                                        [Mutant  ] score=+10.307
+  Bottom 10 (-):
+    Colistin_2x                                   [Drug    ] score=-18.494
+    Penicillin_1x                                 [Drug    ] score=-18.433
+    Polymyxin_B_2x                                [Drug    ] score=-17.779
+    Penicillin_2x                                 [Drug    ] score=-15.779
+    Cefsulodin_2x                                 [Drug    ] score=-14.740
+    Chloramphenicol_2x                            [Drug    ] score=-14.691
+    Sulbactam_2x                                  [Drug    ] score=-14.173
+    Meropenem_2x                                  [Drug    ] score=-13.451
+    Polymyxin_B_1x                                [Drug    ] score=-13.339
+    Doxicyclin_2x                                 [Drug    ] score=-12.521
+
+────────────────────────────────────────────────────────────────────────────────
+PC2 (var=20.75%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Aztreonam_2x                                  [Drug    ] score=+10.383
+    lpxC_3                                        [Mutant  ] score=+10.039
+    ftsZ_2                                        [Mutant  ] score=+9.624
+    ftsZ_3                                        [Mutant  ] score=+9.608
+    ftsZ_1                                        [Mutant  ] score=+9.593
+    Ceftriaxone_2x                                [Drug    ] score=+9.523
+    murC_1                                        [Mutant  ] score=+9.461
+    ftsI_1                                        [Mutant  ] score=+8.915
+    ftsI_2                                        [Mutant  ] score=+8.248
+    murC_3                                        [Mutant  ] score=+7.915
+  Bottom 10 (-):
+    Relebactam_2x                                 [Drug    ] score=-8.843
+    Avibactam_2x                                  [Drug    ] score=-7.991
+    Meropenem_1x                                  [Drug    ] score=-7.878
+    Clavulanic_Acid_1x                            [Drug    ] score=-7.610
+    Mecillinam_2x                                 [Drug    ] score=-7.043
+    Mecillinam_1x                                 [Drug    ] score=-6.650
+    Relebactam_1x                                 [Drug    ] score=-6.565
+    Meropenem_2x                                  [Drug    ] score=-6.508
+    Clavulanic_Acid_0.5x                          [Drug    ] score=-6.499
+    Rifampicin_0.25x                              [Drug    ] score=-6.454
+
+────────────────────────────────────────────────────────────────────────────────
+PC3 (var=11.84%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Ceftriaxone_2x                                [Drug    ] score=+7.839
+    Aztreonam_2x                                  [Drug    ] score=+7.704
+    Penicillin_0.5x                               [Drug    ] score=+6.106
+    Aztreonam_1x                                  [Drug    ] score=+5.914
+    Sulbactam_2x                                  [Drug    ] score=+5.723
+    Cefsulodin_0.5x                               [Drug    ] score=+5.684
+    Doxicyclin_0.5x                               [Drug    ] score=+5.303
+    Sulbactam_1x                                  [Drug    ] score=+5.207
+    Ceftriaxone_0.5x                              [Drug    ] score=+5.200
+    Sulbactam_0.25x                               [Drug    ] score=+5.120
+  Bottom 10 (-):
+    ftsI_3                                        [Mutant  ] score=-6.757
+    mrdA_2                                        [Mutant  ] score=-6.675
+    Avibactam_2x                                  [Drug    ] score=-6.342
+    folA_2                                        [Mutant  ] score=-5.955
+    mrdA_1                                        [Mutant  ] score=-5.819
+    Relebactam_2x                                 [Drug    ] score=-5.745
+    secY_1                                        [Mutant  ] score=-5.735
+    Mecillinam_2x                                 [Drug    ] score=-5.732
+    rpoB_1                                        [Mutant  ] score=-5.227
+    gyrB_3                                        [Mutant  ] score=-5.142
+
+────────────────────────────────────────────────────────────────────────────────
+PC4 (var=4.63%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Polymyxin_B_2x                                [Drug    ] score=+11.607
+    Penicillin_2x                                 [Drug    ] score=+9.585
+    Penicillin_1x                                 [Drug    ] score=+6.541
+    Colistin_2x                                   [Drug    ] score=+5.000
+    parE_2                                        [Mutant  ] score=+4.155
+    WT NC_2                                       [Control ] score=+3.996
+    mrcA_3                                        [Mutant  ] score=+3.932
+    msbA_2                                        [Mutant  ] score=+3.418
+    WT NC_1                                       [Control ] score=+3.322
+    dnaB_3                                        [Mutant  ] score=+3.219
+  Bottom 10 (-):
+    Clavulanic_Acid_2x                            [Drug    ] score=-3.559
+    ftsI_1                                        [Mutant  ] score=-3.558
+    murC_3                                        [Mutant  ] score=-3.181
+    secY_3                                        [Mutant  ] score=-3.137
+    Ciprofloxacin_0.5x                            [Drug    ] score=-3.055
+    Trimethoprim_0.25x                            [Drug    ] score=-2.767
+    Trimethoprim_1x                               [Drug    ] score=-2.739
+    dnaE_2                                        [Mutant  ] score=-2.701
+    Ciprofloxacin_1x                              [Drug    ] score=-2.619
+    rpoB_1                                        [Mutant  ] score=-2.459
+
+────────────────────────────────────────────────────────────────────────────────
+PC5 (var=3.10%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Meropenem_2x                                  [Drug    ] score=+4.400
+    mrdA_1                                        [Mutant  ] score=+3.637
+    ftsI_2                                        [Mutant  ] score=+3.369
+    parE_2                                        [Mutant  ] score=+3.179
+    Clarithromycin_0.5x                           [Drug    ] score=+3.140
+    Cefepim_1x                                    [Drug    ] score=+3.027
+    ftsZ_3                                        [Mutant  ] score=+3.001
+    Polymyxin_B_0.25x                             [Drug    ] score=+2.989
+    Cefsulodin_2x                                 [Drug    ] score=+2.931
+    Avibactam_2x                                  [Drug    ] score=+2.693
+  Bottom 10 (-):
+    Polymyxin_B_2x                                [Drug    ] score=-5.684
+    Colistin_2x                                   [Drug    ] score=-5.197
+    Penicillin_2x                                 [Drug    ] score=-3.474
+    rplA_3                                        [Mutant  ] score=-3.111
+    parE_3                                        [Mutant  ] score=-2.783
+    parC_1                                        [Mutant  ] score=-2.719
+    secA_3                                        [Mutant  ] score=-2.572
+    dnaE_2                                        [Mutant  ] score=-2.559
+    Trimethoprim_0.25x                            [Drug    ] score=-2.487
+    rpsA_2                                        [Mutant  ] score=-2.486
+
+────────────────────────────────────────────────────────────────────────────────
+PC6 (var=1.62%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Avibactam_2x                                  [Drug    ] score=+3.235
+    Meropenem_0.5x                                [Drug    ] score=+2.841
+    Avibactam_0.5x                                [Drug    ] score=+2.751
+    mrdA_1                                        [Mutant  ] score=+2.538
+    Meropenem_1x                                  [Drug    ] score=+2.532
+    Avibactam_1x                                  [Drug    ] score=+2.472
+    ftsI_1                                        [Mutant  ] score=+2.419
+    Avibactam_0.25x                               [Drug    ] score=+2.300
+    Aztreonam_2x                                  [Drug    ] score=+2.152
+    Rifampicin_0.5x                               [Drug    ] score=+2.148
+  Bottom 10 (-):
+    Cefsulodin_2x                                 [Drug    ] score=-2.922
+    rpsL_2                                        [Mutant  ] score=-2.522
+    rplC_1                                        [Mutant  ] score=-2.121
+    Cefsulodin_1x                                 [Drug    ] score=-2.008
+    folA_2                                        [Mutant  ] score=-1.969
+    gyrB_1                                        [Mutant  ] score=-1.927
+    mrcB_2                                        [Mutant  ] score=-1.856
+    Trimethoprim_1x                               [Drug    ] score=-1.852
+    folP_3                                        [Mutant  ] score=-1.845
+    parE_2                                        [Mutant  ] score=-1.842
+
+────────────────────────────────────────────────────────────────────────────────
+PC7 (var=0.77%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Clarithromycin_0.5x                           [Drug    ] score=+1.913
+    Levofloxacin_0.5x                             [Drug    ] score=+1.840
+    Chloramphenicol_2x                            [Drug    ] score=+1.749
+    Chloramphenicol_1x                            [Drug    ] score=+1.612
+    msbA_3                                        [Mutant  ] score=+1.570
+    folA_1                                        [Mutant  ] score=+1.538
+    Kanamycin_2x                                  [Drug    ] score=+1.532
+    WT NC_3                                       [Control ] score=+1.519
+    Doxicyclin_2x                                 [Drug    ] score=+1.398
+    Ceftriaxone_0.25x                             [Drug    ] score=+1.337
+  Bottom 10 (-):
+    Cefepim_2x                                    [Drug    ] score=-2.025
+    Aztreonam_0.25x                               [Drug    ] score=-1.968
+    Sulbactam_0.25x                               [Drug    ] score=-1.791
+    Colistin_0.5x                                 [Drug    ] score=-1.626
+    mrdA_3                                        [Mutant  ] score=-1.596
+    Clavulanic_Acid_0.5x                          [Drug    ] score=-1.572
+    Polymyxin_B_0.25x                             [Drug    ] score=-1.466
+    lpxA_3                                        [Mutant  ] score=-1.376
+    Aztreonam_2x                                  [Drug    ] score=-1.302
+    rplA_3                                        [Mutant  ] score=-1.284
+
+────────────────────────────────────────────────────────────────────────────────
+PC8 (var=0.63%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Penicillin_2x                                 [Drug    ] score=+2.313
+    rplA_2                                        [Mutant  ] score=+2.094
+    rplC_1                                        [Mutant  ] score=+1.759
+    mrdA_1                                        [Mutant  ] score=+1.672
+    Ciprofloxacin_0.5x                            [Drug    ] score=+1.478
+    Polymyxin_B_2x                                [Drug    ] score=+1.428
+    ftsI_2                                        [Mutant  ] score=+1.336
+    Polymyxin_B_0.25x                             [Drug    ] score=+1.299
+    murA_3                                        [Mutant  ] score=+1.080
+    Doxicyclin_2x                                 [Drug    ] score=+1.072
+  Bottom 10 (-):
+    Mecillinam_2x                                 [Drug    ] score=-2.022
+    Aztreonam_2x                                  [Drug    ] score=-1.912
+    Ceftriaxone_2x                                [Drug    ] score=-1.733
+    WT NC_2                                       [Control ] score=-1.592
+    ftsZ_2                                        [Mutant  ] score=-1.552
+    WT NC_1                                       [Control ] score=-1.465
+    gyrA_3                                        [Mutant  ] score=-1.463
+    folA_2                                        [Mutant  ] score=-1.375
+    Cefsulodin_2x                                 [Drug    ] score=-1.360
+    Meropenem_2x                                  [Drug    ] score=-1.306
+
+────────────────────────────────────────────────────────────────────────────────
+PC9 (var=0.43%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    Penicillin_2x                                 [Drug    ] score=+1.929
+    mrcA_2                                        [Mutant  ] score=+1.403
+    Chloramphenicol_1x                            [Drug    ] score=+1.258
+    Meropenem_1x                                  [Drug    ] score=+1.100
+    Aztreonam_2x                                  [Drug    ] score=+1.096
+    mrcB_2                                        [Mutant  ] score=+0.976
+    Polymyxin_B_2x                                [Drug    ] score=+0.946
+    rpoA_3                                        [Mutant  ] score=+0.904
+    folA_1                                        [Mutant  ] score=+0.903
+    gyrA_3                                        [Mutant  ] score=+0.825
+  Bottom 10 (-):
+    Colistin_2x                                   [Drug    ] score=-2.589
+    rpoA_2                                        [Mutant  ] score=-1.818
+    lptC_3                                        [Mutant  ] score=-1.405
+    lpxC_1                                        [Mutant  ] score=-1.195
+    WT NC_1                                       [Control ] score=-1.177
+    Mecillinam_2x                                 [Drug    ] score=-1.121
+    rpoB_2                                        [Mutant  ] score=-1.091
+    gyrA_1                                        [Mutant  ] score=-1.036
+    rpsA_2                                        [Mutant  ] score=-1.032
+    mrcB_1                                        [Mutant  ] score=-1.015
+
+────────────────────────────────────────────────────────────────────────────────
+PC10 (var=0.26%)
+────────────────────────────────────────────────────────────────────────────────
+  Top 10 (+):
+    msbA_2                                        [Mutant  ] score=+1.160
+    Trimethoprim_1x                               [Drug    ] score=+1.014
+    Clarithromycin_2x                             [Drug    ] score=+0.977
+    Ciprofloxacin_1x                              [Drug    ] score=+0.947
+    Ciprofloxacin_2x                              [Drug    ] score=+0.922
+    Polymyxin_B_2x                                [Drug    ] score=+0.851
+    Kanamycin_2x                                  [Drug    ] score=+0.823
+    rpsA_1                                        [Mutant  ] score=+0.797
+    folA_2                                        [Mutant  ] score=+0.747
+    Clavulanic_Acid_0.5x                          [Drug    ] score=+0.745
+  Bottom 10 (-):
+    ftsZ_2                                        [Mutant  ] score=-1.288
+    murA_2                                        [Mutant  ] score=-1.196
+    rpsL_2                                        [Mutant  ] score=-1.175
+    secA_1                                        [Mutant  ] score=-1.076
+    rplC_1                                        [Mutant  ] score=-1.015
+    lptA_2                                        [Mutant  ] score=-0.985
+    murC_2                                        [Mutant  ] score=-0.980
+    gyrB_3                                        [Mutant  ] score=-0.763
+    Mecillinam_2x                                 [Drug    ] score=-0.741
+    Avibactam_0.25x                               [Drug    ] score=-0.732
+
+================================================================================
+PCs WITH MIXED DRUG+MUTANT in top/bottom 10
+================================================================================
+
+  PC2 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): murC_3, ftsI_2, ftsI_1, murC_1, Ceftriaxone_2x, ftsZ_1, ftsZ_3, ftsZ_2, lpxC_3, Aztreonam_2x
+    Bot 10 (-): Relebactam_2x, Avibactam_2x, Meropenem_1x, Clavulanic_Acid_1x, Mecillinam_2x, Mecillinam_1x, Relebactam_1x, Meropenem_2x, Clavulanic_Acid_0.5x, Rifampicin_0.25x
+
+  PC3 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): Sulbactam_0.25x, Ceftriaxone_0.5x, Sulbactam_1x, Doxicyclin_0.5x, Cefsulodin_0.5x, Sulbactam_2x, Aztreonam_1x, Penicillin_0.5x, Aztreonam_2x, Ceftriaxone_2x
+    Bot 10 (-): ftsI_3, mrdA_2, Avibactam_2x, folA_2, mrdA_1, Relebactam_2x, secY_1, Mecillinam_2x, rpoB_1, gyrB_3
+
+  PC4 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): dnaB_3, WT NC_1, msbA_2, mrcA_3, WT NC_2, parE_2, Colistin_2x, Penicillin_1x, Penicillin_2x, Polymyxin_B_2x
+    Bot 10 (-): Clavulanic_Acid_2x, ftsI_1, murC_3, secY_3, Ciprofloxacin_0.5x, Trimethoprim_0.25x, Trimethoprim_1x, dnaE_2, Ciprofloxacin_1x, rpoB_1
+
+  PC5 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): Avibactam_2x, Cefsulodin_2x, Polymyxin_B_0.25x, ftsZ_3, Cefepim_1x, Clarithromycin_0.5x, parE_2, ftsI_2, mrdA_1, Meropenem_2x
+    Bot 10 (-): Polymyxin_B_2x, Colistin_2x, Penicillin_2x, rplA_3, parE_3, parC_1, secA_3, dnaE_2, Trimethoprim_0.25x, rpsA_2
+
+  PC6 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): Rifampicin_0.5x, Aztreonam_2x, Avibactam_0.25x, ftsI_1, Avibactam_1x, Meropenem_1x, mrdA_1, Avibactam_0.5x, Meropenem_0.5x, Avibactam_2x
+    Bot 10 (-): Cefsulodin_2x, rpsL_2, rplC_1, Cefsulodin_1x, folA_2, gyrB_1, mrcB_2, Trimethoprim_1x, folP_3, parE_2
+
+  PC7 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): Ceftriaxone_0.25x, Doxicyclin_2x, WT NC_3, Kanamycin_2x, folA_1, msbA_3, Chloramphenicol_1x, Chloramphenicol_2x, Levofloxacin_0.5x, Clarithromycin_0.5x
+    Bot 10 (-): Cefepim_2x, Aztreonam_0.25x, Sulbactam_0.25x, Colistin_0.5x, mrdA_3, Clavulanic_Acid_0.5x, Polymyxin_B_0.25x, lpxA_3, Aztreonam_2x, rplA_3
+
+  PC8 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): Doxicyclin_2x, murA_3, Polymyxin_B_0.25x, ftsI_2, Polymyxin_B_2x, Ciprofloxacin_0.5x, mrdA_1, rplC_1, rplA_2, Penicillin_2x
+    Bot 10 (-): Mecillinam_2x, Aztreonam_2x, Ceftriaxone_2x, WT NC_2, ftsZ_2, WT NC_1, gyrA_3, folA_2, Cefsulodin_2x, Meropenem_2x
+
+  PC9 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): gyrA_3, folA_1, rpoA_3, Polymyxin_B_2x, mrcB_2, Aztreonam_2x, Meropenem_1x, Chloramphenicol_1x, mrcA_2, Penicillin_2x
+    Bot 10 (-): Colistin_2x, rpoA_2, lptC_3, lpxC_1, WT NC_1, Mecillinam_2x, rpoB_2, gyrA_1, rpsA_2, mrcB_1
+
+  PC10 — MIXED! Drug+Mutant on same axis
+    Top 10 (+): Clavulanic_Acid_0.5x, folA_2, rpsA_1, Kanamycin_2x, Polymyxin_B_2x, Ciprofloxacin_2x, Ciprofloxacin_1x, Clarithromycin_2x, Trimethoprim_1x, msbA_2
+    Bot 10 (-): ftsZ_2, murA_2, rpsL_2, secA_1, rplC_1, lptA_2, murC_2, gyrB_3, Mecillinam_2x, Avibactam_0.25x
