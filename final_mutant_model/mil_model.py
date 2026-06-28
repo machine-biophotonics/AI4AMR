@@ -92,11 +92,17 @@ class MILEncoder(nn.Module):
         num_channels: int = 3,
         pretrained: str = "imagenet",
         backbone: str = "efficientnet_b0",
-        pooling: str = "attention"
+        pooling: str = "attention",
+        dual_classifier: bool = False,
+        num_drug_classes: int = None,
+        num_mutant_classes: int = None,
+        proj_dim: int = 256,
     ) -> None:
         super().__init__()
         self.backbone_type = backbone
         self.pooling = pooling
+        self.dual_classifier = dual_classifier
+        self.proj_dim = proj_dim
         
         # Select backbone
         if backbone == "mobilenet_v3_small":
@@ -203,6 +209,18 @@ class MILEncoder(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
+
+        if dual_classifier:
+            self.projector = nn.Sequential(
+                nn.Linear(self.feature_dim, proj_dim),
+                nn.LayerNorm(proj_dim),
+                nn.GELU(),
+                nn.Dropout(0.2),
+                nn.Linear(proj_dim, proj_dim),
+                nn.LayerNorm(proj_dim),
+            )
+            self.drug_classifier = nn.Linear(proj_dim, num_drug_classes)
+            self.mutant_classifier = nn.Linear(proj_dim, num_mutant_classes)
     
     def forward(
         self,
@@ -319,8 +337,10 @@ class MILEncoder(nn.Module):
         else:
             x = self.backbone(x)
             pooled = x
-        
+
         pooled = self.head_proj(pooled)
+        if self.dual_classifier:
+            pooled = self.projector(pooled)
         return pooled
     
     def get_mil_embeddings(self, x):
@@ -328,12 +348,13 @@ class MILEncoder(nn.Module):
         x = x.view(batch_size * num_crops, *x.shape[2:])
         x = self.backbone(x)
         x = x.view(batch_size, num_crops, -1)
-        
+
         pooled, _ = self.attention_pool(x, temperature=self.attention_temp)
         pooled = pooled.reshape(batch_size, -1)
-        
+
         pooled = self.head_proj(pooled)
-        
+        if self.dual_classifier:
+            pooled = self.projector(pooled)
         return pooled
     
     def get_supcon_embeddings(self, x):
@@ -516,10 +537,12 @@ class MultiCropDataset(Dataset):
         raster_resize_size: int = 256,
         raster_num_crops: int = 25,
         raster_grid_size: int = 2500,
-        edge_sigma: float | None = None
+        edge_sigma: float | None = None,
+        domains: list[int] | None = None
     ) -> None:
         self.image_paths = image_paths
         self.labels = labels
+        self.domains = domains
         self.crop_size = crop_size
         self.grid_size = grid_size
         self.neighborhood = neighborhood
@@ -795,6 +818,8 @@ class MultiCropDataset(Dataset):
             
             crops = torch.stack(crops_list)
         
+        if self.domains is not None:
+            return crops, self.labels[idx], self.domains[idx]
         return crops, self.labels[idx]
 
 

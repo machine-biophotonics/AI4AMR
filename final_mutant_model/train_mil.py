@@ -133,6 +133,10 @@ parser.add_argument('--guide', type=int, default=None,
                     help='Filter to specific guide number (e.g. 1 for guide 1) in mutant mode')
 parser.add_argument('--edge_sigma', type=float, default=None,
                     help='Apply Canny edge detection with given sigma before normalization (e.g., 2.0)')
+parser.add_argument('--dual_classifier', action='store_true', default=False,
+                    help='Use separate classifiers for drug and mutant domains (only with --data_mode both)')
+parser.add_argument('--proj_dim', type=int, default=256,
+                    help='Projection bottleneck dimension for dual classifier (default: 256)')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
@@ -332,6 +336,7 @@ def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
     Based on AEM paper (2024) - encourages considering more instances/patches."""
     return -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
 
+
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
     import random
@@ -464,77 +469,177 @@ def train_single_fold(test_plate: str) -> None:
         
         label_extractor = both_extractor
     
-    class_to_idx = {cls: idx for idx, cls in enumerate(all_classes)}
-    num_classes = len(all_classes)
-    print(f"Number of classes: {num_classes}")
-    print(f"Classes: {all_classes}")
-    
-    train_paths, train_labels = [], []
-    val_paths, val_labels = [], []
-    test_paths, test_labels = [], []
-    
-    for plate in train_plates:
-        for path in get_image_paths_for_plate(plate):
-            label = label_extractor(path)
-            if label in class_to_idx:
-                train_paths.append(path)
-                train_labels.append(class_to_idx[label])
-    
-    for plate in val_plates:
-        for path in get_image_paths_for_plate(plate):
-            label = label_extractor(path)
-            if label in class_to_idx:
-                val_paths.append(path)
-                val_labels.append(class_to_idx[label])
-    
-    for plate in [test_plate_normalized]:
-        for path in get_image_paths_for_plate(plate):
-            label = label_extractor(path)
-            if label in class_to_idx:
-                test_paths.append(path)
-                test_labels.append(class_to_idx[label])
-    
-    train_labels = np.array(train_labels)
-    val_labels = np.array(val_labels)
-    test_labels = np.array(test_labels)
-    
-    # Filter to specific guide if requested (mutant mode)
-    if args.guide is not None:
-        guide_suffix = f"_{args.guide}"
-        train_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in train_labels]])
-        val_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in val_labels]])
-        test_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in test_labels]])
-        
-        train_paths = [p for p, m in zip(train_paths, train_mask) if m]
-        train_labels = train_labels[train_mask]
-        val_paths = [p for p, m in zip(val_paths, val_mask) if m]
-        val_labels = val_labels[val_mask]
-        test_paths = [p for p, m in zip(test_paths, test_mask) if m]
-        test_labels = test_labels[test_mask]
-        
-        # Recompute class mapping with only remaining classes
-        remaining_classes = sorted(set(all_classes[i] for i in np.concatenate([train_labels, val_labels, test_labels])))
-        old_all_classes = all_classes
-        class_to_idx = {cls: idx for idx, cls in enumerate(remaining_classes)}
-        num_classes = len(remaining_classes)
-        all_classes = remaining_classes
-        train_labels = np.array([class_to_idx[old_all_classes[i]] for i in train_labels])
-        val_labels = np.array([class_to_idx[old_all_classes[i]] for i in val_labels])
-        test_labels = np.array([class_to_idx[old_all_classes[i]] for i in test_labels])
-        
-        print(f"Guide {args.guide} filter applied: Train={len(train_paths)}, Val={len(val_paths)}, Test={len(test_paths)}, Classes={num_classes}")
-    
+    # ============ DUAL CLASSIFIER: separate drug/mutant class lists ============
+    if args.dual_classifier and args.data_mode == 'both':
+        drug_labels_set = set()
+        mutant_labels_set = set()
+        for pm in plate_maps.values():
+            for well_key, label in pm.items():
+                if label:
+                    if well_key.startswith('drug_'):
+                        drug_labels_set.add(label)
+                    elif well_key.startswith('mutant_'):
+                        mutant_labels_set.add(label)
+        drug_classes = sorted(drug_labels_set)
+        mutant_classes = sorted(mutant_labels_set)
+        drug_class_to_idx = {c: i for i, c in enumerate(drug_classes)}
+        mutant_class_to_idx = {c: i for i, c in enumerate(mutant_classes)}
+        num_drug_classes = len(drug_classes)
+        num_mutant_classes = len(mutant_classes)
+        all_classes = drug_classes + mutant_classes
+        num_classes_total = len(all_classes)
+
+        print(f"Dual classifier mode:")
+        print(f"  Drug classes: {num_drug_classes}")
+        print(f"  Mutant classes: {num_mutant_classes}")
+        print(f"  Total: {num_classes_total}")
+
+        def get_domain(path):
+            p = path.lower()
+            if '/drugs_data/' in p or '\\drugs_data\\' in p:
+                return 0
+            return 1
+
+        train_paths, train_labels, train_domains = [], [], []
+        val_paths, val_labels, val_domains = [], [], []
+        test_paths, test_labels, test_domains = [], [], []
+
+        for plate in train_plates:
+            for path in get_image_paths_for_plate(plate):
+                label_str = label_extractor(path)
+                d = get_domain(path)
+                if d == 0 and label_str in drug_class_to_idx:
+                    train_paths.append(path)
+                    train_labels.append(drug_class_to_idx[label_str])
+                    train_domains.append(0)
+                elif d == 1 and label_str in mutant_class_to_idx:
+                    train_paths.append(path)
+                    train_labels.append(mutant_class_to_idx[label_str])
+                    train_domains.append(1)
+
+        for plate in val_plates:
+            for path in get_image_paths_for_plate(plate):
+                label_str = label_extractor(path)
+                d = get_domain(path)
+                if d == 0 and label_str in drug_class_to_idx:
+                    val_paths.append(path)
+                    val_labels.append(drug_class_to_idx[label_str])
+                    val_domains.append(0)
+                elif d == 1 and label_str in mutant_class_to_idx:
+                    val_paths.append(path)
+                    val_labels.append(mutant_class_to_idx[label_str])
+                    val_domains.append(1)
+
+        for plate in [test_plate_normalized]:
+            for path in get_image_paths_for_plate(plate):
+                label_str = label_extractor(path)
+                d = get_domain(path)
+                if d == 0 and label_str in drug_class_to_idx:
+                    test_paths.append(path)
+                    test_labels.append(drug_class_to_idx[label_str])
+                    test_domains.append(0)
+                elif d == 1 and label_str in mutant_class_to_idx:
+                    test_paths.append(path)
+                    test_labels.append(mutant_class_to_idx[label_str])
+                    test_domains.append(1)
+
+        train_labels = np.array(train_labels)
+        val_labels = np.array(val_labels)
+        test_labels = np.array(test_labels)
+        train_domains = np.array(train_domains)
+        val_domains = np.array(val_domains)
+        test_domains = np.array(test_domains)
+
+        # Compute per-domain class weights
+        drug_counts = Counter(train_labels[train_domains == 0].tolist())
+        mutant_counts = Counter(train_labels[train_domains == 1].tolist())
+        drug_total = max(sum(drug_counts.values()), 1)
+        mutant_total = max(sum(mutant_counts.values()), 1)
+        drug_weights = torch.tensor([drug_total / (num_drug_classes * max(drug_counts.get(i, 1), 1)) for i in range(num_drug_classes)], device=device)
+        mutant_weights = torch.tensor([mutant_total / (num_mutant_classes * max(mutant_counts.get(i, 1), 1)) for i in range(num_mutant_classes)], device=device)
+        drug_weights = drug_weights / drug_weights.sum() * num_drug_classes
+        mutant_weights = mutant_weights / mutant_weights.sum() * num_mutant_classes
+
+        class_to_idx = {**drug_class_to_idx, **{c: i + num_drug_classes for i, c in enumerate(mutant_classes)}}
+        num_classes = num_classes_total
+    else:
+        class_to_idx = {cls: idx for idx, cls in enumerate(all_classes)}
+        num_classes = len(all_classes)
+        print(f"Number of classes: {num_classes}")
+        print(f"Classes: {all_classes}")
+
+        train_paths, train_labels = [], []
+        val_paths, val_labels = [], []
+        test_paths, test_labels = [], []
+
+        for plate in train_plates:
+            for path in get_image_paths_for_plate(plate):
+                label = label_extractor(path)
+                if label in class_to_idx:
+                    train_paths.append(path)
+                    train_labels.append(class_to_idx[label])
+
+        for plate in val_plates:
+            for path in get_image_paths_for_plate(plate):
+                label = label_extractor(path)
+                if label in class_to_idx:
+                    val_paths.append(path)
+                    val_labels.append(class_to_idx[label])
+
+        for plate in [test_plate_normalized]:
+            for path in get_image_paths_for_plate(plate):
+                label = label_extractor(path)
+                if label in class_to_idx:
+                    test_paths.append(path)
+                    test_labels.append(class_to_idx[label])
+
+        train_labels = np.array(train_labels)
+        val_labels = np.array(val_labels)
+        test_labels = np.array(test_labels)
+
+        # Filter to specific guide if requested (mutant mode)
+        if args.guide is not None:
+            guide_suffix = f"_{args.guide}"
+            train_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in train_labels]])
+            val_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in val_labels]])
+            test_mask = np.array([lbl.endswith(guide_suffix) for lbl in [all_classes[i] for i in test_labels]])
+
+            train_paths = [p for p, m in zip(train_paths, train_mask) if m]
+            train_labels = train_labels[train_mask]
+            val_paths = [p for p, m in zip(val_paths, val_mask) if m]
+            val_labels = val_labels[val_mask]
+            test_paths = [p for p, m in zip(test_paths, test_mask) if m]
+            test_labels = test_labels[test_mask]
+
+            remaining_classes = sorted(set(all_classes[i] for i in np.concatenate([train_labels, val_labels, test_labels])))
+            old_all_classes = all_classes
+            class_to_idx = {cls: idx for idx, cls in enumerate(remaining_classes)}
+            num_classes = len(remaining_classes)
+            all_classes = remaining_classes
+            train_labels = np.array([class_to_idx[old_all_classes[i]] for i in train_labels])
+            val_labels = np.array([class_to_idx[old_all_classes[i]] for i in val_labels])
+            test_labels = np.array([class_to_idx[old_all_classes[i]] for i in test_labels])
+
+            print(f"Guide {args.guide} filter applied: Train={len(train_paths)}, Val={len(val_paths)}, Test={len(test_paths)}, Classes={num_classes}")
+
     print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
+
+    if args.dual_classifier and args.data_mode == 'both':
+        pass  # weights already computed above
+    else:
+        class_counts = Counter(train_labels)
+        total = len(train_labels)
+        class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
+        class_weights = class_weights / class_weights.sum() * num_classes
     
-    class_counts = Counter(train_labels)
-    total = len(train_labels)
-    # Handle classes with zero samples by using minimum count of 1
-    class_weights = torch.tensor([total / (num_classes * max(class_counts[i], 1)) for i in range(num_classes)], device=device)
-    class_weights = class_weights / class_weights.sum() * num_classes
-    
-    train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
-    val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
-    test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
+    if args.dual_classifier and args.data_mode == 'both':
+        train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma, domains=train_domains.tolist())
+        val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma, domains=val_domains.tolist())
+        test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma, domains=test_domains.tolist())
+    else:
+        train_dataset = MultiCropDataset(train_paths, train_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=True, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
+        val_dataset = MultiCropDataset(val_paths, val_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
+        test_dataset = MultiCropDataset(test_paths, test_labels, None, neighborhood=args.neighborhood, grid_size=args.grid_size, augment=False, seed=SEED, num_channels=args.num_channels, extraction_mode=args.extraction_mode, raster_crop_size=args.raster_crop_size, raster_resize_size=args.raster_resize_size, raster_num_crops=args.raster_num_crops, raster_grid_size=args.raster_grid_size, edge_sigma=args.edge_sigma)
     
     train_dataset.set_epoch(0)
     val_dataset.set_epoch(0)
@@ -569,8 +674,19 @@ def train_single_fold(test_plate: str) -> None:
         print(f"Using MILEncoder with SC-MIL supervised contrastive...")
         print(f"Backbone: {args.backbone}")
         print(f"Pooling: {args.pooling}")
-        print(f"Classifier: single FC layer with dropout={args.dropout}")
-        model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
+        if args.dual_classifier and args.data_mode == 'both':
+            print(f"Dual classifier mode: {num_drug_classes} drug + {num_mutant_classes} mutant classes")
+            print(f"Projector bottleneck: {args.proj_dim}-dim")
+            model = MILEncoder(
+                num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout,
+                use_contrastive=True, num_channels=args.num_channels,
+                pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling,
+                dual_classifier=True, num_drug_classes=num_drug_classes,
+                num_mutant_classes=num_mutant_classes, proj_dim=args.proj_dim
+            )
+        else:
+            print(f"Classifier: single FC layer with dropout={args.dropout}")
+            model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
     else:
         print(f"Using AttentionMILModel...")
         print(f"Backbone: {args.backbone}")
@@ -618,7 +734,7 @@ def train_single_fold(test_plate: str) -> None:
     csv_path = os.path.join(OUTPUT_DIR, f'training_metrics_{timestamp}.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'backbone_lr', 'classifier_lr'])
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'backbone_lr', 'classifier_lr'])
     
     # TensorBoard writer - 2 cards: (Train Loss, Val Loss) and (Train Acc, Val Acc)
     tb_writer = SummaryWriter(log_dir=OUTPUT_DIR)
@@ -746,7 +862,7 @@ def train_single_fold(test_plate: str) -> None:
         csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
         with open(csv_path_sc_mil, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'lr'])
+            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'lr'])
         
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
@@ -754,72 +870,103 @@ def train_single_fold(test_plate: str) -> None:
             model.train()
             run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
             
-            for images, labels in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
-                images, labels = images.to(device), labels.to(device)
+            for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
+                images = batch[0].to(device)
+                labels = batch[1].to(device)
+                domains = batch[2].to(device) if len(batch) > 2 else None
                 sc_mil_optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    # Single forward pass: get outputs, attn, crop, pooled embeddings, and instance logits
-                    outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
-                        images, return_attention=True, return_crop_embeddings=True, 
-                        return_pooled_embeddings=True, return_instance_logits=True
-                    )
-                    
-                    # ============ CONTRASTIVE LOSSES ============
-                    num_crops = crop_embeddings.shape[1]
-                    
-                    # Instance-level contrastive
-                    if args.contrastive_level in ['instance', 'both']:
-                        crop_emb_flat = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
-                        crop_emb_flat = F.normalize(crop_emb_flat, p=2, dim=-1)
-                        instance_labels_exp = labels.repeat_interleave(num_crops)
-                        inst_temp = max(args.sc_mil_temp, 0.1)  # Higher temp for stability
-                        criterion_inst = SupConLoss(temperature=inst_temp, contrast_mode='one')
-                        instance_sc_loss = criterion_inst(crop_emb_flat, instance_labels_exp)
-                    else:
-                        instance_sc_loss = 0.0
-                    
-                    # Bag-level contrastive
-                    if args.contrastive_level in ['bag', 'both']:
-                        bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
-                        sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
-                        bag_sc_loss = sc_criterion(bag_embeddings, labels)
-                    else:
+                    # ============ DUAL CLASSIFIER PATH ============
+                    if args.dual_classifier and args.data_mode == 'both':
+                        proj_emb = model.get_projected_features(images)
+                        drug_logits = model.drug_classifier(proj_emb)
+                        mutant_logits = model.mutant_classifier(proj_emb)
+                        
+                        drug_mask = domains == 0
+                        mutant_mask = domains == 1
+                        
+                        # Per-domain classification loss
+                        total_focal = 0.0
+                        if drug_mask.any():
+                            total_focal += weighted_focal_loss(drug_logits[drug_mask], labels[drug_mask], drug_weights[labels[drug_mask]])
+                        if mutant_mask.any():
+                            total_focal += weighted_focal_loss(mutant_logits[mutant_mask], labels[mutant_mask], mutant_weights[labels[mutant_mask]])
+                        
+                        # Per-domain bag-level contrastive on projected embeddings
                         bag_sc_loss = 0.0
-                    
-                    # ============ CLASSIFICATION LOSSES ============
-                    num_crops = crop_embeddings.shape[1]
-                    instance_labels = labels.repeat_interleave(num_crops)
-                    instance_weights = class_weights[instance_labels]
-                    # Instance-level focal
-                    instance_focal = weighted_focal_loss(
-                        instance_logits.view(-1, num_classes),
-                        instance_labels,
-                        instance_weights
-                    )
-                    # Bag-level focal
-                    bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
-                    
-                    # ============ COMBINE LOSSES ============
-                    w = args.instance_weight
-                    
-                    # Combined focal: instance + bag
-                    total_focal = w * instance_focal + (1 - w) * bag_focal
-                    # Combined contrastive: based on contrastive_level
-                    total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
-                    
-                    # Combined with classification vs contrastive weight
-                    loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                        if args.contrastive_level in ['bag', 'both']:
+                            if drug_mask.any():
+                                bag_emb = F.normalize(proj_emb[drug_mask], p=2, dim=-1).unsqueeze(1)
+                                bag_sc_loss += SupConLoss(temperature=args.sc_mil_temp)(bag_emb, labels[drug_mask])
+                            if mutant_mask.any():
+                                bag_emb = F.normalize(proj_emb[mutant_mask], p=2, dim=-1).unsqueeze(1)
+                                bag_sc_loss += SupConLoss(temperature=args.sc_mil_temp)(bag_emb, labels[mutant_mask])
+                        
+                        total_sc = bag_sc_loss
+                        loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                        
+                        # Accuracy per domain
+                        if drug_mask.any():
+                            drug_pred = drug_logits[drug_mask].argmax(1)
+                            correct += drug_pred.eq(labels[drug_mask]).sum().item()
+                        if mutant_mask.any():
+                            mutant_pred = mutant_logits[mutant_mask].argmax(1)
+                            correct += mutant_pred.eq(labels[mutant_mask]).sum().item()
+                        total += labels.size(0)
+                    else:
+                        # ============ STANDARD SINGLE-CLASSIFIER PATH ============
+                        outputs, attn_weights, crop_embeddings, pooled_embeddings, instance_logits = model(
+                            images, return_attention=True, return_crop_embeddings=True, 
+                            return_pooled_embeddings=True, return_instance_logits=True
+                        )
+                        
+                        # Contrastive losses
+                        num_crops = crop_embeddings.shape[1]
+                        
+                        if args.contrastive_level in ['instance', 'both']:
+                            crop_emb_flat = crop_embeddings.view(-1, crop_embeddings.shape[-1]).unsqueeze(1)
+                            crop_emb_flat = F.normalize(crop_emb_flat, p=2, dim=-1)
+                            instance_labels_exp = labels.repeat_interleave(num_crops)
+                            inst_temp = max(args.sc_mil_temp, 0.1)
+                            criterion_inst = SupConLoss(temperature=inst_temp, contrast_mode='one')
+                            instance_sc_loss = criterion_inst(crop_emb_flat, instance_labels_exp)
+                        else:
+                            instance_sc_loss = 0.0
+                        
+                        if args.contrastive_level in ['bag', 'both']:
+                            bag_embeddings = F.normalize(pooled_embeddings, p=2, dim=-1).unsqueeze(1)
+                            sc_criterion = SupConLoss(temperature=args.sc_mil_temp)
+                            bag_sc_loss = sc_criterion(bag_embeddings, labels)
+                        else:
+                            bag_sc_loss = 0.0
+                        
+                        # Classification losses
+                        num_crops = crop_embeddings.shape[1]
+                        instance_labels = labels.repeat_interleave(num_crops)
+                        instance_weights = class_weights[instance_labels]
+                        instance_focal = weighted_focal_loss(
+                            instance_logits.view(-1, num_classes),
+                            instance_labels,
+                            instance_weights
+                        )
+                        bag_focal = weighted_focal_loss(outputs, labels, class_weights[labels])
+                        
+                        w = args.instance_weight
+                        total_focal = w * instance_focal + (1 - w) * bag_focal
+                        total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
+                        loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                        
+                        _, predicted = outputs.max(1)
+                        total += labels.size(0)
+                        correct += predicted.eq(labels).sum().item()
                 
                 sc_mil_scaler.scale(loss).backward()
                 sc_mil_scaler.step(sc_mil_optimizer)
                 sc_mil_scaler.update()
                 
-                run_cl_loss += total_sc.item()
-                run_ce_loss += total_focal.item()
-                _, predicted = outputs.max(1)
-                total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
+                run_cl_loss += total_sc.item() if isinstance(total_sc, torch.Tensor) else total_sc
+                run_ce_loss += total_focal.item() if isinstance(total_focal, torch.Tensor) else total_focal
             
             sc_mil_scheduler.step()
             
@@ -832,27 +979,68 @@ def train_single_fold(test_plate: str) -> None:
             val_cl_loss, val_ce_loss = 0.0, 0.0
             val_correct, val_total = 0, 0
             all_val_preds, all_val_probs, all_val_labels = [], [], []
+            drug_val_preds, drug_val_probs, drug_val_labels = [], [], []
+            mutant_val_preds, mutant_val_probs, mutant_val_labels = [], [], []
             
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-                for images, labels in tqdm(val_loader, desc='Validating', leave=False):
-                    images, labels = images.to(device), labels.to(device)
-                    outputs, _ = model(images, return_attention=True)
-                    probs = torch.softmax(outputs, dim=1)
-                    _, predicted = outputs.max(1)
-                    all_val_preds.extend(predicted.cpu().numpy())
-                    all_val_probs.extend(probs.cpu().numpy())
-                    all_val_labels.extend(labels.cpu().numpy())
-                    val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
-                    val_ce_loss += val_loss.item()
-                    val_correct += predicted.eq(labels).sum().item()
-                    val_total += labels.size(0)
+                for batch in tqdm(val_loader, desc='Validating', leave=False):
+                    images = batch[0].to(device)
+                    labels = batch[1].to(device)
+                    domains = batch[2].to(device) if len(batch) > 2 else None
+                    
+                    if args.dual_classifier and args.data_mode == 'both':
+                        proj_emb = model.get_projected_features(images)
+                        drug_logits = model.drug_classifier(proj_emb)
+                        mutant_logits = model.mutant_classifier(proj_emb)
+                        
+                        drug_mask = domains == 0
+                        mutant_mask = domains == 1
+                        
+                        if drug_mask.any():
+                            drug_probs = torch.softmax(drug_logits[drug_mask], dim=1)
+                            drug_pred = drug_logits[drug_mask].argmax(1)
+                            drug_val_preds.extend(drug_pred.cpu().numpy())
+                            drug_val_probs.extend(drug_probs.cpu().numpy())
+                            drug_val_labels.extend(labels[drug_mask].cpu().numpy())
+                            val_correct += drug_pred.eq(labels[drug_mask]).sum().item()
+                            val_loss = weighted_focal_loss(drug_logits[drug_mask], labels[drug_mask], drug_weights[labels[drug_mask]])
+                            val_ce_loss += val_loss.item()
+                        
+                        if mutant_mask.any():
+                            mutant_probs = torch.softmax(mutant_logits[mutant_mask], dim=1)
+                            mutant_pred = mutant_logits[mutant_mask].argmax(1)
+                            mutant_val_preds.extend(mutant_pred.cpu().numpy())
+                            mutant_val_probs.extend(mutant_probs.cpu().numpy())
+                            mutant_val_labels.extend(labels[mutant_mask].cpu().numpy())
+                            val_correct += mutant_pred.eq(labels[mutant_mask]).sum().item()
+                            val_loss = weighted_focal_loss(mutant_logits[mutant_mask], labels[mutant_mask], mutant_weights[labels[mutant_mask]])
+                            val_ce_loss += val_loss.item()
+                        
+                        val_total += labels.size(0)
+                    else:
+                        outputs, _ = model(images, return_attention=True)
+                        probs = torch.softmax(outputs, dim=1)
+                        _, predicted = outputs.max(1)
+                        all_val_preds.extend(predicted.cpu().numpy())
+                        all_val_probs.extend(probs.cpu().numpy())
+                        all_val_labels.extend(labels.cpu().numpy())
+                        val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
+                        val_ce_loss += val_loss.item()
+                        val_correct += predicted.eq(labels).sum().item()
+                        val_total += labels.size(0)
             
             val_acc = 100. * val_correct / val_total
-            unique_val_classes = np.unique(np.array(all_val_labels))
-            val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
             avg_val_ce_loss = val_ce_loss / len(val_loader)
             
-            print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon Loss={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+            # Per-domain AUC for dual classifier (separate prob dimensions)
+            if args.dual_classifier and args.data_mode == 'both':
+                drug_val_auc = compute_robust_auc(drug_val_labels, drug_val_probs, num_drug_classes)
+                mutant_val_auc = compute_robust_auc(mutant_val_labels, mutant_val_probs, num_mutant_classes)
+                val_auc = (drug_val_auc + mutant_val_auc) / 2 if not (np.isnan(drug_val_auc) or np.isnan(mutant_val_auc)) else float('nan')
+                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Drug AUC={drug_val_auc:.4f}, Mutant AUC={mutant_val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+            else:
+                val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
+                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
             
             # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
@@ -860,7 +1048,10 @@ def train_single_fold(test_plate: str) -> None:
             # Save metrics to CSV
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                if args.dual_classifier and args.data_mode == 'both':
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, drug_val_auc, mutant_val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                else:
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, '', '', sc_mil_optimizer.param_groups[0]['lr']])
             
             # TensorBoard logging - 2 cards only (SC-MIL)
             # Card 1: Train CE Loss + Val CE Loss
@@ -898,22 +1089,41 @@ def train_single_fold(test_plate: str) -> None:
             model.train()
             run_loss, correct, total = 0.0, 0, 0
             
-            for images, labels in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
-                images, labels = images.to(device), labels.to(device)
+            for batch in tqdm(train_loader, desc=f'Epoch {epoch}', leave=False):
+                images = batch[0].to(device)
+                labels = batch[1].to(device)
+                domains = batch[2].to(device) if len(batch) > 2 else None
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    outputs, attn_weights = model(images, return_attention=True)
-                    
-                    # SC-MIL loss: weighted focal loss + optional entropy regularization
-                    main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                    
-                    # Add attention entropy loss if specified (AEM - Attention Entropy Maximization)
-                    if args.entropy_loss_weight > 0:
-                        attn_ent_loss = attention_entropy_loss(attn_weights)
-                        loss = main_loss + args.entropy_loss_weight * attn_ent_loss
-                    else:
+                    if args.dual_classifier and args.data_mode == 'both':
+                        proj_emb = model.get_projected_features(images)
+                        drug_logits = model.drug_classifier(proj_emb)
+                        mutant_logits = model.mutant_classifier(proj_emb)
+                        drug_mask = domains == 0
+                        mutant_mask = domains == 1
+                        main_loss = 0.0
+                        if drug_mask.any():
+                            main_loss += weighted_focal_loss(drug_logits[drug_mask], labels[drug_mask], drug_weights[labels[drug_mask]], label_smoothing=args.label_smoothing)
+                        if mutant_mask.any():
+                            main_loss += weighted_focal_loss(mutant_logits[mutant_mask], labels[mutant_mask], mutant_weights[labels[mutant_mask]], label_smoothing=args.label_smoothing)
                         loss = main_loss
+                        if drug_mask.any():
+                            correct += drug_logits[drug_mask].argmax(1).eq(labels[drug_mask]).sum().item()
+                        if mutant_mask.any():
+                            correct += mutant_logits[mutant_mask].argmax(1).eq(labels[mutant_mask]).sum().item()
+                        total += labels.size(0)
+                    else:
+                        outputs, attn_weights = model(images, return_attention=True)
+                        main_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                        if args.entropy_loss_weight > 0:
+                            attn_ent_loss = attention_entropy_loss(attn_weights)
+                            loss = main_loss + args.entropy_loss_weight * attn_ent_loss
+                        else:
+                            loss = main_loss
+                        _, predicted = outputs.max(1)
+                        total += labels.size(0)
+                        correct += predicted.eq(labels).sum().item()
                 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -921,10 +1131,7 @@ def train_single_fold(test_plate: str) -> None:
                 scaler.step(optimizer)
                 scaler.update()
                 
-                run_loss += main_loss.item()
-                _, predicted = outputs.max(1)
-                total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
+                run_loss += main_loss.item() if isinstance(main_loss, torch.Tensor) else main_loss
         
         scheduler.step()
         
@@ -934,31 +1141,66 @@ def train_single_fold(test_plate: str) -> None:
         model.eval()
         val_loss_total = 0.0
         all_preds, all_probs, all_labels = [], [], []
+        drug_val_preds, drug_val_probs, drug_val_labels = [], [], []
+        mutant_val_preds, mutant_val_probs, mutant_val_labels = [], [], []
         
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-            for images, labels in tqdm(val_loader, desc='Validating', leave=False):
-                images, labels = images.to(device), labels.to(device)
-                outputs, _ = model(images, return_attention=True)
-                probs = torch.softmax(outputs, dim=1)
-                _, predicted = outputs.max(1)
-                all_preds.extend(predicted.cpu().numpy())
-                all_probs.extend(probs.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
-                val_loss_total += val_loss.item()
+            for batch in tqdm(val_loader, desc='Validating', leave=False):
+                images = batch[0].to(device)
+                labels = batch[1].to(device)
+                domains = batch[2].to(device) if len(batch) > 2 else None
+                
+                if args.dual_classifier and args.data_mode == 'both':
+                    proj_emb = model.get_projected_features(images)
+                    drug_logits = model.drug_classifier(proj_emb)
+                    mutant_logits = model.mutant_classifier(proj_emb)
+                    drug_mask = domains == 0
+                    mutant_mask = domains == 1
+                    if drug_mask.any():
+                        drug_probs = torch.softmax(drug_logits[drug_mask], dim=1)
+                        drug_pred = drug_logits[drug_mask].argmax(1)
+                        drug_val_preds.extend(drug_pred.cpu().numpy())
+                        drug_val_probs.extend(drug_probs.cpu().numpy())
+                        drug_val_labels.extend(labels[drug_mask].cpu().numpy())
+                        all_preds.extend(drug_pred.cpu().numpy())
+                        all_labels.extend(labels[drug_mask].cpu().numpy())
+                        val_loss = weighted_focal_loss(drug_logits[drug_mask], labels[drug_mask], drug_weights[labels[drug_mask]], label_smoothing=args.label_smoothing)
+                        val_loss_total += val_loss.item()
+                    if mutant_mask.any():
+                        mutant_probs = torch.softmax(mutant_logits[mutant_mask], dim=1)
+                        mutant_pred = mutant_logits[mutant_mask].argmax(1)
+                        mutant_val_preds.extend(mutant_pred.cpu().numpy())
+                        mutant_val_probs.extend(mutant_probs.cpu().numpy())
+                        mutant_val_labels.extend(labels[mutant_mask].cpu().numpy())
+                        all_preds.extend(mutant_pred.cpu().numpy())
+                        all_labels.extend(labels[mutant_mask].cpu().numpy())
+                        val_loss = weighted_focal_loss(mutant_logits[mutant_mask], labels[mutant_mask], mutant_weights[labels[mutant_mask]], label_smoothing=args.label_smoothing)
+                        val_loss_total += val_loss.item()
+                else:
+                    outputs, _ = model(images, return_attention=True)
+                    probs = torch.softmax(outputs, dim=1)
+                    _, predicted = outputs.max(1)
+                    all_preds.extend(predicted.cpu().numpy())
+                    all_probs.extend(probs.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
+                    val_loss = weighted_focal_loss(outputs, labels, class_weights[labels], label_smoothing=args.label_smoothing)
+                    val_loss_total += val_loss.item()
         
         val_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
-        unique_val_classes = np.unique(np.array(all_labels))
-        val_auc = compute_robust_auc(all_labels, all_probs, num_classes)
         avg_val_loss = val_loss_total / len(val_loader)
         
         backbone_lr = optimizer.param_groups[0]['lr']
         classifier_lr = optimizer.param_groups[1]['lr']
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
-        with open(csv_path, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, backbone_lr, classifier_lr])
+        # Per-domain AUC for dual classifier
+        if args.dual_classifier and args.data_mode == 'both':
+            drug_val_auc = compute_robust_auc(drug_val_labels, drug_val_probs, num_drug_classes)
+            mutant_val_auc = compute_robust_auc(mutant_val_labels, mutant_val_probs, num_mutant_classes)
+            val_auc = (drug_val_auc + mutant_val_auc) / 2 if not (np.isnan(drug_val_auc) or np.isnan(mutant_val_auc)) else float('nan')
+            print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Drug AUC={drug_val_auc:.4f}, Mutant AUC={mutant_val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
+        else:
+            val_auc = compute_robust_auc(all_labels, all_probs, num_classes)
+            print(f"Epoch {epoch}: Train Loss={avg_train_loss:.4f}, Train Acc={train_acc:.2f}%, Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Backbone LR={backbone_lr:.2e}, Classifier LR={classifier_lr:.2e}, Time={time.time()-epoch_start:.1f}s")
         
         # TensorBoard logging - 2 cards only
         # Card 1: Train Loss + Val Loss
@@ -979,6 +1221,14 @@ def train_single_fold(test_plate: str) -> None:
             best_val_loss = avg_val_loss
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
         
+        # Log metrics to CSV
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if args.dual_classifier and args.data_mode == 'both':
+                writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, drug_val_auc, mutant_val_auc, backbone_lr, classifier_lr])
+            else:
+                writer.writerow([epoch, avg_train_loss, train_acc, avg_val_loss, val_acc, val_auc, '', '', backbone_lr, classifier_lr])
+        
         if (epoch + 1) % args.checkpoint_every == 0:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
     
@@ -988,28 +1238,72 @@ def train_single_fold(test_plate: str) -> None:
     model.eval()
     
     all_preds, all_probs, all_labels = [], [], []
+    drug_test_preds, drug_test_probs, drug_test_labels = [], [], []
+    mutant_test_preds, mutant_test_probs, mutant_test_labels = [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
-        for images, labels in tqdm(test_loader, desc='Testing', leave=False):
-            images = images.to(device)
-            outputs, _ = model(images, return_attention=True)
-            probs = torch.softmax(outputs, dim=1)
-            _, predicted = outputs.max(1)
-            all_preds.extend(predicted.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(labels.numpy())
+        for batch in tqdm(test_loader, desc='Testing', leave=False):
+            images = batch[0].to(device)
+            labels = batch[1].to(device)
+            domains = batch[2].to(device) if len(batch) > 2 else None
+            
+            if args.dual_classifier and args.data_mode == 'both':
+                proj_emb = model.get_projected_features(images)
+                drug_logits = model.drug_classifier(proj_emb)
+                mutant_logits = model.mutant_classifier(proj_emb)
+                
+                drug_mask = domains == 0
+                mutant_mask = domains == 1
+                
+                if drug_mask.any():
+                    drug_probs = torch.softmax(drug_logits[drug_mask], dim=1)
+                    drug_pred = drug_logits[drug_mask].argmax(1)
+                    drug_test_preds.extend(drug_pred.cpu().numpy())
+                    drug_test_probs.extend(drug_probs.cpu().numpy())
+                    drug_test_labels.extend(labels[drug_mask].cpu().numpy())
+                    all_preds.extend(drug_pred.cpu().numpy())
+                    all_labels.extend(labels[drug_mask].cpu().numpy())
+                
+                if mutant_mask.any():
+                    mutant_probs = torch.softmax(mutant_logits[mutant_mask], dim=1)
+                    mutant_pred = mutant_logits[mutant_mask].argmax(1)
+                    mutant_test_preds.extend(mutant_pred.cpu().numpy())
+                    mutant_test_probs.extend(mutant_probs.cpu().numpy())
+                    mutant_test_labels.extend(labels[mutant_mask].cpu().numpy())
+                    all_preds.extend(mutant_pred.cpu().numpy())
+                    all_labels.extend(labels[mutant_mask].cpu().numpy())
+            else:
+                outputs, _ = model(images, return_attention=True)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+                all_preds.extend(predicted.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
     
     test_acc = 100. * np.mean(np.array(all_preds) == np.array(all_labels))
-    test_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
-    test_auc = roc_auc_score(test_labels_bin, np.array(all_probs), average='macro')
-    test_ap = average_precision_score(test_labels_bin, np.array(all_probs), average='macro')
     
-    print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.4f}")
+    if args.dual_classifier and args.data_mode == 'both':
+        drug_test_auc = compute_robust_auc(drug_test_labels, drug_test_probs, num_drug_classes)
+        mutant_test_auc = compute_robust_auc(mutant_test_labels, mutant_test_probs, num_mutant_classes)
+        test_auc = (drug_test_auc + mutant_test_auc) / 2 if not (np.isnan(drug_test_auc) or np.isnan(mutant_test_auc)) else float('nan')
+        print(f"Test Acc: {test_acc:.2f}%, Drug AUC: {drug_test_auc:.4f}, Mutant AUC: {mutant_test_auc:.4f}")
+    else:
+        test_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+        test_auc = roc_auc_score(test_labels_bin, np.array(all_probs), average='macro')
+        test_ap = average_precision_score(test_labels_bin, np.array(all_probs), average='macro')
+        print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.4f}")
     
-    results = {
-        'timestamp': timestamp,
-        'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': test_plate, 'dropout': args.dropout, 'weight_decay': args.weight_decay, 'neighborhood': args.neighborhood},
-        'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
-    }
+    if args.dual_classifier and args.data_mode == 'both':
+        results = {
+            'timestamp': timestamp,
+            'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': test_plate, 'dropout': args.dropout, 'weight_decay': args.weight_decay, 'neighborhood': args.neighborhood, 'dual_classifier': True, 'num_drug_classes': num_drug_classes, 'num_mutant_classes': num_mutant_classes},
+            'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'drug_test_auc': float(drug_test_auc), 'mutant_test_auc': float(mutant_test_auc)}
+        }
+    else:
+        results = {
+            'timestamp': timestamp,
+            'config': {'epochs': args.epochs, 'batch_size': args.batch_size, 'lr': args.lr, 'test_plate': test_plate, 'dropout': args.dropout, 'weight_decay': args.weight_decay, 'neighborhood': args.neighborhood},
+            'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc), 'test_auc': float(test_auc), 'test_ap': float(test_ap)}
+        }
     
     with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
         json.dump(results, f, indent=2)

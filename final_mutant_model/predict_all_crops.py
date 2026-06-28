@@ -9,6 +9,8 @@ Supports configurable crop neighborhood: 3x3, 5x5, 7x7, 9x9, 11x11
 import os
 import sys
 import json
+import glob
+import shutil
 import argparse
 from typing import Optional
 
@@ -35,7 +37,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Predict all crops for final_mutant_model')
     parser.add_argument('--fold', type=str, default=None,
                         help='Fold to predict (e.g., P6). If not specified, uses P6.')
-    parser.add_argument('--data_mode', type=str, default='drug', choices=['drug', 'mutant', 'both'],
+    parser.add_argument('--data_mode', type=str, default='drug', choices=['drug', 'mutant', 'both', 'control'],
                         help='Data mode: drug (Drugs_Data), mutant (Mutants_Data), both')
     parser.add_argument('--drug_no_concentration', action='store_true', default=False,
                         help='Group drugs by antibiotic name only, ignoring concentration levels')
@@ -62,8 +64,8 @@ def main() -> None:
                         help='Random seed for sampling')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='Batch size for inference')
-    parser.add_argument('--checkpoint', type=str, default='best_model_acc.pth',
-                        help='Checkpoint filename to use (best_model_acc.pth, best_model_auc.pth, best_model_loss.pth)')
+    parser.add_argument('--checkpoint', type=str, default='checkpoint_epoch.pth',
+                        help='Checkpoint filename (checkpoint_epoch.pth, best_model_acc.pth, best_model_auc.pth, best_model_loss.pth)')
     parser.add_argument('--data_root', type=str, default=None,
                         help='Path to parent folder containing P1-P6 (default: parent of script dir)')
     parser.add_argument('--use_sc_mil', action='store_true',
@@ -96,6 +98,10 @@ def main() -> None:
                         help='Filter to specific guide number (e.g. 1 for guide 1) in mutant mode')
     parser.add_argument('--edge_sigma', type=float, default=None,
                         help='Apply Canny edge detection with given sigma before normalization (e.g., 2.0)')
+    parser.add_argument('--dual_classifier', action='store_true', default=False,
+                        help='Use dual classifier model (separate drug/mutant heads)')
+    parser.add_argument('--save_embeddings', action='store_true', default=True,
+                        help='Save projected embeddings as .npy files (default: True)')
     
     args: argparse.Namespace = parser.parse_args()
     
@@ -112,17 +118,23 @@ def main() -> None:
         data_mode_folder = f"canny_{data_mode_folder}"
     
     # Load JSON mappings based on data_mode
-    if args.data_mode in ['drug', 'both']:
+    if args.data_mode in ['drug', 'both', 'control']:
         with open(os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json'), 'r') as f:
             IC50_DATA: dict = json.load(f)
     else:
         IC50_DATA = {}
     
-    if args.data_mode in ['mutant', 'both']:
+    if args.data_mode in ['mutant', 'both', 'control']:
         with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json'), 'r') as f:
             MUTANT_DATA: dict = json.load(f)
     else:
         MUTANT_DATA = {}
+    
+    if args.data_mode == 'control':
+        with open(os.path.join(SCRIPT_DIR, 'plate_well_control_id_path.json'), 'r') as f:
+            CONTROL_DATA: dict = json.load(f)
+    else:
+        CONTROL_DATA = {}
     
     # Handle --drug_on_mutant: use drug model on mutant images
     if args.drug_on_mutant:
@@ -164,8 +176,24 @@ def main() -> None:
         BASE_DIR: str = args.data_root
     elif actual_data_mode == 'drug':
         BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data')
+    elif actual_data_mode == 'control':
+        BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Controls_Data')
+    elif actual_data_mode == 'both':
+        BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data')
+        DRUGS_BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Drugs_Data')
     else:
         BASE_DIR: str = os.path.join(os.path.dirname(SCRIPT_DIR), 'Mutants_Data')
+    
+    # For control mode, search all 3 data directories
+    if actual_data_mode == 'control':
+        PARENT_DIR = os.path.dirname(SCRIPT_DIR)
+        CONTROL_SEARCH_DIRS = [
+            (os.path.join(PARENT_DIR, 'Controls_Data'), 'controls_data'),
+            (os.path.join(PARENT_DIR, 'Mutants_Data'), 'mutants_data'),
+            (os.path.join(PARENT_DIR, 'Drugs_Data'), 'drugs_data'),
+        ]
+    else:
+        CONTROL_SEARCH_DIRS = []
     
     crop_size: int = args.crop_size
     grid_size: int = args.grid_size
@@ -235,6 +263,26 @@ def main() -> None:
                     if 'id' in info:
                         mutant_classes.add(info['id'])
         all_classes = sorted(mutant_classes)
+    # For control mode: combine controls + mutant NC/WT + drug control
+    elif args.data_mode == 'control':
+        control_classes: set = set()
+        for plate, rows in CONTROL_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        control_classes.add(info['id'])
+        mutant_nc_classes: set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info and (info['id'].startswith('NC_') or info['id'].startswith('WT NC_')):
+                        mutant_nc_classes.add(info['id'])
+        drug_control_class: set = set()
+        for plate, wells in IC50_DATA.items():
+            for well, info in wells.items():
+                if info.get('ic50_multiple') == 'control':
+                    drug_control_class.add('drug_control')
+        all_classes = sorted(control_classes | mutant_nc_classes | drug_control_class)
     else:  # both
         drug_classes: set = set()
         for plate, wells in IC50_DATA.items():
@@ -261,6 +309,39 @@ def main() -> None:
                         mutant_classes.add(info['id'])
         all_classes = sorted(drug_classes | mutant_classes)
         all_classes = sorted(drug_classes | mutant_classes)
+    
+    # ============ DUAL CLASSIFIER: domain-specific label maps ============
+    dual_drug_classes = []
+    dual_mutant_classes = []
+    dual_drug_class_to_idx = {}
+    dual_mutant_class_to_idx = {}
+    if args.data_mode == 'both':
+        drug_set = set()
+        for plate, wells in IC50_DATA.items():
+            for well, info in wells.items():
+                antibiotic = info.get('antibiotic', '')
+                ic50_multiple = info.get('ic50_multiple', '')
+                if antibiotic and ic50_multiple:
+                    if args.drug_no_concentration:
+                        drug_set.add(antibiotic.replace(' ', '_'))
+                    else:
+                        if ic50_multiple == 'control':
+                            drug_set.add('control')
+                        else:
+                            ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                            antibiotic_clean = antibiotic.replace(' ', '_')
+                            drug_set.add(f"{antibiotic_clean}_{ic50_str}")
+        mutant_set = set()
+        for plate, rows in MUTANT_DATA.items():
+            for row, cols in rows.items():
+                for col, info in cols.items():
+                    if 'id' in info:
+                        mutant_set.add(info['id'])
+        dual_drug_classes = sorted(drug_set)
+        dual_mutant_classes = sorted(mutant_set)
+        dual_drug_class_to_idx = {c: i for i, c in enumerate(dual_drug_classes)}
+        dual_mutant_class_to_idx = {c: i for i, c in enumerate(dual_mutant_classes)}
+        print(f"Dual classifier mode: {len(dual_drug_classes)} drug + {len(dual_mutant_classes)} mutant classes")
     
     # Filter to specific guide if requested
     if args.guide is not None:
@@ -327,31 +408,35 @@ def main() -> None:
             # Direct path provided
             checkpoint_path = args.checkpoint
         else:
-            # For drug_on_mutant, load checkpoint from drug folder
+            # Determine checkpoint folder based on cross-domain flags
             if args.drug_on_mutant:
                 checkpoint_folder = 'drug'
-                # Convert Plate_X format for checkpoint folder
-                if 'Plate_' in test_plate:
-                    fold_key = test_plate  # keep as Plate_1
-                else:
-                    fold_key = f'Plate_{test_plate.replace("P", "")}'
-            # For mutant_on_drug, load checkpoint from mutant folder
             elif args.mutant_on_drug:
                 checkpoint_folder = 'mutant'
-                # Convert Plate_X format for checkpoint folder
-                if 'Plate_' in test_plate:
-                    fold_key = test_plate  # keep as Plate_1
-                else:
-                    fold_key = f'Plate_{test_plate.replace("P", "")}'
             else:
-                # Convert P1 -> Plate_1, P2 -> Plate_2 for folder lookup
                 checkpoint_folder = data_mode_folder
-                if 'Plate_' in test_plate:
-                    fold_key = test_plate
-                else:
-                    fold_key = f'Plate_{test_plate.replace("P", "")}'
-            fold_dir = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key}')
-            checkpoint_path = os.path.join(fold_dir, args.checkpoint)
+            
+            # Normalize test_plate to both P6 and Plate_6 formats
+            if 'Plate_' in test_plate:
+                fold_key_plate = test_plate
+                fold_key_p = f"P{test_plate.split('_')[-1]}"
+            else:
+                fold_key_p = test_plate
+                fold_key_plate = f'Plate_{test_plate.replace("P", "")}'
+            
+            # Try fold_P6 first, then fold_Plate_6
+            fold_dir_p = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key_p}')
+            fold_dir_plate = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key_plate}')
+            
+            checkpoint_candidate_p = os.path.join(fold_dir_p, args.checkpoint)
+            checkpoint_candidate_plate = os.path.join(fold_dir_plate, args.checkpoint)
+            
+            if os.path.exists(checkpoint_candidate_p):
+                checkpoint_path = checkpoint_candidate_p
+            elif os.path.exists(checkpoint_candidate_plate):
+                checkpoint_path = checkpoint_candidate_plate
+            else:
+                checkpoint_path = checkpoint_candidate_p  # will fail with helpful error below
     
         # Determine fold_key for folder lookup (P1 -> fold_Plate_1, Plate_1 -> fold_Plate_1)
         if 'Plate_' in test_plate:
@@ -365,7 +450,11 @@ def main() -> None:
         print(f'\n{"="*60}')
         print(f'Processing fold: test plate={test_plate}')
         print(f'  checkpoint: {checkpoint_path}')
-        print(f'  image_dir: {image_dir}')
+        if actual_data_mode == 'control':
+            for search_dir, _ in CONTROL_SEARCH_DIRS:
+                print(f'  search_dir: {os.path.join(search_dir, image_plate_key)}')
+        else:
+            print(f'  image_dir: {image_dir}')
         print(f'  mil_mode: {mil_mode}')
         print(f'  neighborhood: {neighborhood}x{neighborhood} ({num_crops_per_position} crops per position)')
         print(f'{"="*60}')
@@ -384,21 +473,50 @@ def main() -> None:
             return
     
         checkpoint: dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        state_dict = checkpoint['model_state_dict']
     
-        has_contrastive = any('contrastive_head' in k for k in checkpoint['model_state_dict'].keys())
+        has_contrastive = any('contrastive_head' in k for k in state_dict.keys())
         print(f'  sc_mil_checkpoint: {has_contrastive}')
         use_sc_mil = has_contrastive or args.use_sc_mil
+        
+        # Auto-detect dual classifier from checkpoint
+        is_dual = 'drug_classifier.weight' in state_dict
+        if is_dual:
+            num_drug_classes_ckpt = state_dict['drug_classifier.weight'].shape[0]
+            num_mutant_classes_ckpt = state_dict['mutant_classifier.weight'].shape[0]
+            # Detect projector dimension from first Linear weight shape
+            if 'projector.0.weight' in state_dict:
+                proj_dim_ckpt = state_dict['projector.0.weight'].shape[0]
+            else:
+                proj_dim_ckpt = 256
+            print(f'  dual_classifier checkpoint detected: {num_drug_classes_ckpt} drug + {num_mutant_classes_ckpt} mutant, proj_dim={proj_dim_ckpt}')
     
-        model: MILEncoder = MILEncoder(
-            num_classes=num_classes, 
-            num_heads=args.num_heads, 
-            attention_temp=0.5, 
-            dropout=args.dropout,
-            use_contrastive=use_sc_mil,
-            num_channels=args.num_channels,
-            pretrained=args.pretrained,
-            pooling=args.pooling
-        )
+        if is_dual:
+            model: MILEncoder = MILEncoder(
+                num_classes=num_classes,
+                num_heads=args.num_heads,
+                attention_temp=0.5,
+                dropout=args.dropout,
+                use_contrastive=use_sc_mil,
+                num_channels=args.num_channels,
+                pretrained=args.pretrained,
+                pooling=args.pooling,
+                dual_classifier=True,
+                num_drug_classes=num_drug_classes_ckpt,
+                num_mutant_classes=num_mutant_classes_ckpt,
+                proj_dim=proj_dim_ckpt,
+            )
+        else:
+            model: MILEncoder = MILEncoder(
+                num_classes=num_classes, 
+                num_heads=args.num_heads, 
+                attention_temp=0.5, 
+                dropout=args.dropout,
+                use_contrastive=use_sc_mil,
+                num_channels=args.num_channels,
+                pretrained=args.pretrained,
+                pooling=args.pooling
+            )
         model = model.to(device)
     
         # For cross-domain, filter classifier weights to avoid dimension mismatch
@@ -677,43 +795,89 @@ def main() -> None:
                     return well_str
             return None
 
-        def get_ground_truth_label(plate: str, well: Optional[str]) -> Optional[str]:
+        def get_ground_truth_label(plate: str, well: Optional[str], img_path: str = '') -> Optional[str]:
             """Get ground truth label from appropriate JSON based on data_mode."""
             if not well:
                 return None
         
-            # For mutant mode OR drug_on_mutant mode, use MUTANT_DATA for ground truth
-            if (args.data_mode in ['mutant', 'both'] or args.drug_on_mutant):
-                # Convert plate: 'Plate_1' -> 'P1', 'P1' -> 'P1'
-                if 'Plate_' in plate:
-                    plate_key = 'P' + plate.split('_')[-1]
-                else:
-                    plate_key = plate
+            # Convert plate: 'Plate_1' -> 'P1', 'P1' -> 'P1'
+            if 'Plate_' in plate:
+                plate_key = 'P' + plate.split('_')[-1]
+            else:
+                plate_key = plate
+        
+            if args.data_mode == 'control':
+                # Determine source from image path
+                path_lower = img_path.lower()
+                # Controls_Data (well "A01" → row="A", col="1" for JSON lookup)
+                if '/controls_data/' in path_lower or '\\controls_data\\' in path_lower:
+                    row_c: str = well[0]
+                    col_c: str = str(int(well[1:]))
+                    if plate_key in CONTROL_DATA and row_c in CONTROL_DATA[plate_key] and col_c in CONTROL_DATA[plate_key][row_c]:
+                        info = CONTROL_DATA[plate_key][row_c][col_c]
+                        if 'id' in info:
+                            return info['id']
+                # Mutants_Data (NC_* / WT NC_*)
+                if '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
+                    row: str = well[0]
+                    col: str = well[1:].lstrip('0') or '0'
+                    if plate_key in MUTANT_DATA and row in MUTANT_DATA[plate_key]:
+                        if col in MUTANT_DATA[plate_key][row]:
+                            mid = MUTANT_DATA[plate_key][row][col].get('id', None)
+                            if mid and (mid.startswith('NC_') or mid.startswith('WT NC_')):
+                                return mid
+                # Drugs_Data (DMSO/control)
+                if '/drugs_data/' in path_lower or '\\drugs_data\\' in path_lower:
+                    if plate_key in IC50_DATA and well in IC50_DATA[plate_key]:
+                        info = IC50_DATA[plate_key][well]
+                        if info.get('ic50_multiple') == 'control':
+                            return 'drug_control'
+                return None
+        
+            # For both mode, route by image path to avoid cross-domain label pollution
+            if args.data_mode == 'both':
+                path_lower = img_path.lower()
+                if '/drugs_data/' in path_lower or '\\drugs_data\\' in path_lower:
+                    if plate_key in IC50_DATA and well in IC50_DATA[plate_key]:
+                        info = IC50_DATA[plate_key][well]
+                        antibiotic = info.get('antibiotic', '')
+                        ic50_multiple = info.get('ic50_multiple', '')
+                        if antibiotic and ic50_multiple:
+                            if args.drug_no_concentration:
+                                return antibiotic.replace(' ', '_')
+                            else:
+                                if ic50_multiple == 'control':
+                                    return 'control'
+                                ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
+                                antibiotic_clean = antibiotic.replace(' ', '_')
+                                return f"{antibiotic_clean}_{ic50_str}"
+                    return None
+                elif '/mutants_data/' in path_lower or '\\mutants_data\\' in path_lower:
+                    row_m: str = well[0]
+                    col_m: str = well[1:].lstrip('0') or '0'
+                    if plate_key in MUTANT_DATA and row_m in MUTANT_DATA[plate_key]:
+                        if col_m in MUTANT_DATA[plate_key][row_m]:
+                            return MUTANT_DATA[plate_key][row_m][col_m].get('id', None)
+                    return None
             
+            # For mutant mode OR drug_on_mutant mode (both handled above)
+            if (args.data_mode in ['mutant'] or args.drug_on_mutant):
                 row: str = well[0]
-                col: str = well[1:].lstrip('0') or '0'  # Fix: strip leading zeros (A01 -> col='1', not '01')
+                col: str = well[1:].lstrip('0') or '0'
                 if plate_key in MUTANT_DATA and row in MUTANT_DATA[plate_key]:
                     if col in MUTANT_DATA[plate_key][row]:
                         return MUTANT_DATA[plate_key][row][col].get('id', None)
-        
-            # For drug mode OR mutant_on_drug mode, use IC50_DATA for ground truth
-            if (args.data_mode in ['drug', 'both'] or args.mutant_on_drug):
-                # Convert plate: 'Plate_1' -> 'P1', 'P1' -> 'P1'
-                if 'Plate_' in plate:
-                    plate_key = 'P' + plate.split('_')[-1]
-                else:
-                    plate_key = plate
             
+            # For drug mode OR mutant_on_drug mode (both handled above)
+            if (args.data_mode in ['drug'] or args.mutant_on_drug):
                 if plate_key in IC50_DATA and well in IC50_DATA[plate_key]:
                     info = IC50_DATA[plate_key][well]
                     antibiotic = info.get('antibiotic', '')
                     ic50_multiple = info.get('ic50_multiple', '')
                     if antibiotic and ic50_multiple:
                         if args.drug_no_concentration:
-                            # Group by antibiotic name only (ignore concentration)
                             return antibiotic.replace(' ', '_')
                         else:
-                            # Include concentration in class name
                             if ic50_multiple == 'control':
                                 return 'control'
                             ic50_str = ic50_multiple if 'x' in str(ic50_multiple) else f"{ic50_multiple}x"
@@ -757,7 +921,7 @@ def main() -> None:
                 pooled_probs_np = probs[0].cpu().numpy().tolist()
             
                 well = parse_well_from_filename(img_path)
-                gt_label = get_ground_truth_label(plate, well) if well else None
+                gt_label = get_ground_truth_label(plate, well, img_path) if well else None
                 gt_idx = label_to_idx.get(gt_label, -1) if gt_label else -1
             
                 results.append({
@@ -802,7 +966,7 @@ def main() -> None:
                     crop_tensor, pos_id, local_row, local_col = center_crop
                 
                     well = parse_well_from_filename(img_path)
-                    gt_label = get_ground_truth_label(plate, well) if well else None
+                    gt_label = get_ground_truth_label(plate, well, img_path) if well else None
                     gt_idx = label_to_idx.get(gt_label, -1) if gt_label else -1
                 
                     results.append({
@@ -846,7 +1010,7 @@ def main() -> None:
                         attn_np = attn_weights[j].cpu().numpy().tolist() if attn_weights is not None else []
                     
                         well = parse_well_from_filename(img_path)
-                        gt_label = get_ground_truth_label(plate, well) if well else None
+                        gt_label = get_ground_truth_label(plate, well, img_path) if well else None
                         gt_idx = label_to_idx.get(gt_label, -1) if gt_label else -1
                     
                         results.append({
@@ -938,8 +1102,74 @@ def main() -> None:
         
             return metrics
 
+        # ============ EMBEDDING SAVE HELPERS (dual classifier) ============
+        def _flush_embedding_batch(buffer, out_dir, part_idx):
+            tmp = os.path.join(out_dir, 'embeddings_tmp')
+            os.makedirs(tmp, exist_ok=True)
+            np.save(os.path.join(tmp, f'proj_part_{part_idx:04d}.npy'), np.array([e['proj'] for e in buffer], dtype=np.float32))
+            np.save(os.path.join(tmp, f'labels_part_{part_idx:04d}.npy'), np.array([e['label'] for e in buffer], dtype=np.int32))
+            np.save(os.path.join(tmp, f'preds_part_{part_idx:04d}.npy'), np.array([e['pred'] for e in buffer], dtype=np.int32))
+            np.save(os.path.join(tmp, f'domains_part_{part_idx:04d}.npy'), np.array([e['domain'] for e in buffer], dtype=np.int32))
+        
+        def _merge_embedding_files(out_dir):
+            tmp = os.path.join(out_dir, 'embeddings_tmp')
+            if not os.path.exists(tmp):
+                return
+            for suffix in ['proj', 'labels', 'preds', 'domains']:
+                parts = sorted(glob.glob(os.path.join(tmp, f'{suffix}_part_*.npy')))
+                if parts:
+                    final = np.concatenate([np.load(p) for p in parts], axis=0)
+                    np.save(os.path.join(out_dir, f'{suffix}.npy'), final)
+                    print(f"  Saved {os.path.join(out_dir, f'{suffix}.npy')} ({final.shape[0]} samples)")
+            shutil.rmtree(tmp)
+            print(f"  Merged and cleaned up {tmp}")
+        
+        def get_domain_from_path(path):
+            p = path.lower()
+            if '/drugs_data/' in p or '\\drugs_data\\' in p:
+                return 0
+            return 1
+        
         # Process images - search recursively for tif/tiff files
-        image_paths: list[Path] = sorted(Path(image_dir).rglob('*.tif')) + sorted(Path(image_dir).rglob('*.tiff'))
+        if actual_data_mode == 'control':
+            # Build valid well set for this plate
+            valid_wells_for_plate: set = set()
+            # Controls_Data
+            if image_plate_key in CONTROL_DATA:
+                for row, cols in CONTROL_DATA[image_plate_key].items():
+                    for col, info in cols.items():
+                        if 'id' in info:
+                            well = f"{row}{int(col):02d}"
+                            valid_wells_for_plate.add(f"controls_data_{well}")
+            # Mutants_Data NC/WT NC only
+            if image_plate_key in MUTANT_DATA:
+                for row, cols in MUTANT_DATA[image_plate_key].items():
+                    for col, info in cols.items():
+                        if 'id' in info:
+                            mid = info['id']
+                            if mid.startswith('NC_') or mid.startswith('WT NC_'):
+                                well = f"{row}{int(col):02d}"
+                                valid_wells_for_plate.add(f"mutants_data_{well}")
+            # Drugs_Data DMSO only
+            if image_plate_key in IC50_DATA:
+                for well, info in IC50_DATA[image_plate_key].items():
+                    if info.get('ic50_multiple') == 'control':
+                        valid_wells_for_plate.add(f"drugs_data_{well}")
+
+            image_paths: list[Path] = []
+            for search_dir, source_tag in CONTROL_SEARCH_DIRS:
+                plate_search = os.path.join(search_dir, image_plate_key)
+                if not os.path.exists(plate_search):
+                    continue
+                for fpath in sorted(Path(plate_search).rglob('*.tif')) + sorted(Path(plate_search).rglob('*.tiff')):
+                    well = parse_well_from_filename(str(fpath))
+                    if well and f"{source_tag}_{well}" in valid_wells_for_plate:
+                        image_paths.append(fpath)
+        else:
+            image_paths: list[Path] = sorted(Path(image_dir).rglob('*.tif')) + sorted(Path(image_dir).rglob('*.tiff'))
+            if actual_data_mode == 'both':
+                drug_image_dir = os.path.join(DRUGS_BASE_DIR, image_plate_key)
+                image_paths += sorted(Path(drug_image_dir).rglob('*.tif')) + sorted(Path(drug_image_dir).rglob('*.tiff'))
     
         if args.max_images:
             image_paths = image_paths[:args.max_images]
@@ -948,8 +1178,9 @@ def main() -> None:
         if args.filter_class:
             filtered_paths: list[Path] = []
             for img_path in image_paths:
-                well = parse_well_from_filename(str(img_path))
-                label = get_ground_truth_label(test_plate, well)
+                img_path_str = str(img_path)
+                well = parse_well_from_filename(img_path_str)
+                label = get_ground_truth_label(test_plate, well, img_path_str)
                 if label and args.filter_class in label:
                     filtered_paths.append(img_path)
             image_paths = filtered_paths
@@ -960,8 +1191,9 @@ def main() -> None:
             guide_suffix = f"_{args.guide}"
             filtered_paths: list[Path] = []
             for img_path in image_paths:
-                well = parse_well_from_filename(str(img_path))
-                label = get_ground_truth_label(test_plate, well)
+                img_path_str = str(img_path)
+                well = parse_well_from_filename(img_path_str)
+                label = get_ground_truth_label(test_plate, well, img_path_str)
                 if label and label.endswith(guide_suffix):
                     filtered_paths.append(img_path)
             image_paths = filtered_paths
@@ -975,8 +1207,9 @@ def main() -> None:
             # Group images by their ground truth label
             images_by_label: dict[str, list[Path]] = {}
             for img_path in image_paths:
-                well = parse_well_from_filename(str(img_path))
-                label = get_ground_truth_label(test_plate, well)
+                img_path_str = str(img_path)
+                well = parse_well_from_filename(img_path_str)
+                label = get_ground_truth_label(test_plate, well, img_path_str)
                 if label:
                     if label not in images_by_label:
                         images_by_label[label] = []
@@ -995,13 +1228,151 @@ def main() -> None:
             print(f"Sampled {len(image_paths)} images ({args.sample_per_class} per class)")
     
         print(f"Processing {len(image_paths)} images...")
-    
+
         all_results: list[dict] = []
-    
-        for img_path in tqdm(image_paths, desc=f"Predicting"):
-            img_path_str: str = str(img_path)
-            results: list[dict] = predict_image(model, img_path_str, test_plate, args.batch_size)
-            all_results.extend(results)
+
+        if is_dual and args.save_embeddings:
+            # ── Dual-classifier inference with embedding save + periodic flush ──
+            embedding_buffer: list[dict] = []
+            save_counter = 0
+            SAVE_EVERY = 500
+            os.makedirs(os.path.join(output_dir, 'embeddings_tmp'), exist_ok=True)
+
+            for img_path in tqdm(image_paths, desc=f"Predicting"):
+                img_path_str: str = str(img_path)
+                domain = get_domain_from_path(img_path_str)
+                well = parse_well_from_filename(img_path_str)
+                gt_label_str = get_ground_truth_label(test_plate, well, img_path_str) if well else None
+
+                # Map ground truth to domain-specific index
+                if domain == 0:
+                    gt_domain_idx = dual_drug_class_to_idx.get(gt_label_str, -1) if gt_label_str else -1
+                else:
+                    gt_domain_idx = dual_mutant_class_to_idx.get(gt_label_str, -1) if gt_label_str else -1
+
+                if extraction_mode == 'raster':
+                    all_crops = extract_raster_crops(img_path_str, raster_crop_size, raster_resize_size, raster_num_crops, raster_grid_size)
+                    batch_tensors = torch.stack([c[0] for c in all_crops]).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        proj_emb = model.get_projected_features(batch_tensors)
+                        if domain == 0:
+                            logits = model.drug_classifier(proj_emb)
+                        else:
+                            logits = model.mutant_classifier(proj_emb)
+                    probs = torch.softmax(logits, dim=1)
+                    pred_idx = int(probs[0].argmax().item())
+                    confidence = float(probs[0].max().item())
+                    embedding_buffer.append({
+                        'proj': proj_emb.cpu().numpy()[0].astype(np.float32),
+                        'label': gt_domain_idx,
+                        'pred': pred_idx,
+                        'domain': domain,
+                    })
+                    all_results.append({
+                        'image_path': img_path_str, 'image_name': os.path.basename(img_path_str),
+                        'plate': test_plate, 'well': well, 'domain': 'drug' if domain == 0 else 'mutant',
+                        'ground_truth_label': gt_label_str, 'ground_truth_idx': gt_domain_idx,
+                        'position_index': 0, 'extraction_mode': 'raster', 'num_crops': len(all_crops),
+                        'predicted_class_idx': pred_idx, 'confidence': confidence,
+                        'probs': probs[0].cpu().numpy().tolist(),
+                    })
+                    if len(embedding_buffer) >= SAVE_EVERY:
+                        _flush_embedding_batch(embedding_buffer, output_dir, save_counter)
+                        embedding_buffer.clear()
+                        save_counter += 1
+
+                elif mil_mode:
+                    all_crops = extract_mil_crops(img_path_str, crop_size, grid_size, neighborhood)
+                    n_positions = len(all_crops) // num_crops_per_position
+                    center_idx = num_crops_per_position // 2
+
+                    for pos_idx in range(n_positions):
+                        pos_crops = all_crops[pos_idx * num_crops_per_position:(pos_idx + 1) * num_crops_per_position]
+                        batch_tensors = torch.stack([c[0] for c in pos_crops]).unsqueeze(0).to(device)
+                        with torch.no_grad():
+                            proj_emb = model.get_projected_features(batch_tensors)
+                            if domain == 0:
+                                logits = model.drug_classifier(proj_emb)
+                            else:
+                                logits = model.mutant_classifier(proj_emb)
+                        probs = torch.softmax(logits, dim=1)
+                        pred_idx = int(probs[0].argmax().item())
+                        confidence = float(probs[0].max().item())
+
+                        embedding_buffer.append({
+                            'proj': proj_emb.cpu().numpy()[0].astype(np.float32),
+                            'label': gt_domain_idx,
+                            'pred': pred_idx,
+                            'domain': domain,
+                        })
+
+                        center_crop = pos_crops[center_idx]
+                        crop_tensor, pos_id, local_row, local_col = center_crop
+                        all_results.append({
+                            'image_path': img_path_str, 'image_name': os.path.basename(img_path_str),
+                            'plate': test_plate, 'well': well, 'domain': 'drug' if domain == 0 else 'mutant',
+                            'ground_truth_label': gt_label_str, 'ground_truth_idx': gt_domain_idx,
+                            'position_index': pos_idx, 'neighborhood_size': neighborhood,
+                            'num_crops_per_position': num_crops_per_position,
+                            'local_row': local_row, 'local_col': local_col,
+                            'predicted_class_idx': pred_idx, 'confidence': confidence,
+                            'probs': probs[0].cpu().numpy().tolist(),
+                        })
+
+                        if len(embedding_buffer) >= SAVE_EVERY:
+                            _flush_embedding_batch(embedding_buffer, output_dir, save_counter)
+                            embedding_buffer.clear()
+                            save_counter += 1
+                else:
+                    # Single-crop mode (non-MIL)
+                    all_crops = extract_all_crops(img_path_str, crop_size, grid_size)
+                    for i in range(0, len(all_crops), args.batch_size):
+                        batch_crops = all_crops[i:i+args.batch_size]
+                        batch_tensors = torch.stack([c[0] for c in batch_crops]).to(device)
+                        with torch.no_grad():
+                            proj_emb = model.get_projected_features(batch_tensors.unsqueeze(1))
+                            if domain == 0:
+                                logits = model.drug_classifier(proj_emb)
+                            else:
+                                logits = model.mutant_classifier(proj_emb)
+                        probs = torch.softmax(logits, dim=1)
+                        preds = probs.argmax(dim=1)
+                        for j, (crop_tensor, row, col, crop_idx) in enumerate(batch_crops):
+                            pred_idx = int(preds[j].item())
+                            confidence = float(probs[j].max().item())
+                            embedding_buffer.append({
+                                'proj': proj_emb[j].cpu().numpy().astype(np.float32),
+                                'label': gt_domain_idx,
+                                'pred': pred_idx,
+                                'domain': domain,
+                            })
+                            all_results.append({
+                                'image_path': img_path_str, 'image_name': os.path.basename(img_path_str),
+                                'plate': test_plate, 'well': well, 'domain': 'drug' if domain == 0 else 'mutant',
+                                'ground_truth_label': gt_label_str, 'ground_truth_idx': gt_domain_idx,
+                                'crop_index': crop_idx, 'grid_row': row, 'grid_col': col,
+                                'predicted_class_idx': pred_idx, 'confidence': confidence,
+                                'probs': probs[j].cpu().numpy().tolist(),
+                            })
+                            if len(embedding_buffer) >= SAVE_EVERY:
+                                _flush_embedding_batch(embedding_buffer, output_dir, save_counter)
+                                embedding_buffer.clear()
+                                save_counter += 1
+
+            # Flush remaining buffer
+            if embedding_buffer:
+                _flush_embedding_batch(embedding_buffer, output_dir, save_counter)
+                embedding_buffer.clear()
+
+            # Merge all partial files into final .npy
+            if args.save_embeddings:
+                _merge_embedding_files(output_dir)
+        else:
+            # ── Standard single-classifier inference loop ──
+            for img_path in tqdm(image_paths, desc=f"Predicting"):
+                img_path_str: str = str(img_path)
+                results: list[dict] = predict_image(model, img_path_str, test_plate, args.batch_size)
+                all_results.extend(results)
     
         # Filter by class pattern if requested
         if args.filter_class:
@@ -1013,7 +1384,8 @@ def main() -> None:
             print(f"\nFiltered by '{args.filter_class}': {len(filtered_results)}/{len(all_results)} results")
             all_results = filtered_results
     
-        metrics: dict = compute_metrics(all_results, num_classes)
+        if not is_dual:
+            metrics: dict = compute_metrics(all_results, num_classes)
     
         print(f"\nPrediction summary:")
         print(f"  - Images processed: {len(image_paths)}")
@@ -1050,7 +1422,7 @@ def main() -> None:
                 for img, votes in image_votes.items():
                     majority_pred = max(votes, key=votes.get)
                     well = parse_well_from_filename(img)
-                    gt = get_ground_truth_label(test_plate, well)
+                    gt = get_ground_truth_label(test_plate, well, img)
                     if gt:
                         total_images += 1
                         if majority_pred == gt:
