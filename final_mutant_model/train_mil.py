@@ -137,6 +137,8 @@ parser.add_argument('--dual_classifier', action='store_true', default=False,
                     help='Use separate classifiers for drug and mutant domains (only with --data_mode both)')
 parser.add_argument('--proj_dim', type=int, default=256,
                     help='Projection bottleneck dimension for dual classifier (default: 256)')
+parser.add_argument('--sym_consistency_weight', type=float, default=0.5,
+                    help='Weight for symmetric consistency loss (pull same + push different, default: 0.5)')
 args = parser.parse_args()
 
 # Determine folder name for results (drug_noconcentration vs drug)
@@ -335,6 +337,22 @@ def attention_entropy_loss(attn_weights: torch.Tensor) -> torch.Tensor:
     """Attention entropy regularization - prevents attention over-concentration in MIL.
     Based on AEM paper (2024) - encourages considering more instances/patches."""
     return -(attn_weights * torch.log(attn_weights + 1e-8)).sum(dim=1).mean()
+
+
+def symmetric_consistency_loss(embeddings: torch.Tensor, labels: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
+    emb_norm = F.normalize(embeddings, dim=1)
+    sim = emb_norm @ emb_norm.T
+    label_eq = labels.unsqueeze(0) == labels.unsqueeze(1)
+    eye = torch.eye(len(labels), dtype=torch.bool, device=labels.device)
+    label_eq = label_eq & ~eye
+    label_neq = ~label_eq & ~eye
+    same_class_pairs = label_eq.sum()
+    diff_class_pairs = label_neq.sum()
+    if same_class_pairs < 1 or diff_class_pairs < 1:
+        return torch.tensor(0.0, device=embeddings.device)
+    pos = (sim * label_eq).sum() / same_class_pairs
+    neg = (sim * label_neq).sum() / diff_class_pairs
+    return (1.0 - pos) + (neg - margin).clamp(min=0)
 
 
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
@@ -862,13 +880,13 @@ def train_single_fold(test_plate: str) -> None:
         csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
         with open(csv_path_sc_mil, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'lr'])
+            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_sym_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'lr'])
         
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
-            run_cl_loss, run_ce_loss, correct, total = 0.0, 0.0, 0, 0
+            run_cl_loss, run_sym_loss, run_ce_loss, correct, total = 0.0, 0.0, 0.0, 0, 0
             
             for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
                 images = batch[0].to(device)
@@ -903,8 +921,15 @@ def train_single_fold(test_plate: str) -> None:
                                 bag_emb = F.normalize(proj_emb[mutant_mask], p=2, dim=-1).unsqueeze(1)
                                 bag_sc_loss += SupConLoss(temperature=args.sc_mil_temp)(bag_emb, labels[mutant_mask])
                         
+                        # Per-domain symmetric consistency loss on projected embeddings
+                        sym_loss = 0.0
+                        if drug_mask.any() and drug_mask.sum() >= 2:
+                            sym_loss += symmetric_consistency_loss(proj_emb[drug_mask], labels[drug_mask])
+                        if mutant_mask.any() and mutant_mask.sum() >= 2:
+                            sym_loss += symmetric_consistency_loss(proj_emb[mutant_mask], labels[mutant_mask])
+
                         total_sc = bag_sc_loss
-                        loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                        loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc + args.sym_consistency_weight * sym_loss
                         
                         # Accuracy per domain
                         if drug_mask.any():
@@ -955,8 +980,9 @@ def train_single_fold(test_plate: str) -> None:
                         w = args.instance_weight
                         total_focal = w * instance_focal + (1 - w) * bag_focal
                         total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
+                        sym_loss = 0.0
                         loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
-                        
+
                         _, predicted = outputs.max(1)
                         total += labels.size(0)
                         correct += predicted.eq(labels).sum().item()
@@ -967,6 +993,7 @@ def train_single_fold(test_plate: str) -> None:
                 
                 run_cl_loss += total_sc.item() if isinstance(total_sc, torch.Tensor) else total_sc
                 run_ce_loss += total_focal.item() if isinstance(total_focal, torch.Tensor) else total_focal
+                run_sym_loss += sym_loss.item() if isinstance(sym_loss, torch.Tensor) else sym_loss
             
             sc_mil_scheduler.step()
             
@@ -1037,10 +1064,10 @@ def train_single_fold(test_plate: str) -> None:
                 drug_val_auc = compute_robust_auc(drug_val_labels, drug_val_probs, num_drug_classes)
                 mutant_val_auc = compute_robust_auc(mutant_val_labels, mutant_val_probs, num_mutant_classes)
                 val_auc = (drug_val_auc + mutant_val_auc) / 2 if not (np.isnan(drug_val_auc) or np.isnan(mutant_val_auc)) else float('nan')
-                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Drug AUC={drug_val_auc:.4f}, Mutant AUC={mutant_val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Sym={run_sym_loss/len(train_loader):.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Drug AUC={drug_val_auc:.4f}, Mutant AUC={mutant_val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
             else:
                 val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
-                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Sym={run_sym_loss/len(train_loader):.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
             
             # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
@@ -1049,9 +1076,9 @@ def train_single_fold(test_plate: str) -> None:
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if args.dual_classifier and args.data_mode == 'both':
-                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, drug_val_auc, mutant_val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, run_sym_loss/len(train_loader), train_acc, avg_val_ce_loss, val_acc, val_auc, drug_val_auc, mutant_val_auc, sc_mil_optimizer.param_groups[0]['lr']])
                 else:
-                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, train_acc, avg_val_ce_loss, val_acc, val_auc, '', '', sc_mil_optimizer.param_groups[0]['lr']])
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, run_sym_loss/len(train_loader), train_acc, avg_val_ce_loss, val_acc, val_auc, '', '', sc_mil_optimizer.param_groups[0]['lr']])
             
             # TensorBoard logging - 2 cards only (SC-MIL)
             # Card 1: Train CE Loss + Val CE Loss
