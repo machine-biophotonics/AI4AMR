@@ -880,13 +880,14 @@ def train_single_fold(test_plate: str) -> None:
         csv_path_sc_mil = os.path.join(OUTPUT_DIR, f"training_sc_mil_{timestamp_sc_mil}.csv")
         with open(csv_path_sc_mil, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_sym_loss', 'train_acc', 'val_ce_loss', 'val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'lr'])
+            writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_sym_loss', 'train_acc', 'drug_train_acc', 'mutant_train_acc', 'val_ce_loss', 'val_acc', 'drug_val_acc', 'mutant_val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'lr'])
         
         for epoch in range(args.sc_mil_epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
             run_cl_loss, run_sym_loss, run_ce_loss, correct, total = 0.0, 0.0, 0.0, 0, 0
+            drug_correct, drug_total, mutant_correct, mutant_total = 0, 0, 0, 0
             
             for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
                 images = batch[0].to(device)
@@ -935,9 +936,13 @@ def train_single_fold(test_plate: str) -> None:
                         if drug_mask.any():
                             drug_pred = drug_logits[drug_mask].argmax(1)
                             correct += drug_pred.eq(labels[drug_mask]).sum().item()
+                            drug_correct += drug_pred.eq(labels[drug_mask]).sum().item()
+                            drug_total += drug_mask.sum().item()
                         if mutant_mask.any():
                             mutant_pred = mutant_logits[mutant_mask].argmax(1)
                             correct += mutant_pred.eq(labels[mutant_mask]).sum().item()
+                            mutant_correct += mutant_pred.eq(labels[mutant_mask]).sum().item()
+                            mutant_total += mutant_mask.sum().item()
                         total += labels.size(0)
                     else:
                         # ============ STANDARD SINGLE-CLASSIFIER PATH ============
@@ -998,13 +1003,17 @@ def train_single_fold(test_plate: str) -> None:
             sc_mil_scheduler.step()
             
             train_acc = 100. * correct / total
+            drug_train_acc = 100. * drug_correct / drug_total if drug_total > 0 else 0.0
+            mutant_train_acc = 100. * mutant_correct / mutant_total if mutant_total > 0 else 0.0
             avg_cl_loss = run_cl_loss / len(train_loader)
             avg_ce_loss = run_ce_loss / len(train_loader)
             
             # VALIDATION after each SC-MIL epoch
             model.eval()
             val_cl_loss, val_ce_loss = 0.0, 0.0
+            val_ce_count = 0
             val_correct, val_total = 0, 0
+            drug_val_correct, drug_val_total, mutant_val_correct, mutant_val_total = 0, 0, 0, 0
             all_val_preds, all_val_probs, all_val_labels = [], [], []
             drug_val_preds, drug_val_probs, drug_val_labels = [], [], []
             mutant_val_preds, mutant_val_probs, mutant_val_labels = [], [], []
@@ -1030,8 +1039,11 @@ def train_single_fold(test_plate: str) -> None:
                             drug_val_probs.extend(drug_probs.cpu().numpy())
                             drug_val_labels.extend(labels[drug_mask].cpu().numpy())
                             val_correct += drug_pred.eq(labels[drug_mask]).sum().item()
+                            drug_val_correct += drug_pred.eq(labels[drug_mask]).sum().item()
+                            drug_val_total += drug_mask.sum().item()
                             val_loss = weighted_focal_loss(drug_logits[drug_mask], labels[drug_mask], drug_weights[labels[drug_mask]])
                             val_ce_loss += val_loss.item()
+                            val_ce_count += 1
                         
                         if mutant_mask.any():
                             mutant_probs = torch.softmax(mutant_logits[mutant_mask], dim=1)
@@ -1040,8 +1052,11 @@ def train_single_fold(test_plate: str) -> None:
                             mutant_val_probs.extend(mutant_probs.cpu().numpy())
                             mutant_val_labels.extend(labels[mutant_mask].cpu().numpy())
                             val_correct += mutant_pred.eq(labels[mutant_mask]).sum().item()
+                            mutant_val_correct += mutant_pred.eq(labels[mutant_mask]).sum().item()
+                            mutant_val_total += mutant_mask.sum().item()
                             val_loss = weighted_focal_loss(mutant_logits[mutant_mask], labels[mutant_mask], mutant_weights[labels[mutant_mask]])
                             val_ce_loss += val_loss.item()
+                            val_ce_count += 1
                         
                         val_total += labels.size(0)
                     else:
@@ -1053,21 +1068,24 @@ def train_single_fold(test_plate: str) -> None:
                         all_val_labels.extend(labels.cpu().numpy())
                         val_loss = weighted_focal_loss(outputs, labels, class_weights[labels])
                         val_ce_loss += val_loss.item()
+                        val_ce_count += 1
                         val_correct += predicted.eq(labels).sum().item()
                         val_total += labels.size(0)
             
             val_acc = 100. * val_correct / val_total
-            avg_val_ce_loss = val_ce_loss / len(val_loader)
+            drug_val_acc = 100. * drug_val_correct / drug_val_total if drug_val_total > 0 else 0.0
+            mutant_val_acc = 100. * mutant_val_correct / mutant_val_total if mutant_val_total > 0 else 0.0
+            avg_val_ce_loss = val_ce_loss / val_ce_count if val_ce_count > 0 else 0.0
             
             # Per-domain AUC for dual classifier (separate prob dimensions)
             if args.dual_classifier and args.data_mode == 'both':
                 drug_val_auc = compute_robust_auc(drug_val_labels, drug_val_probs, num_drug_classes)
                 mutant_val_auc = compute_robust_auc(mutant_val_labels, mutant_val_probs, num_mutant_classes)
                 val_auc = (drug_val_auc + mutant_val_auc) / 2 if not (np.isnan(drug_val_auc) or np.isnan(mutant_val_auc)) else float('nan')
-                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Sym={run_sym_loss/len(train_loader):.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Drug AUC={drug_val_auc:.4f}, Mutant AUC={mutant_val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+                print(f"SC-MIL Epoch {epoch}: CE={avg_ce_loss:.4f} SC={avg_cl_loss:.4f} Sym={run_sym_loss/len(train_loader):.4f} | Train: {train_acc:.2f}% (drug={drug_train_acc:.2f}% mut={mutant_train_acc:.2f}%) | Val: {val_acc:.2f}% (drug={drug_val_acc:.2f}% mut={mutant_val_acc:.2f}%) | AUC drug={drug_val_auc:.4f} mut={mutant_val_auc:.4f} | {time.time()-epoch_start:.1f}s")
             else:
                 val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
-                print(f"SC-MIL Epoch {epoch}: CE Loss={avg_ce_loss:.4f}, SupCon={avg_cl_loss:.4f}, Sym={run_sym_loss/len(train_loader):.4f}, Train Acc={train_acc:.2f}%, Val Acc={val_acc:.2f}%, Val AUC={val_auc:.4f}, Time={time.time()-epoch_start:.1f}s")
+                print(f"SC-MIL Epoch {epoch}: CE={avg_ce_loss:.4f} SC={avg_cl_loss:.4f} Sym={run_sym_loss/len(train_loader):.4f} | Train: {train_acc:.2f}% | Val: {val_acc:.2f}% | AUC={val_auc:.4f} | {time.time()-epoch_start:.1f}s")
             
             # Save checkpoint every epoch
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()}, os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
@@ -1076,9 +1094,9 @@ def train_single_fold(test_plate: str) -> None:
             with open(csv_path_sc_mil, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if args.dual_classifier and args.data_mode == 'both':
-                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, run_sym_loss/len(train_loader), train_acc, avg_val_ce_loss, val_acc, val_auc, drug_val_auc, mutant_val_auc, sc_mil_optimizer.param_groups[0]['lr']])
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, run_sym_loss/len(train_loader), train_acc, drug_train_acc, mutant_train_acc, avg_val_ce_loss, val_acc, drug_val_acc, mutant_val_acc, val_auc, drug_val_auc, mutant_val_auc, sc_mil_optimizer.param_groups[0]['lr']])
                 else:
-                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, run_sym_loss/len(train_loader), train_acc, avg_val_ce_loss, val_acc, val_auc, '', '', sc_mil_optimizer.param_groups[0]['lr']])
+                    writer.writerow([epoch, avg_ce_loss, avg_cl_loss, run_sym_loss/len(train_loader), train_acc, '', '', avg_val_ce_loss, val_acc, '', '', val_auc, '', '', sc_mil_optimizer.param_groups[0]['lr']])
             
             # TensorBoard logging - 2 cards only (SC-MIL)
             # Card 1: Train CE Loss + Val CE Loss
