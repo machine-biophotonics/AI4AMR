@@ -139,7 +139,44 @@ parser.add_argument('--proj_dim', type=int, default=256,
                     help='Projection bottleneck dimension for dual classifier (default: 256)')
 parser.add_argument('--sym_consistency_weight', type=float, default=0.5,
                     help='Weight for symmetric consistency loss (pull same + push different, default: 0.5)')
+parser.add_argument('--force', action='store_true', default=False,
+                    help='Skip GPU double-launch check (allow multiple training instances)')
+parser.add_argument('--resume', action='store_true', default=False,
+                    help='Resume training from checkpoint_epoch.pth in output directory')
 args = parser.parse_args()
+
+# ── Guard against accidentally launching two training instances ──────────────
+if not args.force and torch.cuda.is_available():
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-compute-apps=pid,process_name', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=5
+        )
+        other_pids = []
+        my_pid = os.getpid()
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            parts = line.split(',')
+            if len(parts) >= 2 and 'python' in parts[1].strip().lower():
+                pid = parts[0].strip()
+                if pid and pid != str(my_pid):
+                    # Check if this is a DataLoader child process, not a separate instance
+                    try:
+                        ppid = int(open(f'/proc/{pid}/stat').read().split()[3])
+                    except (IndexError, IOError, ValueError):
+                        ppid = -1
+                    if ppid != my_pid:  # not a child worker → separate instance
+                        other_pids.append(pid)
+        if other_pids:
+            print(f"\nWARNING: Another Python process (PID {' '.join(other_pids)}) "
+                  f"is already using the GPU.")
+            print("  If you meant to run two training instances, use --force to skip this check.\n")
+            sys.exit(1)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass  # nvidia-smi not available, proceed anyway
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Determine folder name for results (drug_noconcentration vs drug)
 data_mode_folder = args.data_mode
@@ -713,6 +750,18 @@ def train_single_fold(test_plate: str) -> None:
         model = AttentionMILModel(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
     model = model.to(device)
     
+    # Resume from checkpoint if requested
+    resume_epoch = -1
+    if args.resume:
+        checkpoint_path = os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth')
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            resume_epoch = checkpoint['epoch']
+            print(f"\nResuming from epoch {resume_epoch} (checkpoint: {checkpoint_path})\n")
+        else:
+            print(f"\nWarning: --resume specified but no checkpoint at {checkpoint_path}. Starting from scratch.\n")
+    
     # Freeze backbone if requested
     if args.freeze:
         print("*** FREEZING BACKBONE - ONLY TRAINING ATTENTION + CLASSIFIER ***")
@@ -762,7 +811,7 @@ def train_single_fold(test_plate: str) -> None:
     best_val_loss = float('inf')
     
     # Stage 1: Patch-Level SimCLR Pre-training (proven in papers)
-    if args.use_contrastive:
+    if args.use_contrastive and resume_epoch < 0:
         print(f"\n{'='*60}")
         print(f"Stage 1: Patch-Level SimCLR Pre-training for {args.contrastive_epochs} epochs...")
         print(f"Contrastive batch size: {args.contrastive_batch_size}")
@@ -882,7 +931,8 @@ def train_single_fold(test_plate: str) -> None:
             writer = csv.writer(f)
             writer.writerow(['epoch', 'train_ce_loss', 'train_sc_loss', 'train_sym_loss', 'train_acc', 'drug_train_acc', 'mutant_train_acc', 'val_ce_loss', 'val_acc', 'drug_val_acc', 'mutant_val_acc', 'val_auc', 'drug_val_auc', 'mutant_val_auc', 'lr'])
         
-        for epoch in range(args.sc_mil_epochs):
+        sc_mil_start = resume_epoch + 1 if resume_epoch >= 0 else 0
+        for epoch in range(sc_mil_start, args.sc_mil_epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
@@ -1128,7 +1178,8 @@ def train_single_fold(test_plate: str) -> None:
     
     # Standard or SC-MIL training loop
     if epoch is None:
-        for epoch in range(args.epochs):
+        start_epoch = resume_epoch + 1 if resume_epoch >= 0 else 0
+        for epoch in range(start_epoch, args.epochs):
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()

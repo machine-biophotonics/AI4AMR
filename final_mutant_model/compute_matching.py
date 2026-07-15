@@ -1,168 +1,372 @@
 #!/usr/bin/env python3
 """
-Cross-domain matching: average projected embeddings per drug type / gene,
-compute cosine similarity matrix, find best matches.
+Cross-domain matching: cosine similarity between drug 2x embeddings and mutant guide 1 embeddings.
+Saves matching_heatmap.png with expected-match green boxes + prints best matches and hit rate.
 """
 
 import os, sys, json, re
 import numpy as np
-from collections import defaultdict
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import seaborn as sns
+from collections import defaultdict, OrderedDict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# ── Config ──────────────────────────────────────────────────────────────────
 FOLD_DIR = os.path.join(SCRIPT_DIR, 'both', 'fold_Plate_6')
-PROJ_FILE   = os.path.join(FOLD_DIR, 'proj.npy')
-LABELS_FILE = os.path.join(FOLD_DIR, 'labels.npy')
-PREDS_FILE  = os.path.join(FOLD_DIR, 'preds.npy')
-DOMAINS_FILE= os.path.join(FOLD_DIR, 'domains.npy')
 
-# ── Load embeddings ────────────────────────────────────────────────────────
-if not os.path.exists(PROJ_FILE):
-    print(f"ERROR: {PROJ_FILE} not found. Run predict_all_crops.py with --save_embeddings first.")
-    sys.exit(1)
+PROJ_FILE    = os.path.join(FOLD_DIR, 'proj.npy')
+LABELS_FILE  = os.path.join(FOLD_DIR, 'labels.npy')
+DOMAINS_FILE = os.path.join(FOLD_DIR, 'domains.npy')
 
-proj   = np.load(PROJ_FILE)       # N × 256
-labels = np.load(LABELS_FILE)     # N
-preds  = np.load(PREDS_FILE)      # N
-domains = np.load(DOMAINS_FILE)   # 0=drug, 1=mutant
+EXPECTED = {
+    'Cefsulodin':      ['mrcA', 'mrcB'],
+    'Penicillin':      ['mrcA', 'mrcB', 'ftsI'],
+    'Sulbactam':       [],
+    'Avibactam':       [],
+    'Mecillinam':      ['mrdA'],
+    'Meropenem':       ['mrdA', 'ftsI', 'mrcA', 'mrcB'],
+    'Clavulanic Acid': [],
+    'Relebactam':      [],
+    'Aztreonam':       ['ftsI'],
+    'Cefepim':         ['ftsI', 'mrcA', 'mrcB', 'mrdA'],
+    'Ceftriaxone':     ['ftsI', 'mrcA', 'mrcB'],
+    'Chloramphenicol': [],
+    'Clarithromycin':  [],
+    'Doxicyclin':      [],
+    'Kanamycin':       [],
+    'Ciprofloxacin':   ['gyrA', 'gyrB', 'parC', 'parE'],
+    'Levofloxacin':    ['gyrA', 'gyrB', 'parC', 'parE'],
+    'Norfloxacin':     ['gyrA', 'gyrB', 'parC', 'parE'],
+    'Rifampicin':      ['rpoB'],
+    'Trimethoprim':    ['folA'],
+    'Colistin':        ['lpxA', 'lpxC', 'lptA', 'lptC'],
+    'Polymyxin B':     ['lpxA', 'lpxC', 'lptA', 'lptC'],
+}
 
+for f in [PROJ_FILE, LABELS_FILE, DOMAINS_FILE]:
+    if not os.path.exists(f):
+        print(f"ERROR: {f} not found. Run predict_all_crops.py --data_mode both --dual_classifier --save_embeddings first.")
+        sys.exit(1)
+
+proj    = np.load(PROJ_FILE)
+labels  = np.load(LABELS_FILE)
+domains = np.load(DOMAINS_FILE)
 print(f"Loaded {proj.shape[0]} samples, proj_dim={proj.shape[1]}")
-print(f"  Drug samples: {(domains==0).sum()}, Mutant samples: {(domains==1).sum()}")
 
-# ── Build class name maps (replicating logic from predict_all_crops.py) ───
 with open(os.path.join(SCRIPT_DIR, 'plate_well_ic50_mapping.json')) as f:
     IC50_DATA = json.load(f)
-
 with open(os.path.join(SCRIPT_DIR, 'plate_well_id_path.json')) as f:
     MUTANT_DATA = json.load(f)
 
-# Drug classes (with concentration)
 drug_set = set()
 for plate, wells in IC50_DATA.items():
     for well, info in wells.items():
-        antibiotic = info.get('antibiotic', '')
-        ic50 = info.get('ic50_multiple', '')
-        if antibiotic and ic50:
-            if ic50 == 'control':
+        ab = info.get('antibiotic', '')
+        ic = info.get('ic50_multiple', '')
+        if ab and ic:
+            if ic == 'control':
                 drug_set.add('control')
             else:
-                ic50_str = ic50 if 'x' in str(ic50) else f'{ic50}x'
-                drug_set.add(f'{antibiotic.replace(" ", "_")}_{ic50_str}')
-drug_classes = sorted(drug_set)
-drug_idx_to_name = {i: n for i, n in enumerate(drug_classes)}
-print(f"\nDrug classes (indices 0..{len(drug_classes)-1}): {len(drug_classes)} total")
+                drug_set.add(f'{ab.replace(" ", "_")}_{ic}')
+drug_idx_to_name = OrderedDict((i, n) for i, n in enumerate(sorted(drug_set)))
 
-# Mutant classes
 mutant_set = set()
 for plate, rows in MUTANT_DATA.items():
     for row, cols in rows.items():
         for col, info in cols.items():
             if 'id' in info:
                 mutant_set.add(info['id'])
-mutant_classes = sorted(mutant_set)
-mutant_idx_to_name = {i: n for i, n in enumerate(mutant_classes)}
-print(f"Mutant classes (indices 0..{len(mutant_classes)-1}): {len(mutant_classes)} total")
+mutant_idx_to_name = OrderedDict((i, n) for i, n in enumerate(sorted(mutant_set)))
 
-# ── Map class name → higher-level category ─────────────────────────────────
-# Drug: "Avibactam_0.25x" → "Avibactam", "control" → "control"
-def drug_category(class_name):
-    if class_name == 'control':
-        return 'control'
-    # Strip the _0.25x, _0.5x, _1x, _2x suffix
-    m = re.match(r'^(.+)_(0\.25|0\.5|1|2)x$', class_name)
-    if m:
-        return m.group(1)
-    return class_name  # fallback
+# ── Drug: 2x + control ───────────────────────────────────────────────────
+def gene_name(n):
+    if n.startswith('WT NC'): return 'WT NC'
+    if n.startswith('NC_'): return 'NC'
+    m = re.match(r'^([a-zA-Z]+)_\d+$', n)
+    return m.group(1) if m else n
 
-# Mutant: "dnaB_1" → "dnaB", "NC_1" → "NC", "WT NC_1" → "WT NC"
-def mutant_category(class_name):
-    if class_name.startswith('WT NC'):
-        return 'WT NC'
-    if class_name.startswith('NC_'):
-        return 'NC'
-    # Strip the _1, _2, _3 suffix from gene names
-    m = re.match(r'^([a-zA-Z]+)_\d+$', class_name)
-    if m:
-        return m.group(1)
-    return class_name
+drug_idxs = {}
+for idx, name in drug_idx_to_name.items():
+    if name == 'control':
+        drug_idxs[idx] = 'control'
+    elif name.endswith('_2x'):
+        short = name.replace('_2x', '').replace('_', ' ')
+        drug_idxs[idx] = short
 
-# ── Group embeddings by category for each domain ──────────────────────────
-drug_cat_embs = defaultdict(list)    # drug_category → list of embeddings
-mutant_cat_embs = defaultdict(list)  # mutant_category → list of embeddings
+# ── Mutant: all guides per gene + controls ───────────────────────────────
+mutant_groups = defaultdict(list)
+for idx, name in mutant_idx_to_name.items():
+    g = gene_name(name)
+    mutant_groups[g].append(idx)
+
+available_genes = sorted(mutant_groups.keys())
+
+# ── Average embeddings per class ──────────────────────────────────────────
+drug_embs = {idx: [] for idx in drug_idxs}
+gene_embs = {g: [] for g in available_genes}
 
 for i in range(len(proj)):
-    if domains[i] == 0:  # drug
-        cls_name = drug_idx_to_name.get(labels[i], None)
-        if cls_name is None:
-            continue
-        cat = drug_category(cls_name)
-        drug_cat_embs[cat].append(proj[i])
-    else:  # mutant
-        cls_name = mutant_idx_to_name.get(labels[i], None)
-        if cls_name is None:
-            continue
-        cat = mutant_category(cls_name)
-        mutant_cat_embs[cat].append(proj[i])
+    lbl = int(labels[i])
+    if domains[i] == 0 and lbl in drug_embs:
+        drug_embs[lbl].append(proj[i])
+    elif domains[i] == 1:
+        name = mutant_idx_to_name.get(lbl)
+        if name:
+            g = gene_name(name)
+            if g in gene_embs:
+                gene_embs[g].append(proj[i])
 
-# ── Compute mean embedding per category ───────────────────────────────────
-def mean_embedding(emb_list):
-    return np.mean(emb_list, axis=0)
+sorted_drug_idxs = sorted(drug_idxs.keys())
+drug_means = np.array([np.mean(drug_embs[idx], axis=0) for idx in sorted_drug_idxs])
+gene_means = np.array([np.mean(gene_embs[g], axis=0) for g in available_genes])
 
-drug_cats = sorted(drug_cat_embs.keys())
-mutant_cats = sorted(mutant_cat_embs.keys())
+drug_labels = [drug_idxs[idx] for idx in sorted_drug_idxs]
+gene_labels = list(available_genes)
 
-drug_means = np.array([mean_embedding(drug_cat_embs[c]) for c in drug_cats])
-mutant_means = np.array([mean_embedding(mutant_cat_embs[c]) for c in mutant_cats])
+print(f"\nDrug 2x + control: {len(drug_labels)} classes")
+print(f"Mutant genes (all guides) + NC + WT NC: {len(gene_labels)}")
 
-print(f"\nDrug categories ({len(drug_cats)}): {drug_cats}")
-print(f"Mutant categories ({len(mutant_cats)}): {mutant_cats}")
-print(f"\nDrug means shape: {drug_means.shape}")
-print(f"Mutant means shape: {mutant_means.shape}")
-
-# ── Cosine similarity matrix ──────────────────────────────────────────────
+# ── Cosine similarity ─────────────────────────────────────────────────────
 def cosine_sim(a, b):
-    a_norm = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-12)
-    b_norm = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-12)
-    return np.dot(a_norm, b_norm.T)  # (n_drug, n_mutant)
+    an = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-12)
+    bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-12)
+    return np.dot(an, bn.T)
 
-sim_matrix = cosine_sim(drug_means, mutant_means)
+sim = cosine_sim(drug_means, gene_means)
+print(f"Similarity matrix: {sim.shape}, range=[{sim.min():.4f}, {sim.max():.4f}]")
 
-# ── Best match for each drug category ─────────────────────────────────────
-print("\n" + "=" * 80)
-print("BEST MUTANT MATCH FOR EACH DRUG CATEGORY")
-print("=" * 80)
-for i, drug_cat in enumerate(drug_cats):
-    best_j = np.argmax(sim_matrix[i])
-    best_score = sim_matrix[i, best_j]
-    best_mutant = mutant_cats[best_j]
-    print(f"  {drug_cat:25s} → {best_mutant:25s}  (cosine sim={best_score:.4f})")
+# ── Expected match mask ───────────────────────────────────────────────────
+expected_mask = np.zeros(sim.shape, dtype=bool)
+for i, dl in enumerate(drug_labels):
+    if dl in EXPECTED:
+        for tg in EXPECTED[dl]:
+            if tg in available_genes:
+                expected_mask[i, available_genes.index(tg)] = True
 
-# ── Top-3 for each drug ──────────────────────────────────────────────────
-print("\n" + "=" * 80)
-print("TOP-3 MUTANT MATCHES FOR EACH DRUG CATEGORY")
-print("=" * 80)
-for i, drug_cat in enumerate(drug_cats):
-    top3 = np.argsort(sim_matrix[i])[::-1][:3]
-    matches = '; '.join(f'{mutant_cats[j]} ({sim_matrix[i,j]:.4f})' for j in top3)
-    print(f"  {drug_cat:25s} → {matches}")
+# ── Heatmap ───────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(20, 14))
+sns.heatmap(sim,
+            xticklabels=gene_labels,
+            yticklabels=drug_labels,
+            cmap='RdBu_r',
+            center=0.5, vmin=0.0, vmax=1.0,
+            annot=True, fmt='.2f',
+            annot_kws={'fontsize': 5},
+            linewidths=0.3, linecolor='lightgray',
+            cbar_kws={'label': 'Cosine similarity', 'shrink': 0.6},
+            ax=ax)
+ax.set_title('Cross-domain matching: drugs (2x + control) vs mutant genes', fontsize=14, fontweight='bold')
+ax.set_xlabel('Mutant gene (all guides + controls)', fontsize=11)
+ax.set_ylabel('Antibiotic (2x + control)', fontsize=11)
+plt.xticks(rotation=90, fontsize=7)
+plt.yticks(rotation=0, fontsize=8)
 
-# ── Also: top drug match for each mutant category ─────────────────────────
-print("\n" + "=" * 80)
-print("BEST DRUG MATCH FOR EACH MUTANT CATEGORY")
-print("=" * 80)
-for j, mut_cat in enumerate(mutant_cats):
-    best_i = np.argmax(sim_matrix[:, j])
-    best_score = sim_matrix[best_i, j]
-    best_drug = drug_cats[best_i]
-    print(f"  {mut_cat:25s} → {best_drug:25s}  (cosine sim={best_score:.4f})")
+for i in range(sim.shape[0]):
+    for j in range(sim.shape[1]):
+        if expected_mask[i, j]:
+            ax.add_patch(mpatches.Rectangle((j, i), 1, 1,
+                          fill=False, edgecolor='lime', linewidth=2.5, clip_on=False))
 
-# ── Save similarity matrix ────────────────────────────────────────────────
-out_path = os.path.join(FOLD_DIR, 'cross_domain_matching.npz')
-np.savez(out_path,
-         drug_categories=drug_cats,
-         mutant_categories=mutant_cats,
-         similarity_matrix=sim_matrix)
-print(f"\nSaved matching matrix to {out_path}")
+ax.legend(handles=[mpatches.Patch(edgecolor='lime', linewidth=2.5, fill=False,
+                                  label='Expected phenocopy')],
+          loc='lower left', fontsize=9)
+
+plt.tight_layout()
+out_png = os.path.join(FOLD_DIR, 'matching_heatmap.png')
+plt.savefig(out_png, dpi=200, bbox_inches='tight')
+print(f"\nSaved heatmap to {out_png}")
+plt.close()
+
+# ── Save matrix ───────────────────────────────────────────────────────────
+out_npz = os.path.join(FOLD_DIR, 'cross_domain_matching.npz')
+np.savez(out_npz,
+         drug_categories=drug_labels,
+         mutant_categories=gene_labels,
+         similarity_matrix=sim)
+print(f"Saved matrix to {out_npz}")
+
+# ── Top-5 matches with hit rate ───────────────────────────────────────────
+print("\n" + "=" * 90)
+print("TOP-5 MATCHES (drug → mutant gene, all guides + NC/WT NC)")
+print("=" * 90)
+hit = total = 0
+for i, dl in enumerate(drug_labels):
+    top5 = np.argsort(sim[i])[::-1][:5]
+    matches = []
+    is_hit = False
+    for j in top5:
+        marker = " ★" if expected_mask[i, j] else "  "
+        matches.append(f"{gene_labels[j]:12s}{marker} ({sim[i,j]:.4f})")
+        if expected_mask[i, j]:
+            is_hit = True
+    exp_genes = EXPECTED.get(dl, [])
+    if exp_genes:
+        total += 1
+        if is_hit:
+            hit += 1
+    chk = "✓" if is_hit else "✗"
+    print(f"  {dl:20s}  {chk}  {' | '.join(matches)}")
+    if dl in EXPECTED and exp_genes:
+        found = [g for g in exp_genes if g in available_genes]
+        if found:
+            order = np.argsort(sim[i])[::-1]
+            ranks = [int(np.where(order == available_genes.index(g))[0][0]) + 1 for g in found]
+            print(f"  {'':20s}     exp={found} ranks={ranks}")
+
+print(f"\n  Hit rate: {hit}/{total} ({hit/max(total,1)*100:.0f}%)")
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  MOA × PATHWAY GROUPED MATCHING
+# ═══════════════════════════════════════════════════════════════════════════
+
+DRUG_GROUPS = OrderedDict([
+    ('PBP 1A/B',    ['Cefsulodin', 'Penicillin', 'Sulbactam']),
+    ('PBP 2',       ['Avibactam', 'Mecillinam', 'Meropenem',
+                      'Clavulanic Acid', 'Relebactam']),
+    ('PBP 3',       ['Aztreonam', 'Cefepim', 'Ceftriaxone']),
+    ('Ribosome',    ['Chloramphenicol', 'Clarithromycin', 'Doxicyclin',
+                      'Kanamycin']),
+    ('DNA gyrase',  ['Ciprofloxacin', 'Levofloxacin', 'Norfloxacin']),
+    ('RNA polymerase', ['Rifampicin']),
+    ('DNA synthesis',  ['Trimethoprim']),
+    ('Membrane integrity', ['Colistin', 'Polymyxin B']),
+])
+
+GENE_GROUPS = OrderedDict([
+    ('Cell wall\n(PBPs)',      ['mrcA', 'mrcB', 'mrdA', 'ftsI']),
+    ('PG biosynthesis',        ['murA', 'murC']),
+    ('Cell division',          ['ftsZ']),
+    ('DNA replication',        ['dnaB', 'dnaE']),
+    ('Topoisomerases',         ['gyrA', 'gyrB', 'parC', 'parE']),
+    ('RNA polymerase',         ['rpoA', 'rpoB']),
+    ('Ribosome',               ['rpsA', 'rpsL', 'rplA', 'rplC']),
+    ('Sec translocon',         ['secA', 'secY']),
+    ('Folate biosynthesis',    ['folA', 'folP']),
+    ('LPS biosynthesis',       ['lpxA', 'lpxC']),
+    ('LPS transport',          ['lptA', 'lptC']),
+])
+
+# Build reverse map: drug_short → MOA group name
+drug_to_moa = {}
+for moa, members in DRUG_GROUPS.items():
+    for m in members:
+        drug_to_moa[m] = moa
+
+# Collect embeddings per MOA group
+moa_embs = defaultdict(list)
+for i, dl in enumerate(drug_labels):
+    if dl == 'control':
+        continue
+    if dl in drug_to_moa:
+        moa = drug_to_moa[dl]
+        idx = sorted_drug_idxs[i]
+        moa_embs[moa].extend(drug_embs[idx])
+
+# Build reverse map: gene → pathway
+gene_to_pathway = {}
+for pathway, members in GENE_GROUPS.items():
+    for m in members:
+        gene_to_pathway[m] = pathway
+
+# Collect embeddings per pathway
+pathway_embs = defaultdict(list)
+for j, gl in enumerate(gene_labels):
+    if gl in gene_to_pathway:
+        pathway_embs[gene_to_pathway[gl]].extend(gene_embs[gl])
+
+moa_names = [m for m in DRUG_GROUPS.keys() if m in moa_embs]
+pathway_names = [p for p in GENE_GROUPS.keys() if p in pathway_embs]
+
+moa_means = np.array([np.mean(moa_embs[m], axis=0) for m in moa_names])
+pathway_means = np.array([np.mean(pathway_embs[p], axis=0) for p in pathway_names])
+
+sim_moa = cosine_sim(moa_means, pathway_means)
+print(f"\nMOA × Pathway matrix: {sim_moa.shape}, range=[{sim_moa.min():.4f}, {sim_moa.max():.4f}]")
+
+# Heatmap
+fig2, ax2 = plt.subplots(figsize=(12, 8))
+sns.heatmap(sim_moa,
+            xticklabels=[p.replace('\n', ' ') for p in pathway_names],
+            yticklabels=moa_names,
+            cmap='RdBu_r',
+            center=0.5, vmin=0.0, vmax=1.0,
+            annot=True, fmt='.2f', annot_kws={'fontsize': 9},
+            linewidths=1, linecolor='lightgray',
+            cbar_kws={'label': 'Cosine similarity', 'shrink': 0.7},
+            ax=ax2)
+ax2.set_title('Cross-domain matching: drug MOA class × gene pathway', fontsize=13, fontweight='bold')
+ax2.set_xlabel('Gene pathway', fontsize=11)
+ax2.set_ylabel('Drug MOA class', fontsize=11)
+plt.xticks(rotation=30, ha='right', fontsize=9)
+plt.yticks(rotation=0, fontsize=9)
+plt.tight_layout()
+out_moa = os.path.join(FOLD_DIR, 'matching_moa_heatmap.png')
+plt.savefig(out_moa, dpi=200, bbox_inches='tight')
+print(f"Saved MOA heatmap to {out_moa}")
+plt.close(fig2)
+
+# Print best pathway match for each MOA class
+print("\n" + "=" * 70)
+print("BEST PATHWAY MATCH FOR EACH MOA CLASS")
+print("=" * 70)
+for i, moa in enumerate(moa_names):
+    j = np.argmax(sim_moa[i])
+    print(f"  {moa:25s} → {pathway_names[j]:25s}  ({sim_moa[i,j]:.4f})")
+
+# Print best MOA match for each pathway
+print("\n" + "=" * 70)
+print("BEST MOA MATCH FOR EACH PATHWAY")
+print("=" * 70)
+for j, pathway in enumerate(pathway_names):
+    i = np.argmax(sim_moa[:, j])
+    print(f"  {pathway:25s} → {moa_names[i]:25s}  ({sim_moa[i,j]:.4f})")
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PER-GUIDE TOP-5 MATCHES (preserving individual guide numbers)
+# ═══════════════════════════════════════════════════════════════════════════
+
+drug_2x_guide = defaultdict(list)
+mutant_guide = defaultdict(list)
+
+for i in range(len(proj)):
+    lbl = int(labels[i])
+    if domains[i] == 0:
+        name = drug_idx_to_name.get(lbl)
+        if name and name.endswith('_2x'):
+            drug_2x_guide[lbl].append(proj[i])
+    elif domains[i] == 1:
+        name = mutant_idx_to_name.get(lbl)
+        if name and re.match(r'^[a-zA-Z]+_\d+$', name):
+            mutant_guide[lbl].append(proj[i])
+
+sorted_drug_guide = sorted(drug_2x_guide.keys())
+sorted_mutant_guide = sorted(mutant_guide.keys())
+
+drug_guide_means = np.array([np.mean(drug_2x_guide[idx], axis=0) for idx in sorted_drug_guide])
+mutant_guide_means = np.array([np.mean(mutant_guide[idx], axis=0) for idx in sorted_mutant_guide])
+
+drug_guide_labels = [drug_idx_to_name[idx].replace('_2x', '').replace('_', ' ') for idx in sorted_drug_guide]
+mutant_guide_labels = [mutant_idx_to_name[idx] for idx in sorted_mutant_guide]
+
+sim_guide = cosine_sim(drug_guide_means, mutant_guide_means)
+print(f"\nPer-guide matrix: {sim_guide.shape}, range=[{sim_guide.min():.4f}, {sim_guide.max():.4f}]")
+
+print("\n" + "=" * 95)
+print("TOP-5 MUTANT GUIDES FOR EACH DRUG (2x)")
+print("=" * 95)
+for i, dl in enumerate(drug_guide_labels):
+    top5 = np.argsort(sim_guide[i])[::-1][:5]
+    matches = ' | '.join(f'{mutant_guide_labels[j]:15s}({sim_guide[i,j]:.4f})' for j in top5)
+    print(f"  {dl:20s}: {matches}")
+
+print("\n" + "=" * 95)
+print("TOP-5 DRUGS (2x) FOR EACH MUTANT GUIDE")
+print("=" * 95)
+for j, ml in enumerate(mutant_guide_labels):
+    top5 = np.argsort(sim_guide[:, j])[::-1][:5]
+    matches = ' | '.join(f'{drug_guide_labels[i]:20s}({sim_guide[i,j]:.4f})' for i in top5)
+    print(f"  {ml:15s}: {matches}")
 
 print("\nDone.")

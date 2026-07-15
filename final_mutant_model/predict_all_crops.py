@@ -424,17 +424,25 @@ def main() -> None:
                 fold_key_p = test_plate
                 fold_key_plate = f'Plate_{test_plate.replace("P", "")}'
             
-            # Try fold_P6 first, then fold_Plate_6
+            # Try both fold_P6 and fold_Plate_6, use whichever has newest checkpoint
             fold_dir_p = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key_p}')
             fold_dir_plate = os.path.join(SCRIPT_DIR, checkpoint_folder, f'fold_{fold_key_plate}')
             
             checkpoint_candidate_p = os.path.join(fold_dir_p, args.checkpoint)
             checkpoint_candidate_plate = os.path.join(fold_dir_plate, args.checkpoint)
             
-            if os.path.exists(checkpoint_candidate_p):
-                checkpoint_path = checkpoint_candidate_p
-            elif os.path.exists(checkpoint_candidate_plate):
+            p_exists = os.path.exists(checkpoint_candidate_p)
+            plate_exists = os.path.exists(checkpoint_candidate_plate)
+            
+            if p_exists and plate_exists:
+                # Pick the newest checkpoint by modification time
+                mtime_p = os.path.getmtime(checkpoint_candidate_p)
+                mtime_plate = os.path.getmtime(checkpoint_candidate_plate)
+                checkpoint_path = checkpoint_candidate_plate if mtime_plate > mtime_p else checkpoint_candidate_p
+            elif plate_exists:
                 checkpoint_path = checkpoint_candidate_plate
+            elif p_exists:
+                checkpoint_path = checkpoint_candidate_p
             else:
                 checkpoint_path = checkpoint_candidate_p  # will fail with helpful error below
     
@@ -1384,8 +1392,9 @@ def main() -> None:
             print(f"\nFiltered by '{args.filter_class}': {len(filtered_results)}/{len(all_results)} results")
             all_results = filtered_results
     
+        metrics = {}
         if not is_dual:
-            metrics: dict = compute_metrics(all_results, num_classes)
+            metrics = compute_metrics(all_results, num_classes)
     
         print(f"\nPrediction summary:")
         print(f"  - Images processed: {len(image_paths)}")
@@ -1406,8 +1415,8 @@ def main() -> None:
                     pos_accuracy = correct / total
                     print(f"\nPosition-level accuracy: {pos_accuracy:.4f} ({correct}/{total})")
         
-            # Majority voting accuracy (1 vote per image)
-            if 'image_path' in df.columns and 'ground_truth_label' in df.columns:
+            # Majority voting accuracy (1 vote per image) — skip for dual-classifier (two label spaces)
+            if not is_dual and 'image_path' in df.columns and 'ground_truth_label' in df.columns:
                 image_votes = {}
                 for _, row in df.iterrows():
                     img = row['image_path']
