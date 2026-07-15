@@ -139,6 +139,8 @@ parser.add_argument('--proj_dim', type=int, default=256,
                     help='Projection bottleneck dimension for dual classifier (default: 256)')
 parser.add_argument('--sym_consistency_weight', type=float, default=0.5,
                     help='Weight for symmetric consistency loss (pull same + push different, default: 0.5)')
+parser.add_argument('--ce_weight', type=float, default=1.0,
+                    help='Weight for classification loss (0=disable CE/focal, train with other losses only)')
 parser.add_argument('--force', action='store_true', default=False,
                     help='Skip GPU double-launch check (allow multiple training instances)')
 parser.add_argument('--resume', action='store_true', default=False,
@@ -980,7 +982,7 @@ def train_single_fold(test_plate: str) -> None:
                             sym_loss += symmetric_consistency_loss(proj_emb[mutant_mask], labels[mutant_mask])
 
                         total_sc = bag_sc_loss
-                        loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc + args.sym_consistency_weight * sym_loss
+                        loss = args.ce_weight * (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc + args.sym_consistency_weight * sym_loss
                         
                         # Accuracy per domain
                         if drug_mask.any():
@@ -1036,7 +1038,7 @@ def train_single_fold(test_plate: str) -> None:
                         total_focal = w * instance_focal + (1 - w) * bag_focal
                         total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
                         sym_loss = 0.0
-                        loss = (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+                        loss = args.ce_weight * (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
 
                         _, predicted = outputs.max(1)
                         total += labels.size(0)
