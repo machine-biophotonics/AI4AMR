@@ -847,7 +847,8 @@ def train_single_fold(test_plate: str) -> None:
         csv_path = os.path.join(OUTPUT_DIR, f'training_multihead_{timestamp}.csv')
         with open(csv_path, 'w', newline='') as f:
             csv.writer(f).writerow([
-                'epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'
+                'epoch', 'train_loss', 'train_focal', 'train_sc', 'train_sym',
+                'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'
             ])
 
         tb_writer = SummaryWriter(log_dir=OUTPUT_DIR)
@@ -870,43 +871,76 @@ def train_single_fold(test_plate: str) -> None:
                 ds_loader.dataset.set_epoch(epoch)
             model.train()
             run_loss, correct, total = 0.0, 0, 0
+            run_focal, run_sc, run_sym = 0.0, 0.0, 0.0
 
-            # ── Training: iterate heads sequentially ──
+            # ── Training: iterate heads sequentially, all losses within this plate only ──
             for h, loader in enumerate(head_train_loaders):
                 for batch in tqdm(loader, desc=f'Epoch {epoch} Head {h}', leave=False):
                     images, labels = batch[0].to(device), batch[1].to(device)
                     optimizer.zero_grad()
                     with torch.amp.autocast('cuda', enabled=use_amp):
-                        pooled = model.backbone(images)
-                        pooled = pooled.view(pooled.shape[0], -1)
-                        pooled = model.attention_pool(
-                            pooled.view(pooled.shape[0], 1, -1) if pooled.dim() == 2 else pooled
-                        )
-                        # Actually, use get_projected_features for proper pooling
-                        # But we need head-specific forward. Let's use a direct approach:
-                        # Reshape to batch of crops, run backbone, pool, then head[h]
                         B, N = images.shape[:2]
                         feat = images.view(B * N, *images.shape[2:])
                         feat = model.backbone(feat)
-                        feat = feat.view(B, N, -1)
-                        pooled_feat, _ = model.attention_pool(feat, temperature=model.attention_temp)
-                        pooled_feat = pooled_feat.reshape(B, -1)
-                        pooled_feat = model.head_proj(pooled_feat)
-                        logits = model.classifiers(pooled_feat, head_idx=h)
-                        loss = weighted_focal_loss(logits, labels, class_weights[labels])
+                        crop_embeddings = feat.view(B, N, -1)
+
+                        pooled, _ = model.attention_pool(crop_embeddings, temperature=model.attention_temp)
+                        pooled = pooled.reshape(B, -1)
+                        pooled_proj = model.head_proj(pooled)
+
+                        head = model.classifiers.heads[h]
+                        bag_logits = head(pooled_proj)
+                        instance_logits = head(crop_embeddings)
+
+                        # 1. Instance focal (per-crop classification)
+                        instance_labels = labels.repeat_interleave(N)
+                        instance_weights = class_weights[instance_labels]
+                        instance_focal = weighted_focal_loss(
+                            instance_logits.view(B * N, num_classes),
+                            instance_labels, instance_weights
+                        )
+
+                        # 2. Bag focal (pooled classification)
+                        bag_focal = weighted_focal_loss(bag_logits, labels, class_weights[labels])
+
+                        # 3. Bag SupCon (pull same-mutant bags together within this plate only)
+                        bag_emb = F.normalize(pooled_proj, p=2, dim=-1).unsqueeze(1)
+                        bag_sc_loss = SupConLoss(temperature=args.sc_mil_temp)(bag_emb, labels)
+
+                        # 4. Symmetric consistency (pull same + push different, within this plate)
+                        if args.sym_consistency_weight > 0 and B >= 2:
+                            sym_loss = symmetric_consistency_loss(pooled_proj, labels)
+                        else:
+                            sym_loss = torch.tensor(0.0, device=device)
+
+                        # Combined — same formula as default SC-MIL
+                        w = args.instance_weight
+                        total_focal = w * instance_focal + (1 - w) * bag_focal
+                        total_sc = (1 - w) * bag_sc_loss
+                        loss = (args.ce_weight * (1 - args.sc_mil_weight) * total_focal
+                                + args.sc_mil_weight * total_sc
+                                + args.sym_consistency_weight * sym_loss)
+
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     scaler.step(optimizer)
                     scaler.update()
                     run_loss += loss.item()
-                    _, predicted = logits.max(1)
+                    run_focal += total_focal.item() if isinstance(total_focal, torch.Tensor) else total_focal
+                    run_sc += total_sc.item() if isinstance(total_sc, torch.Tensor) else total_sc
+                    run_sym += sym_loss.item() if isinstance(sym_loss, torch.Tensor) else sym_loss
+                    _, predicted = bag_logits.max(1)
                     total += labels.size(0)
                     correct += predicted.eq(labels).sum().item()
 
             scheduler.step()
             train_acc = 100.0 * correct / total
-            avg_train_loss = run_loss / (len(head_train_loaders) * len(head_train_loaders[0]))
+            n_batches_total = sum(len(loader) for loader in head_train_loaders)
+            avg_train_loss = run_loss / n_batches_total
+            avg_focal = run_focal / n_batches_total
+            avg_sc = run_sc / n_batches_total
+            avg_sym = run_sym / n_batches_total
 
             # ── Validation: majority vote across all heads ──
             model.eval()
@@ -941,19 +975,19 @@ def train_single_fold(test_plate: str) -> None:
             val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
             lr_now = optimizer.param_groups[0]['lr']
 
-            print(f"Epoch {epoch}: Loss={avg_train_loss:.4f} Train={train_acc:.2f}% "
-                  f"Val={val_acc:.2f}% AUC={val_auc:.4f} LR={lr_now:.2e} "
-                  f"({time.time()-epoch_start:.1f}s)")
+            print(f"Epoch {epoch}: Focal={avg_focal:.4f} SC={avg_sc:.4f} Sym={avg_sym:.4f} "
+                  f"Train={train_acc:.2f}% Val={val_acc:.2f}% AUC={val_auc:.4f} "
+                  f"LR={lr_now:.2e} ({time.time()-epoch_start:.1f}s)")
 
-            tb_writer.add_scalars('Loss', {'train': avg_train_loss, 'val': avg_val_loss}, epoch)
+            tb_writer.add_scalars('Loss', {'total': avg_train_loss, 'focal': avg_focal, 'sc': avg_sc, 'sym': avg_sym, 'val': avg_val_loss}, epoch)
             tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
 
             # Save checkpoints
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()},
                        os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
             with open(csv_path, 'a', newline='') as f:
-                csv.writer(f).writerow([epoch, avg_train_loss, train_acc, avg_val_loss,
-                                        val_acc, val_auc, lr_now])
+                csv.writer(f).writerow([epoch, avg_train_loss, avg_focal, avg_sc, avg_sym,
+                                        train_acc, avg_val_loss, val_acc, val_auc, lr_now])
 
             if not np.isnan(val_auc) and val_auc > best_val_auc:
                 best_val_auc = val_auc
