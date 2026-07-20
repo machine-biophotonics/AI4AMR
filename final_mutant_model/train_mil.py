@@ -40,7 +40,7 @@ from collections import Counter
 import multiprocessing
 from functools import partial
 
-from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename
+from mil_model import AttentionMILModel, MILEncoder, MultiCropDataset, get_gene_from_path, extract_well_from_filename, MultiHeadClassifier
 from supcon_loss import SupConLoss, SupConLossMIL
 from torch.utils.tensorboard import SummaryWriter
 
@@ -145,6 +145,10 @@ parser.add_argument('--force', action='store_true', default=False,
                     help='Skip GPU double-launch check (allow multiple training instances)')
 parser.add_argument('--resume', action='store_true', default=False,
                     help='Resume training from checkpoint_epoch.pth in output directory')
+parser.add_argument('--multi_head', action='store_true', default=False,
+                    help='Use multi-head classifier: one head per train plate, majority vote at inference')
+parser.add_argument('--n_heads', type=int, default=4,
+                    help='Number of classifier heads for --multi_head (default: 4, one per train plate)')
 args = parser.parse_args()
 
 # ── Guard against accidentally launching two training instances ──────────────
@@ -741,8 +745,11 @@ def train_single_fold(test_plate: str) -> None:
                 num_mutant_classes=num_mutant_classes, proj_dim=args.proj_dim
             )
         else:
-            print(f"Classifier: single FC layer with dropout={args.dropout}")
-            model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling)
+            if args.multi_head:
+                print(f"Classifier: multi-head ({args.n_heads} heads, one per train plate)")
+            else:
+                print(f"Classifier: single FC layer with dropout={args.dropout}")
+            model = MILEncoder(num_classes=num_classes, num_heads=args.num_heads, dropout=args.dropout, use_contrastive=True, num_channels=args.num_channels, pretrained=args.pretrained, backbone=args.backbone, pooling=args.pooling, multi_head=args.multi_head, n_multi_heads=args.n_heads)
     else:
         print(f"Using AttentionMILModel...")
         print(f"Backbone: {args.backbone}")
@@ -769,6 +776,244 @@ def train_single_fold(test_plate: str) -> None:
         for param in model.backbone.parameters():
             param.requires_grad = False
         model.backbone.eval()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # MULTI-HEAD: one classifier head per train plate, majority vote at inference
+    # ════════════════════════════════════════════════════════════════════════════
+    if args.multi_head:
+        n_heads = args.n_heads
+        actual_n_heads = min(n_heads, len(train_plates))
+        print(f"\n{'='*60}")
+        print(f"MULTI-HEAD MODE: {actual_n_heads} heads, one plate per head")
+        print(f"{'='*60}")
+
+        head_plates = train_plates[:actual_n_heads]
+        print(f"Heads: {head_plates}")
+
+        # ── Build per-plate datasets + loaders ──
+        head_train_loaders = []
+        for h, plate in enumerate(head_plates):
+            plate_paths = []
+            plate_labels = []
+            for path in get_image_paths_for_plate(plate):
+                label = label_extractor(path)
+                if label in class_to_idx:
+                    plate_paths.append(path)
+                    plate_labels.append(class_to_idx[label])
+            print(f"  Head {h} ({plate}): {len(plate_paths)} images")
+            ds = MultiCropDataset(
+                plate_paths, plate_labels, None,
+                neighborhood=args.neighborhood, grid_size=args.grid_size,
+                augment=True, seed=SEED, num_channels=args.num_channels,
+                extraction_mode=args.extraction_mode,
+                raster_crop_size=args.raster_crop_size,
+                raster_resize_size=args.raster_resize_size,
+                raster_num_crops=args.raster_num_crops,
+                raster_grid_size=args.raster_grid_size,
+                edge_sigma=args.edge_sigma,
+            )
+            ds.set_epoch(0)
+            loader = DataLoader(
+                ds, batch_size=args.batch_size, shuffle=True,
+                num_workers=effective_workers, pin_memory=True,
+                persistent_workers=True if effective_workers > 0 else False,
+                prefetch_factor=args.prefetch_factor, drop_last=True,
+                worker_init_fn=partial(worker_init_fn, seed=SEED),
+            )
+            head_train_loaders.append(loader)
+
+        # ── Optimizer: backbone + attention + all classifier heads ──
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+            fused=True if torch.cuda.is_available() else False,
+        )
+        use_amp = torch.cuda.is_available()
+        scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+        total_epochs = args.sc_mil_epochs if args.use_sc_mil else args.epochs
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_epochs)
+        if args.warmup_epochs > 0:
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs
+            )
+            scheduler = torch.optim.lr_scheduler.ChainedScheduler([warmup, scheduler])
+
+        # ── Metrics tracking ──
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path = os.path.join(OUTPUT_DIR, f'training_multihead_{timestamp}.csv')
+        with open(csv_path, 'w', newline='') as f:
+            csv.writer(f).writerow([
+                'epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'val_auc', 'lr'
+            ])
+
+        tb_writer = SummaryWriter(log_dir=OUTPUT_DIR)
+        best_val_auc = 0.0
+        best_val_acc = 0.0
+        best_val_loss = float('inf')
+        resume_epoch = -1
+        if args.resume:
+            ckpt_path = os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth')
+            if os.path.exists(ckpt_path):
+                ckpt = torch.load(ckpt_path, map_location=device)
+                model.load_state_dict(ckpt['model_state_dict'])
+                resume_epoch = ckpt['epoch']
+                print(f"Resuming from epoch {resume_epoch}")
+
+        start_epoch = resume_epoch + 1 if resume_epoch >= 0 else 0
+        for epoch in range(start_epoch, total_epochs):
+            epoch_start = time.time()
+            for ds_loader in head_train_loaders:
+                ds_loader.dataset.set_epoch(epoch)
+            model.train()
+            run_loss, correct, total = 0.0, 0, 0
+
+            # ── Training: iterate heads sequentially ──
+            for h, loader in enumerate(head_train_loaders):
+                for batch in tqdm(loader, desc=f'Epoch {epoch} Head {h}', leave=False):
+                    images, labels = batch[0].to(device), batch[1].to(device)
+                    optimizer.zero_grad()
+                    with torch.amp.autocast('cuda', enabled=use_amp):
+                        pooled = model.backbone(images)
+                        pooled = pooled.view(pooled.shape[0], -1)
+                        pooled = model.attention_pool(
+                            pooled.view(pooled.shape[0], 1, -1) if pooled.dim() == 2 else pooled
+                        )
+                        # Actually, use get_projected_features for proper pooling
+                        # But we need head-specific forward. Let's use a direct approach:
+                        # Reshape to batch of crops, run backbone, pool, then head[h]
+                        B, N = images.shape[:2]
+                        feat = images.view(B * N, *images.shape[2:])
+                        feat = model.backbone(feat)
+                        feat = feat.view(B, N, -1)
+                        pooled_feat, _ = model.attention_pool(feat, temperature=model.attention_temp)
+                        pooled_feat = pooled_feat.reshape(B, -1)
+                        pooled_feat = model.head_proj(pooled_feat)
+                        logits = model.classifiers(pooled_feat, head_idx=h)
+                        loss = weighted_focal_loss(logits, labels, class_weights[labels])
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    run_loss += loss.item()
+                    _, predicted = logits.max(1)
+                    total += labels.size(0)
+                    correct += predicted.eq(labels).sum().item()
+
+            scheduler.step()
+            train_acc = 100.0 * correct / total
+            avg_train_loss = run_loss / (len(head_train_loaders) * len(head_train_loaders[0]))
+
+            # ── Validation: majority vote across all heads ──
+            model.eval()
+            val_loss_sum, val_batches = 0.0, 0
+            all_val_preds, all_val_probs, all_val_labels = [], [], []
+            with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
+                for batch in tqdm(val_loader, desc='Validating', leave=False):
+                    images, labels = batch[0].to(device), batch[1].to(device)
+                    B, N = images.shape[:2]
+                    feat = images.view(B * N, *images.shape[2:])
+                    feat = model.backbone(feat)
+                    feat = feat.view(B, N, -1)
+                    pooled_feat, _ = model.attention_pool(feat, temperature=model.attention_temp)
+                    pooled_feat = pooled_feat.reshape(B, -1)
+                    pooled_feat = model.head_proj(pooled_feat)
+                    all_logits = torch.stack(
+                        [model.classifiers(pooled_feat, head_idx=h) for h in range(actual_n_heads)],
+                        dim=0,
+                    )  # [n_heads, B, C]
+                    summed_logits = all_logits.sum(dim=0)  # [B, C]
+                    probs = torch.softmax(summed_logits, dim=1)
+                    preds = summed_logits.argmax(dim=1)
+                    all_val_preds.extend(preds.cpu().numpy())
+                    all_val_probs.extend(probs.cpu().numpy())
+                    all_val_labels.extend(labels.cpu().numpy())
+                    loss = weighted_focal_loss(summed_logits, labels, class_weights[labels])
+                    val_loss_sum += loss.item()
+                    val_batches += 1
+
+            val_acc = 100.0 * np.mean(np.array(all_val_preds) == np.array(all_val_labels))
+            avg_val_loss = val_loss_sum / max(val_batches, 1)
+            val_auc = compute_robust_auc(all_val_labels, all_val_probs, num_classes)
+            lr_now = optimizer.param_groups[0]['lr']
+
+            print(f"Epoch {epoch}: Loss={avg_train_loss:.4f} Train={train_acc:.2f}% "
+                  f"Val={val_acc:.2f}% AUC={val_auc:.4f} LR={lr_now:.2e} "
+                  f"({time.time()-epoch_start:.1f}s)")
+
+            tb_writer.add_scalars('Loss', {'train': avg_train_loss, 'val': avg_val_loss}, epoch)
+            tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
+
+            # Save checkpoints
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()},
+                       os.path.join(OUTPUT_DIR, 'checkpoint_epoch.pth'))
+            with open(csv_path, 'a', newline='') as f:
+                csv.writer(f).writerow([epoch, avg_train_loss, train_acc, avg_val_loss,
+                                        val_acc, val_auc, lr_now])
+
+            if not np.isnan(val_auc) and val_auc > best_val_auc:
+                best_val_auc = val_auc
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()},
+                           os.path.join(OUTPUT_DIR, 'best_model.pth'))
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()},
+                           os.path.join(OUTPUT_DIR, 'best_model_auc.pth'))
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()},
+                           os.path.join(OUTPUT_DIR, 'best_model_acc.pth'))
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                torch.save({'epoch': epoch, 'model_state_dict': model.state_dict()},
+                           os.path.join(OUTPUT_DIR, 'best_model_loss.pth'))
+
+        # ── Testing: majority vote ──
+        print("Testing...")
+        checkpoint = torch.load(os.path.join(OUTPUT_DIR, 'best_model_acc.pth'), map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+        all_preds, all_probs, all_labels = [], [], []
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
+            for batch in tqdm(test_loader, desc='Testing', leave=False):
+                images, labels = batch[0].to(device), batch[1].to(device)
+                B, N = images.shape[:2]
+                feat = images.view(B * N, *images.shape[2:])
+                feat = model.backbone(feat)
+                feat = feat.view(B, N, -1)
+                pooled_feat, _ = model.attention_pool(feat, temperature=model.attention_temp)
+                pooled_feat = pooled_feat.reshape(B, -1)
+                pooled_feat = model.head_proj(pooled_feat)
+                all_logits = torch.stack(
+                    [model.classifiers(pooled_feat, head_idx=h) for h in range(actual_n_heads)],
+                    dim=0,
+                )
+                summed_logits = all_logits.sum(dim=0)
+                probs = torch.softmax(summed_logits, dim=1)
+                preds = summed_logits.argmax(dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+        test_acc = 100.0 * np.mean(np.array(all_preds) == np.array(all_labels))
+        test_labels_bin = label_binarize(all_labels, classes=list(range(num_classes)))
+        test_auc = roc_auc_score(test_labels_bin, np.array(all_probs), average='macro')
+        test_ap = average_precision_score(test_labels_bin, np.array(all_probs), average='macro')
+        print(f"Test Acc: {test_acc:.2f}%, Test AUC: {test_auc:.4f}, Test AP: {test_ap:.4f}")
+
+        results = {
+            'timestamp': timestamp,
+            'mode': 'multi_head',
+            'n_heads': actual_n_heads,
+            'head_plates': head_plates,
+            'config': {'epochs': total_epochs, 'batch_size': args.batch_size, 'lr': args.lr,
+                       'test_plate': test_plate, 'dropout': args.dropout,
+                       'weight_decay': args.weight_decay, 'neighborhood': args.neighborhood},
+            'results': {'best_val_auc': float(best_val_auc), 'test_acc': float(test_acc),
+                        'test_auc': float(test_auc), 'test_ap': float(test_ap)},
+        }
+        with open(os.path.join(OUTPUT_DIR, 'training_results.json'), 'w') as f:
+            json.dump(results, f, indent=2)
+        tb_writer.close()
+        print(f"Results saved to {OUTPUT_DIR}")
+        return
     
     # Set up optimizer based on whether backbone is frozen
     if args.freeze:

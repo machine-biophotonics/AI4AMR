@@ -79,6 +79,24 @@ class ContrastiveEncoder(nn.Module):
             return F.normalize(x, dim=1)
 
 
+class MultiHeadClassifier(nn.Module):
+    """N separate classifier heads sharing one feature extractor."""
+    def __init__(self, feature_dim: int, num_classes: int, n_heads: int = 4, dropout: float = 0.5) -> None:
+        super().__init__()
+        self.n_heads = n_heads
+        self.heads = nn.ModuleList(
+            nn.Sequential(
+                nn.Dropout(p=dropout),
+                nn.Linear(feature_dim, num_classes)
+            ) for _ in range(n_heads)
+        )
+
+    def forward(self, x: torch.Tensor, head_idx: int = None) -> torch.Tensor:
+        if head_idx is not None:
+            return self.heads[head_idx](x)
+        return torch.stack([h(x) for h in self.heads], dim=0)  # [n_heads, B, C]
+
+
 class MILEncoder(nn.Module):
     """MIL encoder with optional contrastive head"""
     def __init__(
@@ -292,7 +310,10 @@ class MILEncoder(nn.Module):
                 return embedding, attn_weights
             return embedding
         
-        output = self.classifier(pooled)
+        if self.multi_head:
+            output = self.classifiers(pooled)  # [n_heads, B, C]
+        else:
+            output = self.classifier(pooled)
         
         results = [output]
         if return_attention:
