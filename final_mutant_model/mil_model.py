@@ -97,12 +97,16 @@ class MILEncoder(nn.Module):
         num_drug_classes: int = None,
         num_mutant_classes: int = None,
         proj_dim: int = 256,
+        multi_head: bool = False,
+        n_multi_heads: int = 4,
     ) -> None:
         super().__init__()
         self.backbone_type = backbone
         self.pooling = pooling
         self.dual_classifier = dual_classifier
         self.proj_dim = proj_dim
+        self.multi_head = multi_head
+        self.n_multi_heads = n_multi_heads
         
         # Select backbone
         if backbone == "mobilenet_v3_small":
@@ -209,6 +213,9 @@ class MILEncoder(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(self.feature_dim, num_classes)
         )
+
+        if multi_head:
+            self.classifiers = MultiHeadClassifier(self.feature_dim, num_classes, n_heads=n_multi_heads, dropout=dropout)
 
         if dual_classifier:
             self.projector = nn.Sequential(
