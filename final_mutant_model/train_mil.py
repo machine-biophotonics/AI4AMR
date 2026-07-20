@@ -149,6 +149,8 @@ parser.add_argument('--multi_head', action='store_true', default=False,
                     help='Use multi-head classifier: one head per train plate, majority vote at inference')
 parser.add_argument('--n_heads', type=int, default=4,
                     help='Number of classifier heads for --multi_head (default: 4, one per train plate)')
+parser.add_argument('--output_folder', type=str, default=None,
+                    help='Override output folder name (default: derived from data_mode)')
 args = parser.parse_args()
 
 # ── Guard against accidentally launching two training instances ──────────────
@@ -192,6 +194,9 @@ if args.guide is not None:
     data_mode_folder = f"{args.data_mode}_guide_{args.guide}"
 if args.edge_sigma is not None:
     data_mode_folder = f"canny_{data_mode_folder}"
+
+if args.output_folder is not None:
+    data_mode_folder = args.output_folder
 
 if args.warmup_epochs is None:
     args.warmup_epochs = int(args.sc_mil_epochs * 0.05)  # 5% of SC-MIL training
