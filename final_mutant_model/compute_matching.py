@@ -4,7 +4,7 @@ Cross-domain matching: cosine similarity between drug 2x embeddings and mutant g
 Saves matching_heatmap.png with expected-match green boxes + prints best matches and hit rate.
 """
 
-import os, sys, json, re
+import os, sys, json, re, argparse
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -14,7 +14,11 @@ import seaborn as sns
 from collections import defaultdict, OrderedDict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-FOLD_DIR = os.path.join(SCRIPT_DIR, 'both', 'fold_Plate_6')
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--fold', type=str, default='P2', help='Plate fold, e.g. P2, P6')
+_cli = parser.parse_args()
+FOLD_DIR = os.path.join(SCRIPT_DIR, 'both', f'fold_Plate_{_cli.fold.replace("P", "")}')
 
 PROJ_FILE    = os.path.join(FOLD_DIR, 'proj.npy')
 LABELS_FILE  = os.path.join(FOLD_DIR, 'labels.npy')
@@ -122,11 +126,66 @@ sorted_drug_idxs = sorted(drug_idxs.keys())
 drug_means = np.array([np.mean(drug_embs[idx], axis=0) for idx in sorted_drug_idxs])
 gene_means = np.array([np.mean(gene_embs[g], axis=0) for g in available_genes])
 
-drug_labels = [drug_idxs[idx] for idx in sorted_drug_idxs]
-gene_labels = list(available_genes)
+drug_labels_raw = [drug_idxs[idx] for idx in sorted_drug_idxs]
+gene_labels_raw = list(available_genes)
 
-print(f"\nDrug 2x + control: {len(drug_labels)} classes")
-print(f"Mutant genes (all guides) + NC + WT NC: {len(gene_labels)}")
+# ── Reorder for diagonal layout ──────────────────────────────────────────
+# Drug order: control first, then grouped by expected target pathway
+DRUG_ORDER = [
+    'control',
+    # PBP 2 → mrdA
+    'Avibactam', 'Mecillinam', 'Meropenem', 'Clavulanic Acid', 'Relebactam', 'Sulbactam',
+    # PBP 3 → ftsI
+    'Aztreonam', 'Cefepim', 'Ceftriaxone',
+    # PBP 1A/B → mrcA, mrcB
+    'Cefsulodin', 'Penicillin',
+    # Ribosome
+    'Chloramphenicol', 'Clarithromycin', 'Doxicyclin', 'Kanamycin',
+    # DNA gyrase
+    'Ciprofloxacin', 'Levofloxacin', 'Norfloxacin',
+    # RNA polymerase
+    'Rifampicin',
+    # DNA synthesis
+    'Trimethoprim',
+    # Membrane
+    'Colistin', 'Polymyxin B',
+]
+
+GENE_ORDER = [
+    'NC', 'WT NC',
+    # Cell wall PBPs (PBP2 + PBP1 targets)
+    'mrdA', 'ftsI', 'mrcA', 'mrcB',
+    # Cell division
+    'ftsZ',
+    # PG biosynthesis
+    'murA', 'murC',
+    # Ribosome
+    'rpsA', 'rpsL', 'rplA', 'rplC',
+    # Sec translocon
+    'secA', 'secY',
+    # Topoisomerases
+    'gyrA', 'gyrB', 'parC', 'parE',
+    # RNA polymerase
+    'rpoA', 'rpoB',
+    # DNA replication
+    'dnaB', 'dnaE',
+    # Folate
+    'folA', 'folP',
+    # LPS
+    'lpxA', 'lpxC', 'lptA', 'lptC',
+]
+
+drug_order = [d for d in DRUG_ORDER if d in drug_labels_raw]
+gene_order = [g for g in GENE_ORDER if g in gene_labels_raw]
+
+drug_label_to_idx = {lab: i for i, lab in enumerate(drug_labels_raw)}
+gene_label_to_idx = {lab: i for i, lab in enumerate(gene_labels_raw)}
+
+drug_row_idx = [drug_label_to_idx[d] for d in drug_order]
+gene_col_idx = [gene_label_to_idx[g] for g in gene_order]
+
+print(f"\nDrug 2x + control: {len(drug_order)} classes (ordered)")
+print(f"Mutant genes (all guides) + NC + WT NC: {len(gene_order)} (ordered)")
 
 # ── Cosine similarity ─────────────────────────────────────────────────────
 def cosine_sim(a, b):
@@ -134,24 +193,25 @@ def cosine_sim(a, b):
     bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-12)
     return np.dot(an, bn.T)
 
-sim = cosine_sim(drug_means, gene_means)
+sim_full = cosine_sim(drug_means, gene_means)
+sim = sim_full[np.ix_(drug_row_idx, gene_col_idx)]
 print(f"Similarity matrix: {sim.shape}, range=[{sim.min():.4f}, {sim.max():.4f}]")
 
 # ── Expected match mask ───────────────────────────────────────────────────
 expected_mask = np.zeros(sim.shape, dtype=bool)
-for i, dl in enumerate(drug_labels):
+for i, dl in enumerate(drug_order):
     if dl in EXPECTED:
         for tg in EXPECTED[dl]:
-            if tg in available_genes:
-                expected_mask[i, available_genes.index(tg)] = True
+            if tg in gene_order:
+                expected_mask[i, gene_order.index(tg)] = True
 
 # ── Heatmap ───────────────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(20, 14))
 sns.heatmap(sim,
-            xticklabels=gene_labels,
-            yticklabels=drug_labels,
+            xticklabels=gene_order,
+            yticklabels=drug_order,
             cmap='RdBu_r',
-            center=0.5, vmin=0.0, vmax=1.0,
+            center=0.0, vmin=-1.0, vmax=1.0,
             annot=True, fmt='.2f',
             annot_kws={'fontsize': 5},
             linewidths=0.3, linecolor='lightgray',
@@ -182,8 +242,8 @@ plt.close()
 # ── Save matrix ───────────────────────────────────────────────────────────
 out_npz = os.path.join(FOLD_DIR, 'cross_domain_matching.npz')
 np.savez(out_npz,
-         drug_categories=drug_labels,
-         mutant_categories=gene_labels,
+         drug_categories=drug_order,
+         mutant_categories=gene_order,
          similarity_matrix=sim)
 print(f"Saved matrix to {out_npz}")
 
@@ -192,13 +252,13 @@ print("\n" + "=" * 90)
 print("TOP-5 MATCHES (drug → mutant gene, all guides + NC/WT NC)")
 print("=" * 90)
 hit = total = 0
-for i, dl in enumerate(drug_labels):
+for i, dl in enumerate(drug_order):
     top5 = np.argsort(sim[i])[::-1][:5]
     matches = []
     is_hit = False
     for j in top5:
         marker = " ★" if expected_mask[i, j] else "  "
-        matches.append(f"{gene_labels[j]:12s}{marker} ({sim[i,j]:.4f})")
+        matches.append(f"{gene_order[j]:12s}{marker} ({sim[i,j]:.4f})")
         if expected_mask[i, j]:
             is_hit = True
     exp_genes = EXPECTED.get(dl, [])
@@ -209,10 +269,10 @@ for i, dl in enumerate(drug_labels):
     chk = "✓" if is_hit else "✗"
     print(f"  {dl:20s}  {chk}  {' | '.join(matches)}")
     if dl in EXPECTED and exp_genes:
-        found = [g for g in exp_genes if g in available_genes]
+        found = [g for g in exp_genes if g in gene_order]
         if found:
             order = np.argsort(sim[i])[::-1]
-            ranks = [int(np.where(order == available_genes.index(g))[0][0]) + 1 for g in found]
+            ranks = [int(np.where(order == gene_order.index(g))[0][0]) + 1 for g in found]
             print(f"  {'':20s}     exp={found} ranks={ranks}")
 
 print(f"\n  Hit rate: {hit}/{total} ({hit/max(total,1)*100:.0f}%)")
@@ -256,13 +316,15 @@ for moa, members in DRUG_GROUPS.items():
 
 # Collect embeddings per MOA group
 moa_embs = defaultdict(list)
-for i, dl in enumerate(drug_labels):
+for dl in drug_order:
     if dl == 'control':
         continue
     if dl in drug_to_moa:
         moa = drug_to_moa[dl]
-        idx = sorted_drug_idxs[i]
-        moa_embs[moa].extend(drug_embs[idx])
+        for oi, si in enumerate(sorted_drug_idxs):
+            if drug_idxs[si] == dl:
+                moa_embs[moa].extend(drug_embs[si])
+                break
 
 # Build reverse map: gene → pathway
 gene_to_pathway = {}
@@ -272,7 +334,7 @@ for pathway, members in GENE_GROUPS.items():
 
 # Collect embeddings per pathway
 pathway_embs = defaultdict(list)
-for j, gl in enumerate(gene_labels):
+for j, gl in enumerate(gene_order):
     if gl in gene_to_pathway:
         pathway_embs[gene_to_pathway[gl]].extend(gene_embs[gl])
 
@@ -291,7 +353,7 @@ sns.heatmap(sim_moa,
             xticklabels=[p.replace('\n', ' ') for p in pathway_names],
             yticklabels=moa_names,
             cmap='RdBu_r',
-            center=0.5, vmin=0.0, vmax=1.0,
+            center=0.0, vmin=-1.0, vmax=1.0,
             annot=True, fmt='.2f', annot_kws={'fontsize': 9},
             linewidths=1, linecolor='lightgray',
             cbar_kws={'label': 'Cosine similarity', 'shrink': 0.7},

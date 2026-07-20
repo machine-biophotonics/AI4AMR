@@ -393,7 +393,6 @@ def symmetric_consistency_loss(embeddings: torch.Tensor, labels: torch.Tensor, m
     neg = (sim * label_neq).sum() / diff_class_pairs
     return (1.0 - pos) + (neg - margin).clamp(min=0)
 
-
 def worker_init_fn(worker_id: int, seed: int = 42) -> None:
     """Module-level worker init function for multiprocessing compatibility"""
     import random
@@ -938,7 +937,8 @@ def train_single_fold(test_plate: str) -> None:
             epoch_start = time.time()
             train_dataset.set_epoch(epoch)
             model.train()
-            run_cl_loss, run_sym_loss, run_ce_loss, correct, total = 0.0, 0.0, 0.0, 0, 0
+            run_cl_loss, run_sym_loss, run_ce_loss = 0.0, 0.0, 0.0
+            correct, total = 0, 0
             drug_correct, drug_total, mutant_correct, mutant_total = 0, 0, 0, 0
             
             for batch in tqdm(train_loader, desc=f'SC-MIL Epoch {epoch}', leave=False):
@@ -982,7 +982,9 @@ def train_single_fold(test_plate: str) -> None:
                             sym_loss += symmetric_consistency_loss(proj_emb[mutant_mask], labels[mutant_mask])
 
                         total_sc = bag_sc_loss
-                        loss = args.ce_weight * (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc + args.sym_consistency_weight * sym_loss
+                        loss = (args.ce_weight * (1 - args.sc_mil_weight) * total_focal
+                                + args.sc_mil_weight * total_sc
+                                + args.sym_consistency_weight * sym_loss)
                         
                         # Accuracy per domain
                         if drug_mask.any():
@@ -1038,7 +1040,9 @@ def train_single_fold(test_plate: str) -> None:
                         total_focal = w * instance_focal + (1 - w) * bag_focal
                         total_sc = w * instance_sc_loss + (1 - w) * bag_sc_loss
                         sym_loss = 0.0
-                        loss = args.ce_weight * (1 - args.sc_mil_weight) * total_focal + args.sc_mil_weight * total_sc
+
+                        loss = (args.ce_weight * (1 - args.sc_mil_weight) * total_focal
+                                + args.sc_mil_weight * total_sc)
 
                         _, predicted = outputs.max(1)
                         total += labels.size(0)
@@ -1155,7 +1159,7 @@ def train_single_fold(test_plate: str) -> None:
             tb_writer.add_scalars('Loss', {'train': avg_ce_loss, 'val': avg_val_ce_loss}, epoch)
             # Card 2: Train Acc + Val Acc
             tb_writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
-            
+
             # Save best model based on validation AUC
             if not np.isnan(val_auc) and val_auc > best_val_auc:
                 best_val_auc = val_auc
