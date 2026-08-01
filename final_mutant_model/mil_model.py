@@ -26,10 +26,10 @@ except ImportError:
 
 class AttentionPooling(nn.Module):
     """Gated attention MIL pooling (Ilse et al. 2018, Eq 9 - with gating)"""
-    def __init__(self, in_features: int, num_heads: int = 4) -> None:
+    def __init__(self, in_features: int, num_heads: int = 4, hidden_dim: int = 256) -> None:
         super().__init__()
         self.num_heads = num_heads
-        self.hidden_dim = 256
+        self.hidden_dim = hidden_dim
         
         self.V = nn.Linear(in_features, self.hidden_dim)
         self.U = nn.Linear(in_features, self.hidden_dim)
@@ -45,10 +45,10 @@ class AttentionPooling(nn.Module):
 
 class SimpleAttentionPooling(nn.Module):
     """Simple attention MIL pooling (Ilse et al. 2018, Eq 8 - no gating)"""
-    def __init__(self, in_features: int, num_heads: int = 4) -> None:
+    def __init__(self, in_features: int, num_heads: int = 4, hidden_dim: int = 256) -> None:
         super().__init__()
         self.num_heads = num_heads
-        self.hidden_dim = 256
+        self.hidden_dim = hidden_dim
         
         self.V = nn.Linear(in_features, self.hidden_dim)
         self.w = nn.Linear(self.hidden_dim, num_heads)
@@ -117,6 +117,9 @@ class MILEncoder(nn.Module):
         proj_dim: int = 256,
         multi_head: bool = False,
         n_multi_heads: int = 4,
+        attn_hidden_dim: int = 256,
+        classifier_hidden_dim: int = 512,
+        classifier_layers: int = 0,
     ) -> None:
         super().__init__()
         self.backbone_type = backbone
@@ -214,11 +217,11 @@ class MILEncoder(nn.Module):
         self.use_contrastive = use_contrastive
         
         if pooling == 'simple_attention':
-            self.attention_pool = SimpleAttentionPooling(self.feature_dim, num_heads)
-            print(f"MILEncoder: Using SimpleAttentionPooling (no gating)")
+            self.attention_pool = SimpleAttentionPooling(self.feature_dim, num_heads, hidden_dim=attn_hidden_dim)
+            print(f"MILEncoder: Using SimpleAttentionPooling (no gating), hidden_dim={attn_hidden_dim}")
         else:
-            self.attention_pool = AttentionPooling(self.feature_dim, num_heads)
-            print(f"MILEncoder: Using Gated AttentionPooling")
+            self.attention_pool = AttentionPooling(self.feature_dim, num_heads, hidden_dim=attn_hidden_dim)
+            print(f"MILEncoder: Using Gated AttentionPooling, hidden_dim={attn_hidden_dim}")
         self.attention_temp = attention_temp
         
         self.head_proj = nn.Linear(self.feature_dim * num_heads, self.feature_dim)
@@ -226,10 +229,10 @@ class MILEncoder(nn.Module):
         if use_contrastive:
             self.contrastive_head = ContrastiveEncoder(self.feature_dim, projection_dim)
         
-        # Simple classifier: single FC layer with dropout=0.5
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(self.feature_dim, num_classes)
+        # Configurable MLP classifier: n_hidden hidden layers + final linear head,
+        # each with its own dropout (number of dropout layers = classifier_layers + 1)
+        self.classifier = self._build_classifier(
+            self.feature_dim, num_classes, dropout, classifier_hidden_dim, classifier_layers
         )
 
         if multi_head:
@@ -246,6 +249,19 @@ class MILEncoder(nn.Module):
             )
             self.drug_classifier = nn.Linear(proj_dim, num_drug_classes)
             self.mutant_classifier = nn.Linear(proj_dim, num_mutant_classes)
+    
+    def _build_classifier(self, feature_dim: int, num_classes: int, dropout: float,
+                          hidden_dim: int, n_layers: int) -> nn.Sequential:
+        """Build a classifier MLP with n_layers hidden layers (each preceded by dropout)."""
+        layers = [nn.Dropout(p=dropout)]
+        in_dim = feature_dim
+        for _ in range(n_layers):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(p=dropout))
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, num_classes))
+        return nn.Sequential(*layers)
     
     def forward(
         self,

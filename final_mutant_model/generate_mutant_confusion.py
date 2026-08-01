@@ -6,6 +6,7 @@ Same logic as final_crispr_model/generate_combined_confusion.py
 
 import numpy as np
 import os
+import re
 import argparse
 from collections import Counter
 from sklearn.metrics import confusion_matrix
@@ -114,12 +115,16 @@ def get_base_gene(label):
     return str(label)
 
 
+def is_wt_label(label):
+    base = get_base_gene(label)
+    up = str(base).upper()
+    return up.startswith('WT') or up == 'NC' or up.endswith(' NC')
+
+
 def get_pathway(label):
     base = get_base_gene(label)
-    if str(base).upper().startswith('WT'):
-        return 'WT'
-    if str(base).upper() == 'NC':
-        return 'WT'  # Group NC with WT
+    if is_wt_label(label):
+        return 'Wild Type'
     if base in HIERARCHY:
         return HIERARCHY[base]
     return 'Unknown'
@@ -128,8 +133,8 @@ def get_pathway(label):
 def get_trial_pathway(label):
     """Trial pathway mapping - use exact same as generate_trial_pathway_confusion.py"""
     base = get_base_gene(label)
-    if base.upper().startswith('WT') or base.upper() == 'NC':
-        return 'WT'
+    if is_wt_label(label):
+        return 'Wild Type'
     if base in TRIAL_PATHWAY:
         return TRIAL_PATHWAY[base]
     return base
@@ -137,11 +142,16 @@ def get_trial_pathway(label):
 
 def get_family(label):
     base = get_base_gene(label)
-    if str(base).upper().startswith('WT') or str(base).upper() == 'NC':
-        return 'WT'
+    if is_wt_label(label):
+        return 'Wild Type'
     if base in FAMILY:
         return FAMILY[base]
     return 'Unknown'
+
+
+def extract_well_from_path(path):
+    match = re.search(r'Well(\w\d+)_', os.path.basename(path))
+    return match.group(1) if match else None
 
 
 def map_hierarchy(labels, level):
@@ -389,13 +399,83 @@ def plot_percentage_cm(cm_sum, labels, title, output_path, show_annot=True):
     plt.close()
 
 
+def draw_cm_panel(ax, cm, labels, style, show_annot=True):
+    import seaborn as sns
+    n = len(labels)
+
+    if style == 'binary':
+        cm_display = np.zeros((n, n))
+        for i in range(n):
+            row = cm[i, :]
+            if row.sum() > 0:
+                row_norm = row / row.sum()
+                cm_display[i, row_norm.argmax()] = row_norm.max() * 100
+        vmax, fmt = 100, '.1f'
+    elif style == 'raw':
+        cm_display = cm
+        vmax, fmt = None, '.0f'
+    else:
+        cm_display = cm * 100
+        vmax, fmt = 100, '.1f'
+
+    annot = show_annot and n < 50
+    if style == 'raw':
+        sns.heatmap(cm_display, annot=annot, fmt=fmt, cmap='Blues', xticklabels=labels,
+                    yticklabels=labels, ax=ax,
+                    cbar_kws={'label': 'Count', 'shrink': 0.8},
+                    linewidths=0.3, linecolor='white',
+                    annot_kws={'size': 4}, square=True)
+    else:
+        sns.heatmap(cm_display, annot=annot, fmt=fmt, cmap='Blues', xticklabels=labels,
+                    yticklabels=labels, ax=ax, vmin=0, vmax=vmax,
+                    cbar_kws={'label': 'Percentage (%)', 'shrink': 0.8},
+                    linewidths=0.3, linecolor='white',
+                    annot_kws={'size': 5}, square=True)
+
+    for i, label in enumerate(labels):
+        base = get_base_gene(label)
+        same_gene_indices = [j for j, l in enumerate(labels) if get_base_gene(l) == base]
+        if len(same_gene_indices) > 1:
+            min_j = min(same_gene_indices)
+            max_j = max(same_gene_indices)
+            rect = patches.Rectangle((min_j, min_j), max_j - min_j + 1, max_j - min_j + 1,
+                                     linewidth=3, edgecolor='#FFD700', facecolor='none', zorder=10)
+            ax.add_patch(rect)
+
+    for i in range(n):
+        rect = patches.Rectangle((i, i), 1, 1, linewidth=2.5, edgecolor='#FF4444',
+                                  facecolor='none', zorder=10)
+        ax.add_patch(rect)
+
+    ax.set_xlabel('Predicted Label', fontsize=10)
+    ax.set_ylabel('True Label', fontsize=10)
+    ax.set_xticks(np.arange(n) + 0.5, labels, rotation=90, fontsize=5)
+    ax.set_yticks(np.arange(n) + 0.5, labels, rotation=0, fontsize=5)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def plot_timepoint_panels(panels, style, output_path, suptitle):
+    n_panels = len(panels)
+    fig, axes = plt.subplots(1, n_panels,
+                             figsize=(max(14, panels[0]['n_classes'] * 0.2) * n_panels,
+                                      max(14, panels[0]['n_classes'] * 0.2)))
+    if n_panels == 1:
+        axes = [axes]
+    for ax, panel in zip(axes, panels):
+        draw_cm_panel(ax, panel['cm'], panel['labels'], style)
+        ax.set_title(panel['title'], fontsize=10, fontweight='bold')
+    fig.suptitle(suptitle, fontsize=12, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate aggregate confusion matrices for final_crispr_model')
     parser.add_argument('--folds', type=str, default='P1,P2,P3,P4,P5,P6', help='Comma-separated folds')
     parser.add_argument('--single_fold', type=str, default=None,
                         help='Generate for a single fold (e.g., P1 or Plate_1) - creates fold-specific output directory')
-    parser.add_argument('--fold', type=str, default=None,
-                        help='Generate for a single fold (e.g., P6) - saves directly in the fold directory')
     parser.add_argument('--guide', type=int, default=None,
                         help='Filter to specific guide number (e.g. 1 for guide 1) and skip to gene-level')
     parser.add_argument('--family', action='store_true', help='Generate only family-level')
@@ -407,150 +487,157 @@ def main():
                         help='Output directory for confusion matrices')
     parser.add_argument('--mixed_checkpoints', action='store_true',
                         help='Use best_model_acc for P1-P5, best_model for P6')
-    parser.add_argument('--compare', action='store_true',
-                        help='Generate confusion matrices for both baseline and CS-ARM-BN predictions with _cs_arm_bn suffix')
-    parser.add_argument('--edge_sigma', type=float, default=None,
-                        help='Apply Canny edge detection with given sigma (looks in canny_mutant/ folder)')
+    parser.add_argument('--data_mode', type=str, default='mutant',
+                        choices=['mutant', 'metabolomics_mutant'],
+                        help='Data mode: mutant (original, predictions_all_crops_*.csv in mutant/fold_Plate_X/) '
+                             'or metabolomics_mutant (Felix data, test_positions_fold_PX.csv in metabolomics_mutant_hpc/fold_PX/)')
+    parser.add_argument('--input_root', type=str, default=None,
+                        help='Override results root. For metabolomics_mutant, point at a folder holding flat '
+                             'test_positions_fold_PX.csv files (e.g. lastckpt_results/) instead of fold_PX/ subfolders')
+    parser.add_argument('--timepoint_panels', action='store_true',
+                        help='For metabolomics_mutant: also produce 4-panel figures (T1, T2, T3, ALL) '
+                             'and report per-timepoint metrics')
     args = parser.parse_args()
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    use_metabolomics = args.data_mode == 'metabolomics_mutant'
+    if use_metabolomics and args.input_root:
+        mode_root = args.input_root
+    elif use_metabolomics:
+        mode_root = os.path.join(SCRIPT_DIR, 'metabolomics_mutant_hpc')
+    else:
+        mode_root = os.path.join(SCRIPT_DIR, 'mutant')
 
-    def run_generation(suffix=''):
-        """Run confusion matrix generation for a given CSV/output suffix."""
-        
-        base_dir = f'canny_mutant_guide_{args.guide}' if args.edge_sigma is not None and args.guide is not None \
-                    else 'canny_mutant' if args.edge_sigma is not None \
-                    else f'mutant_guide_{args.guide}' if args.guide is not None \
-                    else 'mutant'
+    def fold_key_for(fold_input):
+        if use_metabolomics:
+            if fold_input.startswith('fold_'):
+                return fold_input
+            return f'fold_{fold_input}'
+        if fold_input.startswith('fold_'):
+            return fold_input
+        if 'Plate_' in fold_input:
+            return f'fold_{fold_input}'
+        return f'fold_Plate_{fold_input.replace("P", "")}'
 
-        if args.fold:
-            fold_input = args.fold
-            if fold_input.startswith('fold_'):
-                fold_key = fold_input
-            elif 'Plate_' in fold_input:
-                fold_key = f'fold_{fold_input}'
-            else:
-                fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
-            folds = [fold_input]
-            out_dir = os.path.join(SCRIPT_DIR, base_dir, fold_key)
-        elif args.single_fold:
-            folds = [args.single_fold]
-            fold_input = args.single_fold
-            if fold_input.startswith('fold_'):
-                fold_key = fold_input
-            elif 'Plate_' in fold_input:
-                fold_key = f'fold_{fold_input}'
-            else:
-                fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
-            out_dir = os.path.join(SCRIPT_DIR, base_dir, fold_key, f'confusion_matrices{suffix}')
-        elif args.output_dir:
-            folds = args.folds.split(',')
-            out_dir = args.output_dir
+    # Handle single fold case
+    if args.single_fold:
+        folds = [args.single_fold]
+        fold_key = fold_key_for(args.single_fold)
+        # Save within the fold folder
+        output_dir = os.path.join(mode_root, fold_key, 'confusion_matrices')
+    elif args.output_dir:
+        folds = args.folds.split(',')
+        output_dir = args.output_dir
+    else:
+        folds = args.folds.split(',')
+        if use_metabolomics:
+            output_dir = os.path.join(mode_root, 'confusion_matrices')
         else:
-            folds = args.folds.split(',')
-            out_dir = os.path.join(SCRIPT_DIR, 'aggregate', 'combined')
+            output_dir = os.path.join(SCRIPT_DIR, 'aggregate', 'combined')
     
-        os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
-        if suffix:
-            print(f"\n{'='*60}")
-            print(f"CS-ARM-BN mode (suffix: {suffix})")
-            print(f"{'='*60}")
+    print(f"Aggregating across folds: {folds}")
+    if args.guide is not None:
+        print(f"Mode: Gene-level (filtered to guide {args.guide})")
+    elif args.family:
+        print("Mode: Family only")
+    print(f"Output directory: {output_dir}")
 
-        print(f"Aggregating across folds: {folds}")
-        if args.edge_sigma is not None:
-            print(f"Edge sigma: {args.edge_sigma} → folder: {base_dir}")
-        if args.guide is not None:
-            print(f"Mode: Gene-level (filtered to guide {args.guide})")
-        elif args.family:
-            print("Mode: Family only")
-        print(f"Output directory: {out_dir}")
+    all_fold_data = {}
 
-        all_fold_data = {}
+    for fold in folds:
+        fold_input = fold
+        fold_key = fold_key_for(fold_input)
 
-        for fold in folds:
-            fold_input = fold
-            if fold_input.startswith('fold_'):
-                fold_key = fold_input
-            elif 'Plate_' in fold_input:
-                fold_key = f'fold_{fold_input}'
-            else:
-                fold_key = f'fold_Plate_{fold_input.replace("P", "")}'
-        
-            fold_dir = os.path.join(SCRIPT_DIR, base_dir, fold_key)
-        
-            if args.prediction_csv:
-                csv_path = os.path.join(fold_dir, args.prediction_csv)
-            elif args.csv_name:
-                csv_path = os.path.join(fold_dir, args.csv_name)
-            else:
-                csv_name_attempts = [
-                    f'predictions_all_crops_mil_best_model_auc_n3{suffix}.csv',
-                    f'predictions_all_crops_mil_best_model_acc_n3{suffix}.csv',
-                    f'predictions_all_crops_mil_best_model{suffix}.csv',
-                    f'predictions_all_crops_mil_best_model_auc{suffix}.csv',
-                    f'predictions_all_crops_mil_best_model_acc{suffix}.csv',
-                    f'predictions_all_crops_mil_checkpoint_epoch_n3{suffix}.csv',
-                    f'predictions_all_crops{suffix}.csv',
-                    f'image_predictions_mil{suffix}.csv',
-                ]
-                csv_path = None
-                for attempt in csv_name_attempts:
-                    candidate = os.path.join(fold_dir, attempt)
-                    if os.path.exists(candidate):
-                        csv_path = candidate
-                        break
-
-            if not csv_path or not os.path.exists(csv_path):
-                print(f"  Tried folder: {fold_dir}")
-                print(f"  Available files: {os.listdir(fold_dir) if os.path.exists(fold_dir) else 'folder not found'}")
-                print(f"Skipping {fold}: no CSV file found")
-                continue
-
-            print(f"Loading {fold}...")
-            df = pd.read_csv(csv_path)
-        
-            if 'ground_truth_label' not in df.columns:
-                print(f"Skipping {fold}: no ground_truth_label column")
-                continue
-
-            df_valid = df[df['ground_truth_label'].notna()].copy()
-
-            if args.guide is not None:
-                guide_suffix = f"_{args.guide}"
-                df_valid = df_valid[df_valid['ground_truth_label'].str.endswith(guide_suffix, na=False)].copy()
-                print(f"  Guide {args.guide} filter: {len(df_valid)} remaining rows")
-
-            image_df, well_df = aggregate_crop_to_well(df_valid)
-            all_fold_data[fold] = {
-                'crop': df_valid,
-                'image': image_df,
-                'well': well_df
-            }
-
-        if not all_fold_data:
-            print("No data loaded for any fold, skipping")
-            return
-
-        levels = [('crop', 'crop'), ('image', 'image'), ('well', 'well')]
-        if args.guide is not None:
-            hierarchies = ['gene', 'pathway', 'family']
-        elif args.family:
-            hierarchies = ['family']
+        if use_metabolomics and args.input_root:
+            fold_dir = mode_root
         else:
-            hierarchies = ['guide', 'gene', 'pathway', 'family']
+            fold_dir = os.path.join(mode_root, fold_key)
+        
+        if args.prediction_csv:
+            csv_path = os.path.join(fold_dir, args.prediction_csv)
+        elif args.csv_name:
+            csv_path = os.path.join(fold_dir, args.csv_name)
+        elif use_metabolomics:
+            csv_path = os.path.join(fold_dir, f'test_positions_{fold_key}.csv')
+        else:
+            # Try various CSV file names
+            csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model_acc_n3.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops_mil_best_model_acc.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(fold_dir, 'predictions_all_crops.csv')
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(fold_dir, 'image_predictions_mil.csv')
 
-        results = []
+        if not os.path.exists(csv_path):
+            print(f"  Tried: {csv_path}")
+            print(f"  Available files: {os.listdir(fold_dir) if os.path.exists(fold_dir) else 'folder not found'}")
+            print(f"Skipping {fold}: no CSV file found")
+            continue
 
-        for level_key, level_name in levels:
-            for hier in hierarchies:
+        print(f"Loading {fold}...")
+        df = pd.read_csv(csv_path)
+
+        if use_metabolomics:
+            df = df.rename(columns={'true_label': 'ground_truth_label',
+                                    'predicted_label': 'predicted_class_name'})
+            df['image_name'] = df['image_path']
+            df['well'] = df['image_path'].apply(extract_well_from_path)
+
+        if 'ground_truth_label' not in df.columns:
+            print(f"Skipping {fold}: no ground_truth_label column")
+            continue
+
+        df_valid = df[df['ground_truth_label'].notna()].copy()
+
+        # Filter to specific guide if requested
+        if args.guide is not None:
+            guide_suffix = f"_{args.guide}"
+            df_valid = df_valid[df_valid['ground_truth_label'].str.endswith(guide_suffix, na=False)].copy()
+            print(f"  Guide {args.guide} filter: {len(df_valid)} remaining rows")
+
+        image_df, well_df = aggregate_crop_to_well(df_valid)
+
+        fold_groups = {'ALL': {'crop': df_valid, 'image': image_df, 'well': well_df}}
+        if use_metabolomics and args.timepoint_panels and 'timepoint' in df_valid.columns:
+            for tp in ['T1', 'T2', 'T3']:
+                sub = df_valid[df_valid['timepoint'] == tp]
+                if len(sub) > 0:
+                    t_img, t_well = aggregate_crop_to_well(sub)
+                    fold_groups[tp] = {'crop': sub, 'image': t_img, 'well': t_well}
+        all_fold_data[fold] = fold_groups
+
+    levels = [('crop', 'crop'), ('image', 'image'), ('well', 'well')]
+    if args.guide is not None:
+        hierarchies = ['gene', 'pathway', 'family']
+    elif args.family:
+        hierarchies = ['family']
+    else:
+        hierarchies = ['guide', 'gene', 'pathway', 'family']
+
+    results = []
+    timepoint_results = []
+
+    group_names = ['T1', 'T2', 'T3', 'ALL'] if (use_metabolomics and args.timepoint_panels) else ['ALL']
+
+    for level_key, level_name in levels:
+        for hier in hierarchies:
+            group_metrics = []
+            group_cms = {}
+
+            for group_name in group_names:
                 fold_raw_cms = []
-                fold_norm_cms = []
                 fold_accs = []
                 all_labels_set = set()
 
-                for fold, data in all_fold_data.items():
-                    level_df = data[level_key]
+                for fold, fold_groups in all_fold_data.items():
+                    if group_name not in fold_groups:
+                        continue
+                    level_df = fold_groups[group_name][level_key]
 
                     true_col = 'ground_truth_label' if level_key == 'crop' else 'true_label'
                     true_mapped = map_hierarchy(level_df[true_col].values, hier)
@@ -569,8 +656,8 @@ def main():
                     cm_raw = confusion_matrix(true_mapped, pred_mapped, labels=all_labels, normalize=None)
                     fold_raw_cms.append((all_labels, cm_raw))
 
-                    cm_norm = confusion_matrix(true_mapped, pred_mapped, labels=all_labels, normalize='true')
-                    fold_norm_cms.append((all_labels, cm_norm))
+                if len(fold_raw_cms) == 0:
+                    continue
 
                 if args.family:
                     def sort_key(label):
@@ -578,8 +665,8 @@ def main():
                         group_key = FAMILY_GROUP.get(base, base)
                         if '_' in str(label):
                             prefix = str(label).rsplit('_', 1)[0]
-                            suffix_label = str(label).rsplit('_', 1)[1]
-                            return (group_key, base, int(suffix_label) if suffix_label.isdigit() else suffix_label)
+                            suffix = str(label).rsplit('_', 1)[1]
+                            return (group_key, base, int(suffix) if suffix.isdigit() else suffix)
                         return (base, label)
 
                     all_labels = sorted(all_labels_set, key=sort_key)
@@ -606,22 +693,10 @@ def main():
                 n_above_random = np.sum(np.diag(cm_sum_normalized) * 100 > random_baseline)
                 n_above_50 = np.sum(np.diag(cm_sum_normalized) * 100 > 50)
 
-                title = f'Aggregate ({len(fold_raw_cms)} folds) - {level_name.capitalize()}/{hier.capitalize()} Acc: {100*mean_acc:.1f}%±{100*std_acc:.1f}%'
-            
-                plot_binary_cm(cm_sum_normalized, all_labels, title,
-                             os.path.join(out_dir, f'binary_cm_{level_name}_{hier}{suffix}.png'))
-            
-                plot_raw_counts(cm_sum_raw, all_labels, title,
-                               os.path.join(out_dir, f'raw_cm_{level_name}_{hier}{suffix}.png'))
-            
-                show_annot = (n_classes < 50)
-                plot_percentage_cm(cm_sum_normalized, all_labels, title,
-                                os.path.join(out_dir, f'percent_cm_{level_name}_{hier}{suffix}.png'),
-                                show_annot=show_annot)
-
-                results.append({
+                group_metrics.append({
                     'level': level_name,
                     'hierarchy': hier,
+                    'group': group_name,
                     'mean_acc': mean_acc,
                     'std_acc': std_acc,
                     'n_folds': len(fold_raw_cms),
@@ -630,17 +705,70 @@ def main():
                     'classes_above_50': n_above_50,
                     'classes_above_random': n_above_random
                 })
+                group_cms[group_name] = {
+                    'cm_raw': cm_sum_raw,
+                    'cm_norm': cm_sum_normalized,
+                    'labels': all_labels,
+                    'n_classes': n_classes
+                }
 
-                print(f"  {level_name}/{hier}: {100*mean_acc:.2f}% ± {100*std_acc:.2f}% | {n_above_50}/{n_classes} > 50%, {n_above_random}/{n_classes} > Random({random_baseline:.1f}%)")
+                if group_name == 'ALL':
+                    title = f'Aggregate ({len(fold_raw_cms)} folds) - {level_name.capitalize()}/{hier.capitalize()} Acc: {100*mean_acc:.1f}%±{100*std_acc:.1f}%'
 
-        results_df = pd.DataFrame(results)
-        results_df.to_csv(os.path.join(out_dir, f'combined_metrics{suffix}.csv'), index=False)
-        print(f"\nSaved to {out_dir}/")
+                    plot_binary_cm(cm_sum_normalized, all_labels, title,
+                                   os.path.join(output_dir, f'binary_cm_{level_name}_{hier}.png'))
 
-    # Run generation
-    run_generation(suffix='')
-    if args.compare:
-        run_generation(suffix='_cs_arm_bn')
+                    plot_raw_counts(cm_sum_raw, all_labels, title,
+                                    os.path.join(output_dir, f'raw_cm_{level_name}_{hier}.png'))
+
+                    show_annot = (n_classes < 50)
+                    plot_percentage_cm(cm_sum_normalized, all_labels, title,
+                                       os.path.join(output_dir, f'percent_cm_{level_name}_{hier}.png'),
+                                       show_annot=show_annot)
+
+                    results.append({
+                        'level': level_name,
+                        'hierarchy': hier,
+                        'mean_acc': mean_acc,
+                        'std_acc': std_acc,
+                        'n_folds': len(fold_raw_cms),
+                        'n_classes': n_classes,
+                        'random_baseline': random_baseline,
+                        'classes_above_50': n_above_50,
+                        'classes_above_random': n_above_random
+                    })
+
+                    print(f"  {level_name}/{hier}: {100*mean_acc:.2f}% ± {100*std_acc:.2f}% | {n_above_50}/{n_classes} > 50%, {n_above_random}/{n_classes} > Random({random_baseline:.1f}%)")
+
+            if args.timepoint_panels and len(group_cms) == len(group_names):
+                for style in ['binary', 'raw', 'percent']:
+                    panels = []
+                    for gn in group_names:
+                        g = group_cms[gn]
+                        gm = next(m for m in group_metrics if m['group'] == gn)
+                        cm = g['cm_norm'] if style != 'raw' else g['cm_raw']
+                        panels.append({
+                            'cm': cm,
+                            'labels': g['labels'],
+                            'n_classes': g['n_classes'],
+                            'title': f"{gn} | Acc: {100*gm['mean_acc']:.1f}%"
+                        })
+                    suptitle = f'{level_name.capitalize()}/{hier.capitalize()} - 4-fold timepoint panels'
+                    plot_timepoint_panels(panels, style,
+                                          os.path.join(output_dir, f'timepoint_panels_{style}_{level_name}_{hier}.png'),
+                                          suptitle)
+                print(f"  TP {level_name}/{hier}: " + " | ".join(
+                    f"{m['group']}: {100*m['mean_acc']:.2f}%" for m in group_metrics))
+                timepoint_results.extend(group_metrics)
+
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(os.path.join(output_dir, 'combined_metrics.csv'), index=False)
+
+    if timepoint_results:
+        tp_df = pd.DataFrame(timepoint_results)
+        tp_df.to_csv(os.path.join(output_dir, 'timepoint_metrics.csv'), index=False)
+
+    print(f"\nSaved to {output_dir}/")
 
 
 if __name__ == '__main__':

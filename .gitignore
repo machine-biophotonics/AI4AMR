@@ -163,3 +163,12 @@ final_mutant_model/all_folds_results.json
 !final_mutant_model/mil_model.py
 !final_mutant_model/train_mil.py
 !final_mutant_model/predict_all_crops.py
+
+# Metabolomics raw data (huge) + metabolomics MIL training outputs
+Metabolomics_Data/
+final_mutant_model/metabolomics_mutant/
+final_mutant_model/metabolomics_mutant_hpc/
+final_mutant_model/multi_head_mutant/
+final_mutant_model/_pre_cluster_backup/
+final_mutant_model/eval_test_positions.py.out
+final_mutant_model/hpo_dehb.py.out
